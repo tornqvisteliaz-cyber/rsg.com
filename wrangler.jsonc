@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "rsg-com",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-04",
+  "workers_dev": true,
+  "containers": [
+    {
+      "class_name": "RSGWeb",
+      "image": "./Dockerfile",
+      "max_instances": 1,
+      "instance_type": "lite"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RSG_WEB",
+        "class_name": "RSGWeb"
+      }
+    ]
+  },
+  "exports": {
+    "RSGWeb": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "APP_ENV": "production",
+    "ADMIN_RESET_PASSWORD": "false"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
