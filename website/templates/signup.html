@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Create account | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <style>
+        body {
+            background: #f4f6f9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+        }
+        .signup-card {
+            max-width: 420px;
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+        }
+        .logo {
+            width: 160px;
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card signup-card shadow">
+                    <div class="card-body p-4 p-md-5 text-center">
+                        <img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="RSG Software" class="logo">
+                        <h3 class="mb-1">Create Account</h3>
+                        <p class="text-muted mb-4">Join RSG Software</p>
+
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-danger">{{ message }}</div>
+                            {% endfor %}
+                        {% endwith %}
+
+                        <form method="POST">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                            <div class="form-group text-left">
+                                <label>Name</label>
+                                <input class="form-control" name="name" placeholder="Your name" required>
+                            </div>
+
+                            <div class="form-group text-left">
+                                <label>Email</label>
+                                <input class="form-control" name="email" type="email" placeholder="you@example.com" required>
+                            </div>
+
+                            <div class="form-group text-left">
+                                <label>Password</label>
+                                <input class="form-control" name="password" type="password" minlength="8" placeholder="At least 8 characters" required>
+                            </div>
+
+                            <div class="form-group text-left">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="terms" name="accept_terms" required>
+                                    <label class="form-check-label" for="terms" style="font-size: 0.9rem;">
+                                        I agree to the
+                                        <a href="{{ url_for('views.terms') }}" target="_blank">Terms of Service</a>
+                                        and
+                                        <a href="{{ url_for('views.privacy') }}" target="_blank">Privacy Policy</a>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-dark btn-block btn-lg mt-3">Sign up</button>
+                        </form>
+
+                        <p class="mt-4 mb-0">
+                            Already have an account? <a href="{{ url_for('auth.login') }}">Log in</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

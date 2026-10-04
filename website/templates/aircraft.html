@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Our Aircraft | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <style>
+        body { background: #fff; color: #1a1a1a; }
+        .hero {
+            min-height: 72vh;
+            background:
+                linear-gradient(to top, rgba(0,0,0,0.62), rgba(0,0,0,0.18)),
+                url('https://i.postimg.cc/28WybSM2/metroliner.jpg') center/cover no-repeat;
+            display: flex;
+            align-items: flex-end;
+            color: #fff;
+        }
+        .hero-inner { padding: 48px 0 56px; }
+        .hero h1 {
+            font-size: 42px;
+            font-weight: 700;
+            margin: 8px 0 10px;
+        }
+        .hero p { max-width: 520px; margin-bottom: 22px; }
+        .buy-btn {
+            display: inline-block;
+            background: #fff;
+            color: #111;
+            padding: 12px 22px;
+            font-weight: 600;
+        }
+        .buy-btn:hover { background: #eee; color: #111; text-decoration: none; }
+        .content { max-width: 860px; margin: 0 auto; padding: 48px 20px 72px; }
+        .content h3 { margin-bottom: 14px; }
+        .features { margin-top: 28px; padding-left: 18px; }
+        .note { color: #666; margin-top: 28px; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom">
+    <div class="container">
+        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbar">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                <li class="nav-item"><a class="nav-link active" href="/aircraft">Our Aircraft</a></li>
+                <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li>
+                <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+                <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+            </ul>
+            <div class="ml-lg-3 mt-3 mt-lg-0">
+                {% if session.get('logged_in') %}
+                    <a href="{{ url_for('admin.dashboard') }}" class="btn btn-success btn-sm mr-2">Admin dashboard</a>
+                    <form method="post" action="{{ url_for('auth.logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% elif session.get('customer_id') %}
+                    <a href="{{ url_for('auth.account') }}" class="btn btn-success btn-sm mr-2">My Account ({{ session.get('customer_name') }})</a>
+                    <form method="post" action="{{ url_for('auth.customer_logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% else %}
+                    <a href="{{ url_for('auth.login') }}" class="btn btn-outline-dark btn-sm mr-2">Login</a>
+                    <a href="{{ url_for('auth.signup') }}" class="btn btn-dark btn-sm">Sign Up</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container hero-inner">
+        <div>In development · MSFS 2024</div>
+        <h1>Republic RC-3 Seabee</h1>
+        <p>A four-seat amphibious flying boat for water and land operations.</p>
+        <a href="{{ url_for('views.seabee') }}" class="buy-btn">Buy here</a>
+    </div>
+</section>
+
+<section class="content">
+    <h3>About the Seabee</h3>
+    <p>
+        The Republic RC-3 Seabee comes from the 1940s. It was built as a small flying boat
+        for private and utility use, with a pusher propeller and a metal hull.
+    </p>
+    <p>
+        That is the aircraft we are making for Microsoft Flight Simulator 2024:
+        short coastal hops, lake landings and the odd shape that makes the Seabee easy to recognize.
+    </p>
+
+    <ul class="features">
+        <li>Detailed exterior and interior</li>
+        <li>Water and land operations</li>
+        <li>Custom systems and sound</li>
+    </ul>
+
+    <p class="note">Release date TBA.</p>
+</section>
+
+<footer class="py-4 text-center border-top">
+    <p class="mb-2">
+        <a href="{{ url_for('views.terms') }}" class="text-muted mr-3">Terms of Service</a>
+        <a href="{{ url_for('views.privacy') }}" class="text-muted">Privacy Policy</a>
+    </p>
+    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+</footer>
+
+<script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RC-3 Seabee | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <style>
+        body { background: #0b0d10; color: #f4f4f4; }
+        a { color: inherit; }
+        .back-btn {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 20;
+            background: rgba(0,0,0,0.55);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.25);
+            padding: 8px 16px;
+            border-radius: 999px;
+            text-decoration: none;
+        }
+        .hero {
+            min-height: 100vh;
+            background:
+                linear-gradient(rgba(0,0,0,0.25), rgba(0,0,0,0.7)),
+                url('https://i.postimg.cc/28WybSM2/metroliner.jpg') center/cover no-repeat;
+            display: flex;
+            align-items: flex-end;
+        }
+        .hero-content { padding: 80px 0; }
+        .hero h1 { font-size: 4rem; font-weight: 800; }
+        .full-image {
+            width: 100%;
+            height: 80vh;
+            object-fit: cover;
+            display: block;
+        }
+        .gallery img {
+            width: 100%;
+            height: 320px;
+            object-fit: cover;
+            margin-bottom: 16px;
+        }
+        .buy-box {
+            background: #161a20;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 28px;
+            position: sticky;
+            top: 24px;
+        }
+        .price { font-size: 2.4rem; font-weight: 700; }
+        .section { padding: 90px 0; }
+        .muted { color: #b9c0c8; }
+    </style>
+</head>
+<body>
+
+<a href="{{ url_for('views.aircraft') }}" class="back-btn">← Aircraft</a>
+
+<section class="hero">
+    <div class="container hero-content">
+        <span class="badge badge-light mb-3">MSFS 2024</span>
+        <h1>Republic RC-3 Seabee</h1>
+        <p class="lead mb-0">An amphibious classic built for water, land and short coastal flights.</p>
+    </div>
+</section>
+
+<img class="full-image" src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee exterior">
+
+<section class="section">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-7 mb-5">
+                <h2 class="mb-4">Built for both water and land</h2>
+                <p class="lead muted">
+                    The Seabee is not a normal general-aviation aircraft. It is a flying boat with a pusher propeller and an all-metal hull.
+                </p>
+                <p class="muted">
+                    First flown in the 1940s, the Republic RC-3 Seabee was designed as a four-seat amphibious aircraft
+                    for private and utility use. It could leave a lake in the morning and land at a small airfield later the same day.
+                </p>
+                <p class="muted">
+                    Our version for Microsoft Flight Simulator 2024 focuses on that unique character:
+                    water handling, visual detail and a cockpit that feels mechanical rather than modern airliner-clean.
+                </p>
+            </div>
+            <div class="col-lg-5">
+                <div class="buy-box">
+                    <h4>Buy RC-3 Seabee</h4>
+                    <p class="muted mb-1">Microsoft Flight Simulator 2024</p>
+                    <div class="price">$29.99</div>
+                    <p class="muted">Pre-order coming soon</p>
+                    <ul class="list-unstyled my-4 muted">
+                        <li class="mb-2">• Instant download after release</li>
+                        <li class="mb-2">• Free product updates</li>
+                        <li class="mb-2">• Saved to your RSG account</li>
+                    </ul>
+                    {% if session.get('customer_id') or session.get('logged_in') %}
+                        <button class="btn btn-light btn-block" disabled>Add to cart — coming soon</button>
+                    {% else %}
+                        <a href="{{ url_for('auth.login') }}" class="btn btn-light btn-block">Log in to buy</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<img class="full-image" src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee water operations">
+
+<section class="section">
+    <div class="container">
+        <h2 class="mb-5">Gallery</h2>
+        <div class="row gallery">
+            <div class="col-md-6"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 1"></div>
+            <div class="col-md-6"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 2"></div>
+            <div class="col-md-6"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 3"></div>
+            <div class="col-md-6"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 4"></div>
+            <div class="col-md-4"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 5"></div>
+            <div class="col-md-4"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 6"></div>
+            <div class="col-md-4"><img src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee 7"></div>
+        </div>
+    </div>
+</section>
+
+<section class="section" style="background:#11151b;">
+    <div class="container">
+        <div class="row">
+            <div class="col-md-4 mb-4">
+                <h4>Systems</h4>
+                <p class="muted">Custom electrical, fuel and amphibious systems built for water and land operations.</p>
+            </div>
+            <div class="col-md-4 mb-4">
+                <h4>Modelling</h4>
+                <p class="muted">Detailed exterior, interior and animations with a focus on the Seabee’s unique shape.</p>
+            </div>
+            <div class="col-md-4 mb-4">
+                <h4>Sound</h4>
+                <p class="muted">Engine, propeller, cockpit and water effects designed around the pusher layout.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<img class="full-image" src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt="Seabee final shot">
+
+<footer class="py-4 text-center">
+    <p class="muted mb-2">
+        <a href="{{ url_for('views.terms') }}" class="mr-3">Terms of Service</a>
+        <a href="{{ url_for('views.privacy') }}">Privacy Policy</a>
+    </p>
+    <p class="muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+</footer>
+
+</body>
+</html>

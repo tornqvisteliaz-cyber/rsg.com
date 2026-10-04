@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}RSG Admin{% endblock %}</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-expand navbar-dark bg-dark">
+    <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">RSG Admin</a>
+
+    <div class="navbar-nav">
+        <a class="nav-link" href="{{ url_for('admin.orders') }}">Orders</a>
+        <a class="nav-link" href="{{ url_for('admin.customers') }}">Customers</a>
+        <a class="nav-link" href="{{ url_for('admin.devices') }}">Devices</a>
+        <a class="nav-link" href="{{ url_for('admin.newsletter_list') }}">Newsletter</a>
+
+        {% if session.get('role') == 'Owner' %}
+            <a class="nav-link" href="{{ url_for('admin.admins') }}">Admins</a>
+        {% endif %}
+
+        <a class="nav-link" href="{{ url_for('admin.two_factor') }}">2FA</a>
+        <a class="nav-link" href="{{ url_for('views.home') }}">Website</a>
+    </div>
+
+    <form class="ml-auto" method="post" action="{{ url_for('auth.logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-outline-light btn-sm">Log out</button>
+    </form>
+</nav>
+
+<main class="container py-4">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ category if category in ['success', 'danger', 'warning', 'info'] else 'info' }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+</main>
+
+</body>
+</html>

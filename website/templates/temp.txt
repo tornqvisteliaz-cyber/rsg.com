@@ -1,0 +1,4 @@
+<script>
+        type=
+        src={{ url_for('static', filename='xxx')}} static = folder
+    </script>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terms of Service | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-light bg-white shadow-sm">
+    <div class="container">
+        <a class="navbar-brand" href="{{ url_for('views.home') }}"><strong>RSG</strong> Software</a>
+        <a href="{{ url_for('views.home') }}" class="btn btn-outline-dark btn-sm">Home</a>
+    </div>
+</nav>
+
+<main class="container py-5" style="max-width: 800px;">
+    <h1 class="mb-2">Terms of Service</h1>
+    <p class="text-muted mb-4">Last updated: August 8, 2026</p>
+
+    <h4>1. About RSG Software</h4>
+    <p>
+        These Terms of Service (“Terms”) govern your use of the website and services operated by RSG Software
+        (“we”, “us”, “our”), including accounts, purchases, downloads and related content.
+    </p>
+
+    <h4>2. Accounts</h4>
+    <p>
+        You must provide accurate information when creating an account and keep your login details secure.
+        You are responsible for activity that occurs under your account. We may suspend or terminate accounts
+        that violate these Terms or applicable law.
+    </p>
+
+    <h4>3. Products and digital content</h4>
+    <p>
+        Our products are digital flight simulation add-ons and related software/content.
+        Descriptions, features and release dates may change during development.
+        Unless otherwise stated, purchases grant a personal, non-transferable license for use in Microsoft Flight Simulator
+        according to the product documentation and any third-party platform rules.
+    </p>
+
+    <h4>4. Payments and refunds</h4>
+    <p>
+        Prices are shown in the currency stated at checkout. Payment processing may be handled by third-party providers.
+        Refund requests are handled according to applicable consumer law and our stated refund policy for digital goods.
+        Contact <strong>support@rsgsoftware.site</strong> for order issues.
+    </p>
+
+    <h4>5. Acceptable use</h4>
+    <p>You agree not to:</p>
+    <ul>
+        <li>Share, redistribute, resell or pirate our software</li>
+        <li>Attempt to reverse engineer, crack or bypass license protection</li>
+        <li>Abuse, attack or disrupt our website or services</li>
+        <li>Use our services for unlawful purposes</li>
+    </ul>
+
+    <h4>6. Intellectual property</h4>
+    <p>
+        All website content, branding, software, models, systems and documentation remain the property of RSG Software
+        or our licensors. No rights are granted except as expressly stated in a product license.
+    </p>
+
+    <h4>7. Disclaimer</h4>
+    <p>
+        The website and products are provided “as is”. We strive for quality and accuracy, but we do not guarantee
+        uninterrupted service or that products will meet every expectation on every system configuration.
+        To the maximum extent permitted by law, we are not liable for indirect or consequential damages.
+    </p>
+
+    <h4>8. Changes</h4>
+    <p>
+        We may update these Terms from time to time. Continued use of the service after changes means you accept the updated Terms.
+    </p>
+
+    <h4>9. Contact</h4>
+    <p>
+        Questions about these Terms:<br>
+        <strong>support@rsgsoftware.site</strong>
+    </p>
+
+    <p class="mt-4">
+        <a href="{{ url_for('views.privacy') }}">Privacy Policy</a>
+    </p>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log in | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <style>
+        body {
+            background: #f4f6f9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+        }
+        .login-card {
+            max-width: 420px;
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+        }
+        .logo {
+            width: 160px;
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card login-card shadow">
+                    <div class="card-body p-4 p-md-5 text-center">
+                        <img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="RSG Software" class="logo">
+                        <h3 class="mb-1">Customer Login</h3>
+                        <p class="text-muted mb-4">Welcome back</p>
+
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-danger">{{ message }}</div>
+                            {% endfor %}
+                        {% endwith %}
+
+                        <form method="POST">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                            <div class="form-group text-left">
+                                <label>Email</label>
+                                <input class="form-control" name="email" type="email" placeholder="you@example.com" required>
+                            </div>
+
+                            <div class="form-group text-left">
+                                <label>Password</label>
+                                <input class="form-control" name="password" type="password" required>
+                            </div>
+
+                            <button class="btn btn-dark btn-block btn-lg mt-3">Log in</button>
+                        </form>
+
+                        <p class="mt-4 mb-0">
+                            Need an account? <a href="{{ url_for('auth.signup') }}">Sign up</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

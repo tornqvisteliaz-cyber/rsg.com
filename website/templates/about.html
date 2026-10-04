@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Who are we? | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <style>
+        .page-header {
+            background: linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)),
+                        url('https://i.postimg.cc/28WybSM2/metroliner.jpg') center/cover no-repeat;
+            height: 380px;
+            display: flex;
+            align-items: center;
+            color: white;
+        }
+        .icon-circle {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            background: #212529;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            margin: 0 auto 1rem auto;
+        }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+    <div class="container">
+        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbar">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                <li class="nav-item"><a class="nav-link" href="/aircraft">Our Aircraft</a></li>
+                <li class="nav-item"><a class="nav-link active" href="/about">About</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li>
+                <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+                <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+            </ul>
+            <div class="ml-lg-3 mt-3 mt-lg-0">
+                {% if session.get('logged_in') %}
+                    <a href="{{ url_for('admin.dashboard') }}" class="btn btn-success btn-sm mr-2">Admin dashboard</a>
+                    <form method="post" action="{{ url_for('auth.logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% elif session.get('customer_id') %}
+                    <a href="{{ url_for('auth.account') }}" class="btn btn-success btn-sm mr-2">My Account ({{ session.get('customer_name') }})</a>
+                    <form method="post" action="{{ url_for('auth.customer_logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% else %}
+                    <a href="{{ url_for('auth.login') }}" class="btn btn-outline-dark btn-sm mr-2">Login</a>
+                    <a href="{{ url_for('auth.signup') }}" class="btn btn-dark btn-sm">Sign Up</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+<header class="page-header">
+    <div class="container text-center">
+        <h1 class="display-4 font-weight-bold">Who are we?</h1>
+        <p class="lead mb-0">The people behind RSG Software</p>
+    </div>
+</header>
+
+<section class="py-5">
+    <div class="container text-center">
+        <img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="RSG Software" style="width: 200px; max-width: 100%;" class="mb-4">
+        <h2 class="mb-3">Realistic aircraft for serious sim pilots</h2>
+        <p class="lead text-muted mx-auto" style="max-width: 650px;">
+            RSG is a team who has their orgin all over the place! But orignally founded by Eliaz, bringing a passion for aviation and flight simulation.
+        </p>
+    </div>
+</section>
+
+<section class="py-5 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-md-6 mb-4 mb-md-0 text-center">
+                <div class="icon-circle"><i class="fa fa-bullseye"></i></div>
+                <h4>Our Mission</h4>
+                <p class="text-muted px-3">Craft the most realistic aircraft addons for Microsoft Flight Simulator — quality over quantity.</p>
+            </div>
+            <div class="col-md-6 text-center">
+                <div class="icon-circle"><i class="fa fa-rocket"></i></div>
+                <h4>Our Vision</h4>
+                <p class="text-muted px-3">Become a trusted name in the sim community with products pilots enjoy for years.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="position-relative">
+    <img src="https://i.postimg.cc/brBqt5Lz/VFW614.png" alt="VFW-Fokker 614" class="img-fluid w-100" style="min-height: 420px; object-fit: cover;">
+    <div class="position-absolute w-100 h-100" style="top: 0; left: 0; background: rgba(0, 0, 0, 0.55);">
+        <div class="container h-100 d-flex flex-column justify-content-center py-5">
+            <h3 class="text-center text-white mb-5">What we believe in</h3>
+            <div class="row text-center text-white">
+                <div class="col-md-4 mb-4 mb-md-0">
+                    <div class="icon-circle mx-auto mb-3" style="background: rgba(255,255,255,0.15);"><i class="fa fa-diamond"></i></div>
+                    <h5 class="text-white">Quality First</h5>
+                    <p class="mb-0" style="opacity: 0.9;">One excellent product beats many average ones.</p>
+                </div>
+                <div class="col-md-4 mb-4 mb-md-0">
+                    <div class="icon-circle mx-auto mb-3" style="background: rgba(255,255,255,0.15);"><i class="fa fa-cogs"></i></div>
+                    <h5 class="text-white">Realism & Accuracy</h5>
+                    <p class="mb-0" style="opacity: 0.9;">Every system researched from real aircraft docs.</p>
+                </div>
+                <div class="col-md-4">
+                    <div class="icon-circle mx-auto mb-3" style="background: rgba(255,255,255,0.15);"><i class="fa fa-users"></i></div>
+                    <h5 class="text-white">Community Driven</h5>
+                    <p class="mb-0" style="opacity: 0.9;">We listen and improve based on pilot feedback.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="py-5 bg-light">
+    <div class="container text-center">
+        <h4 class="mb-3">Want to see what we’re working on?</h4>
+        <a href="/aircraft" class="btn btn-dark btn-lg px-5">Browse Our Aircraft</a>
+    </div>
+</section>
+
+<footer class="py-4 text-center border-top bg-white">
+    <p class="mb-2">
+        <a href="{{ url_for('views.terms') }}" class="text-muted mr-3">Terms of Service</a>
+        <a href="{{ url_for('views.privacy') }}" class="text-muted">Privacy Policy</a>
+    </p>
+    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+</footer>
+
+<script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
+</body>
+</html>

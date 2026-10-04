@@ -1,0 +1,5 @@
+{% extends 'admin/base.html' %}
+{% block content %}
+<h1>Audit logs</h1>
+<table class="table bg-white"><tr><th>Action</th><th>Target</th><th>IP</th><th>Time</th></tr>{% for log in logs %}<tr><td>{{ log.action }}</td><td>{{ log.target }}</td><td>{{ log.ip_address }}</td><td>{{ log.created_at }}</td></tr>{% else %}<tr><td colspan="4">No audit entries.</td></tr>{% endfor %}</table>
+{% endblock %}
