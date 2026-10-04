@@ -19,9 +19,11 @@ The initial Owner is created from the environment settings when the app starts. 
 
 ### Cloudflare
 
-Point the domain to the hosting origin and enable the Cloudflare proxy after the origin is reachable. Configure Cloudflare's SSL/TLS mode to **Full (strict)** when the hosting origin has a valid TLS certificate.
+Cloudflare readiness does not depend on having a domain yet. When a domain is available and the hosting origin is reachable, add the provider-recommended DNS record and enable Cloudflare proxying for it. Configure Cloudflare's SSL/TLS mode to **Full (strict)** when the hosting origin has a valid TLS certificate. The provider-specific DNS target can only be filled in after the app is deployed.
 
-The application marks session cookies as Secure in production. Forwarded client IP and HTTPS headers are ignored by default. Set `PROXY_FIX_X_FOR` and `PROXY_FIX_X_PROTO` only after confirming the exact number of trusted proxy hops in your Starto and Cloudflare route, and that those proxies overwrite the forwarded headers. Keep the origin restricted to trusted ingress where the provider supports it. This avoids accepting spoofed client IP or scheme headers.
+The application marks session cookies as Secure in production and sends private, no-store cache headers for login, account, admin, verification, and API routes. In Cloudflare, keep dynamic/authenticated routes bypassed from cache; do not use a broad "Cache Everything" rule for the application.
+
+Forwarded client IP and HTTPS headers are ignored by default. Set `PROXY_FIX_X_FOR` and `PROXY_FIX_X_PROTO` only after confirming the exact number of trusted proxy hops in your Starto and Cloudflare route, and that those proxies overwrite the forwarded headers. Keep the origin restricted to trusted ingress where the provider supports it. This avoids accepting spoofed client IP or scheme headers.
 
 ### Start command
 
