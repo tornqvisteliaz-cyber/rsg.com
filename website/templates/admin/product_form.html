@@ -1,0 +1,76 @@
+{% extends 'admin/base.html' %}
+{% block title %}{{ 'Edit product' if product else 'Add product' }} | RSG Admin{% endblock %}
+{% block content %}
+<div class="mb-4">
+    <a href="{{ url_for('admin.products') }}" class="small">&larr; Back to products</a>
+    <h1 class="h2 mt-2 mb-1">{{ 'Edit product' if product else 'Add product' }}</h1>
+    <p class="text-muted mb-0">Product details stay in the catalog; checkout can be connected later.</p>
+</div>
+
+<form method="post" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <section class="col-lg-8 mb-4" aria-labelledby="product-details-heading">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white"><h2 id="product-details-heading" class="h5 mb-0">Product details</h2></div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label for="name">Product name</label>
+                    <input id="name" class="form-control" name="name" maxlength="200" required value="{{ form_data.get('name', product.name if product else '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="id">Product ID</label>
+                    <input id="id" class="form-control" name="id" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" {% if product %}value="{{ product.id }}" readonly{% else %}value="{{ form_data.get('id', '') }}" placeholder="e.g. rsg-seabee"{% endif %}>
+                    <small class="form-text text-muted">Lowercase letters, numbers, and hyphens. Used as the stable catalog identifier.</small>
+                </div>
+                <div class="form-group">
+                    <label for="description">Description</label>
+                    <textarea id="description" class="form-control" name="description" rows="5" placeholder="What makes this product useful?">{{ form_data.get('description', product.description if product else '') }}</textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group col-md-6"><label for="simulator">Simulator / platform</label><input id="simulator" class="form-control" name="simulator" maxlength="80" value="{{ form_data.get('simulator', product.simulator if product else 'MSFS 2024') }}"></div>
+                    <div class="form-group col-md-6"><label for="version">Version</label><input id="version" class="form-control" name="version" maxlength="40" value="{{ form_data.get('version', product.version if product else '1.0.0') }}"></div>
+                </div>
+                <div class="form-group"><label for="folder_name">Install folder</label><input id="folder_name" class="form-control" name="folder_name" maxlength="200" value="{{ form_data.get('folder_name', product.folder_name if product else '') }}" placeholder="rsg-product-name"></div>
+                <div class="form-group"><label for="image_url">Product image URL</label><input id="image_url" class="form-control" type="url" name="image_url" maxlength="500" value="{{ form_data.get('image_url', product.image_url if product else '') }}" placeholder="https://…"></div>
+            </div>
+        </div>
+        <div class="card shadow-sm mt-3">
+            <div class="card-header bg-white"><h2 class="h5 mb-0">Product links</h2></div>
+            <div class="card-body">
+                <div class="form-group"><label for="download_url">Download URL</label><input id="download_url" class="form-control" type="url" name="download_url" maxlength="500" value="{{ form_data.get('download_url', product.download_url if product else '') }}" placeholder="https://…"></div>
+                <div class="form-group mb-0"><label for="buy_url">Product page URL</label><input id="buy_url" class="form-control" type="url" name="buy_url" maxlength="500" value="{{ form_data.get('buy_url', product.buy_url if product else '') }}" placeholder="https://…"></div>
+            </div>
+        </div>
+    </section>
+
+    <aside class="col-lg-4 mb-4">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white"><h2 class="h5 mb-0">Price and availability</h2></div>
+            <div class="card-body">
+                {% set current_price = ('%.2f'|format((product.price_minor_units or 0) / 100)) if product else '29.99' %}
+                <div class="form-group"><label for="price_amount">Price</label><input id="price_amount" class="form-control" type="number" name="price_amount" min="0" max="99999999.99" step="0.01" required value="{{ form_data.get('price_amount', current_price) }}"><small class="form-text text-muted">Stored precisely in minor units for future payment integrations.</small></div>
+                <div class="form-group"><label for="currency">Currency</label>
+                    <select id="currency" class="form-control" name="currency">
+                    {% for code in currencies %}
+                        <option value="{{ code }}" {% if form_data.get('currency', product.currency if product else 'USD') == code %}selected{% endif %}>{{ code }}</option>
+                    {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group"><label for="status">Status</label>
+                    <select id="status" class="form-control" name="status">
+                    {% for item_status in statuses %}
+                        <option value="{{ item_status }}" {% if form_data.get('status', product.status if product else 'draft') == item_status %}selected{% endif %}>{{ item_status.replace('_', ' ')|title }}</option>
+                    {% endfor %}
+                    </select>
+                    <small class="form-text text-muted">Only published products appear in the customer catalog.</small>
+                </div>
+                <div class="alert alert-info small mb-0">Payment checkout is not active yet. Saving a price does not charge customers.</div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between">
+                <a class="btn btn-outline-secondary" href="{{ url_for('admin.products') }}">Cancel</a>
+                <button class="btn btn-dark" type="submit">Save product</button>
+            </div>
+        </div>
+    </aside>
+</form>
+{% endblock %}
