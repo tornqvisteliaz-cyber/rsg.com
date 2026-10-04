@@ -1,5 +1,8 @@
 import os
+import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import urlsplit
 
 import pyotp
 from flask import current_app, flash, redirect, render_template, request, send_from_directory, session, url_for
@@ -9,7 +12,7 @@ from . import admin
 from .decorators import admin_required
 from .. import db
 from ..extensions import bcrypt
-from ..models import AdminSession, AdminUser, AuditLog, Customer, Order, Refund, SupportTicket
+from ..models import AdminSession, AdminUser, AuditLog, CatalogProduct, Customer, Order, Refund, SupportTicket
 
 
 def audit(action, target=None):
@@ -29,6 +32,155 @@ def dashboard():
         pending_orders=Order.query.filter_by(status="Pending").count(), recent_sessions=recent_sessions,
         recent_orders=recent_orders, recent_logs=recent_logs,
     )
+
+
+PRODUCT_STATUSES = ("draft", "in_development", "coming_soon", "published", "archived")
+PRODUCT_CURRENCIES = ("USD", "SEK", "EUR", "GBP")
+
+
+def _valid_product_url(value):
+    if not value:
+        return True
+    if len(value) > 500 or any(ord(char) < 32 for char in value) or "\\" in value:
+        return False
+    parsed = urlsplit(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _price_label(minor_units, currency):
+    whole, cents = divmod(int(minor_units or 0), 100)
+    amount = f"{whole}.{cents:02d}"
+    symbols = {"USD": "$", "EUR": "€", "GBP": "£"}
+    return f"{symbols[currency]}{amount}" if currency in symbols else f"{amount} {currency}"
+
+
+def _save_product_form(product=None):
+    data = request.form
+    name = data.get("name", "").strip()
+    product_id = product.id if product else data.get("id", "").strip().lower()
+    if not product_id and name:
+        product_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    status = data.get("status", "draft")
+    currency = data.get("currency", "USD").upper()
+    try:
+        price = Decimal(data.get("price_amount", "").strip())
+        if not price.is_finite() or price < 0 or price > Decimal("99999999.99"):
+            raise InvalidOperation
+        price_minor_units = int((price * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError):
+        flash("Enter a valid price from 0.00 to 99,999,999.99.", "danger")
+        return False
+
+    if not name or len(name) > 200:
+        flash("Product name is required and must be 200 characters or fewer.", "danger")
+        return False
+    if not product_id or len(product_id) > 80 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", product_id):
+        flash("Use a product ID made of lowercase letters, numbers, and single hyphens.", "danger")
+        return False
+    existing = db.session.get(CatalogProduct, product_id)
+    if existing is not None and existing is not product:
+        flash("That product ID is already in use.", "danger")
+        return False
+    if currency not in PRODUCT_CURRENCIES:
+        flash("Choose a supported currency.", "danger")
+        return False
+    if status not in PRODUCT_STATUSES:
+        flash("Choose a valid product status.", "danger")
+        return False
+
+    fields = {
+        "simulator": (data.get("simulator", "").strip() or "MSFS 2024", 80),
+        "version": (data.get("version", "").strip() or "1.0.0", 40),
+        "folder_name": (data.get("folder_name", "").strip() or f"rsg-{product_id}", 200),
+        "image_url": (data.get("image_url", "").strip(), 500),
+        "download_url": (data.get("download_url", "").strip(), 500),
+        "buy_url": (data.get("buy_url", "").strip(), 500),
+    }
+    for field, (value, limit) in fields.items():
+        if len(value) > limit:
+            flash(f"{field.replace('_', ' ').capitalize()} must be {limit} characters or fewer.", "danger")
+            return False
+    if not all(_valid_product_url(fields[field][0]) for field in ("image_url", "download_url", "buy_url")):
+        flash("Image, download, and purchase links must use an http:// or https:// URL.", "danger")
+        return False
+
+    if product is None:
+        product = CatalogProduct(id=product_id, name=name)
+        db.session.add(product)
+    product.name = name
+    product.simulator = fields["simulator"][0]
+    product.version = fields["version"][0]
+    product.folder_name = fields["folder_name"][0]
+    product.image_url = fields["image_url"][0]
+    product.download_url = fields["download_url"][0]
+    product.buy_url = fields["buy_url"][0]
+    product.description = data.get("description", "").strip()
+    product.status = status
+    product.price_minor_units = price_minor_units
+    product.currency = currency
+    product.price = _price_label(price_minor_units, currency)
+    audit(f"{session['username']} saved product {product.name}", product.id)
+    db.session.commit()
+    return product
+
+
+def _render_product_form(product=None):
+    if request.method == "POST":
+        saved = _save_product_form(product)
+        if saved:
+            flash("Product saved. Payment checkout is not enabled yet.", "success")
+            return redirect(url_for("admin.products"))
+    return render_template(
+        "admin/product_form.html",
+        product=product,
+        form_data=request.form if request.method == "POST" else {},
+        statuses=PRODUCT_STATUSES,
+        currencies=PRODUCT_CURRENCIES,
+    )
+
+
+@admin.route("/products")
+@admin_required("Support")
+def products():
+    search = request.args.get("search", "").strip()
+    status = request.args.get("status", "")
+    query = CatalogProduct.query
+    if search:
+        query = query.filter(or_(CatalogProduct.name.contains(search), CatalogProduct.id.contains(search)))
+    if status in PRODUCT_STATUSES:
+        query = query.filter(CatalogProduct.status == status)
+    items = query.order_by(CatalogProduct.name.asc()).all()
+    return render_template(
+        "admin/products.html",
+        products=items,
+        search=search,
+        status=status,
+        statuses=PRODUCT_STATUSES,
+    )
+
+
+@admin.route("/products/new", methods=["GET", "POST"])
+@admin_required("Admin")
+def product_new():
+    return _render_product_form()
+
+
+@admin.route("/products/<string:product_id>/edit", methods=["GET", "POST"])
+@admin_required("Admin")
+def product_edit(product_id):
+    product = db.get_or_404(CatalogProduct, product_id)
+    return _render_product_form(product)
+
+
+@admin.route("/products/<string:product_id>/archive", methods=["POST"])
+@admin_required("Admin")
+def product_archive(product_id):
+    product = db.get_or_404(CatalogProduct, product_id)
+    product.status = "draft" if product.status == "archived" else "archived"
+    audit(f"{session['username']} {'restored' if product.status == 'draft' else 'archived'} product {product.name}", product.id)
+    db.session.commit()
+    flash("Product status updated.", "success")
+    return redirect(url_for("admin.products"))
 
 
 @admin.route("/admins")
