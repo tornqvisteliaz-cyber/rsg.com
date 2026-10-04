@@ -1,6 +1,7 @@
 # website/__init__.py
 
 import os
+from datetime import timedelta
 
 from flask import Flask
 from sqlalchemy import inspect, text
@@ -119,7 +120,7 @@ def create_app():
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = app_env == "production"
-    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 12
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=12)
 
     # Enable only when the configured hosting proxy overwrites these headers.
     # Set each hop count explicitly; never trust forwarded headers by default.
