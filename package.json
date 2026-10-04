@@ -1,0 +1,14 @@
+{
+  "name": "rsg-cloudflare-container",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}
