@@ -159,7 +159,7 @@ def create_app():
         if any(request.path == path or request.path.startswith(path + "/") for path in sensitive_paths):
             response.headers["Cache-Control"] = "private, no-store, max-age=0"
             response.headers["Pragma"] = "no-cache"
-            response.headers["Vary"] = "Cookie"
+            response.vary.add("Cookie")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
