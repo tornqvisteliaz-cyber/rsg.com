@@ -22,9 +22,9 @@ auth = Blueprint("auth", __name__)
 
 def safe_next_url(default_endpoint="views.home"):
     target = request.values.get("next", "").strip()
-    if target:
+    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target and not any(ord(char) < 32 for char in target):
         parsed = urlparse(target)
-        if not parsed.netloc and target.startswith("/"):
+        if not parsed.scheme and not parsed.netloc:
             return target
     return url_for(default_endpoint)
 
@@ -120,7 +120,8 @@ def admin_login():
 def verify_two_factor():
     admin_id = session.get("pending_admin_id")
     admin = db.session.get(AdminUser, admin_id) if admin_id else None
-    if not admin:
+    if not admin or not admin.enabled or not admin.two_factor_enabled:
+        session.pop("pending_admin_id", None)
         return redirect(url_for("auth.admin_login"))
     if request.method == "POST":
         code = request.form.get("code", "").replace(" ", "")
@@ -194,7 +195,11 @@ def customer_login():
 
         if not valid:
             flash("Invalid email or password.", "danger")
-            return redirect(url_for("auth.login", next=request.form.get("next", "")))
+            response = redirect(url_for("auth.login"))
+            next_url = request.form.get("next", "").strip()
+            if next_url:
+                response = redirect(url_for("auth.login", next=next_url))
+            return response
 
         start_customer_session(customer)
         return redirect(safe_next_url("auth.account"))

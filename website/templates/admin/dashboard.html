@@ -1,13 +1,125 @@
 {% extends 'admin/base.html' %}
+{% block title %}Dashboard | RSG Admin{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<div class="row">
-{% for label,value in [('Revenue', revenue ~ ' SEK'),('Total orders',total_orders),('Pending orders',pending_orders),('Active admins',active_users),('Customers',total_customers),('Admins',total_admins)] %}
-<div class="col-md-4 mb-3"><div class="card shadow-sm"><div class="card-body"><small class="text-muted">{{ label }}</small><h3>{{ value }}</h3></div></div></div>
-{% endfor %}
+<div class="d-flex flex-wrap align-items-center justify-content-between mb-4">
+    <div>
+        <h1 class="h2 mb-1">Dashboard</h1>
+        <p class="text-muted mb-0">Overview of store activity and administrator access.</p>
+    </div>
+    <a class="btn btn-dark mt-2 mt-md-0" href="{{ url_for('admin.orders') }}">View orders</a>
 </div>
-<div class="card mb-4"><div class="card-body"><h2 class="h5">Order overview</h2><canvas id="ordersChart" height="80"></canvas></div></div>
-<div class="row"><section class="col-md-6"><h2 class="h4">Recent logins</h2><table class="table bg-white"><tr><th>Admin</th><th>IP / country</th><th>Time</th></tr>{% for item in recent_sessions %}<tr class="{% if item.unusual %}table-warning{% endif %}"><td>{{ item.admin.username }}</td><td>{{ item.ip_address }} {{ item.country or '' }}{% if item.unusual %} · unusual{% endif %}</td><td>{{ item.created_at }}</td></tr>{% else %}<tr><td colspan="3">No logins yet.</td></tr>{% endfor %}</table></section><section class="col-md-6"><h2 class="h4">Recent orders</h2><table class="table bg-white"><tr><th>Order</th><th>Status</th><th>Amount</th></tr>{% for order in recent_orders %}<tr><td>#{{ order.id }}</td><td>{{ order.status }}</td><td>{{ order.amount }} SEK</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></section></div>
-<h2 class="h4">Audit log</h2><ul class="list-group">{% for log in recent_logs %}<li class="list-group-item">{{ log.action }} <small class="text-muted float-right">{{ log.created_at }}</small></li>{% else %}<li class="list-group-item">No activity yet.</li>{% endfor %}</ul>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script>new Chart(document.getElementById('ordersChart'),{type:'bar',data:{labels:['Total orders','Pending orders','Customers'],datasets:[{label:'Count',data:[{{ total_orders }},{{ pending_orders }},{{ total_customers }}],backgroundColor:['#343a40','#ffc107','#17a2b8']}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}});</script>
+
+<section aria-label="Key metrics" class="row">
+{% for label,value in [('Paid revenue', revenue ~ ' SEK'),('Total orders',total_orders),('Pending orders',pending_orders),('Active sessions',active_users),('Customers',total_customers),('Administrators',total_admins)] %}
+    <div class="col-sm-6 col-xl-4 mb-3">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <div class="text-muted small">{{ label }}</div>
+                <div class="h3 mb-0 mt-2">{{ value }}</div>
+            </div>
+        </div>
+    </div>
+{% endfor %}
+</section>
+
+<section class="card shadow-sm mb-4" aria-labelledby="order-overview-title">
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-start justify-content-between">
+            <div>
+                <h2 id="order-overview-title" class="h5 mb-1">Order overview</h2>
+                <p class="text-muted small mb-3">Current totals for orders and customers.</p>
+            </div>
+            <a href="{{ url_for('admin.orders') }}" class="small">Manage orders</a>
+        </div>
+        <div class="position-relative" style="height: 240px">
+            <canvas id="ordersChart" role="img" aria-label="Bar chart comparing total orders, pending orders, and customers">
+                Order totals: {{ total_orders }} orders, {{ pending_orders }} pending, {{ total_customers }} customers.
+            </canvas>
+        </div>
+    </div>
+</section>
+
+<div class="row">
+    <section class="col-lg-6 mb-4" aria-labelledby="recent-logins-title">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h2 id="recent-logins-title" class="h5 mb-0">Recent administrator logins</h2>
+            <a class="small" href="{{ url_for('admin.devices') }}">Manage sessions</a>
+        </div>
+        <div class="table-responsive bg-white border rounded">
+            <table class="table table-hover mb-0">
+                <thead class="thead-light"><tr><th scope="col">Administrator</th><th scope="col">IP / country</th><th scope="col">Time</th></tr></thead>
+                <tbody>
+                {% for item in recent_sessions %}
+                    <tr class="{% if item.unusual %}table-warning{% endif %}">
+                        <td>{{ item.admin.username }}</td>
+                        <td>{{ item.ip_address or 'Unknown' }}{% if item.country %} · {{ item.country }}{% endif %}{% if item.unusual %}<span class="d-block small font-weight-bold">Unusual location</span>{% endif %}</td>
+                        <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '—' }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3" class="text-muted py-3">No administrator logins recorded yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="col-lg-6 mb-4" aria-labelledby="recent-orders-title">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h2 id="recent-orders-title" class="h5 mb-0">Recent orders</h2>
+            <a class="small" href="{{ url_for('admin.orders') }}">All orders</a>
+        </div>
+        <div class="table-responsive bg-white border rounded">
+            <table class="table table-hover mb-0">
+                <thead class="thead-light"><tr><th scope="col">Order</th><th scope="col">Status</th><th scope="col">Amount</th></tr></thead>
+                <tbody>
+                {% for order in recent_orders %}
+                    <tr><td>#{{ order.id }}</td><td>{{ order.status }}</td><td>{{ order.amount }} SEK</td></tr>
+                {% else %}
+                    <tr><td colspan="3" class="text-muted py-3">No orders have been placed yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+<section aria-labelledby="audit-log-title">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 id="audit-log-title" class="h5 mb-0">Recent administrator activity</h2>
+        <a class="small" href="{{ url_for('admin.logs') }}">Full audit log</a>
+    </div>
+    <ul class="list-group">
+    {% for log in recent_logs %}
+        <li class="list-group-item d-flex flex-wrap justify-content-between align-items-start">
+            <span>{{ log.action }}{% if log.target %}<span class="text-muted"> · {{ log.target }}</span>{% endif %}</span>
+            <small class="text-muted ml-md-3">{{ log.created_at.strftime('%Y-%m-%d %H:%M') if log.created_at else '' }}</small>
+        </li>
+    {% else %}
+        <li class="list-group-item text-muted">No administrator activity recorded yet.</li>
+    {% endfor %}
+    </ul>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const chartElement = document.getElementById('ordersChart');
+    if (chartElement && window.Chart) {
+        new Chart(chartElement, {
+            type: 'bar',
+            data: {
+                labels: ['Total orders', 'Pending orders', 'Customers'],
+                datasets: [{
+                    data: [{{ total_orders }}, {{ pending_orders }}, {{ total_customers }}],
+                    backgroundColor: ['#343a40', '#ffc107', '#17a2b8'],
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+            }
+        });
+    }
+</script>
 {% endblock %}

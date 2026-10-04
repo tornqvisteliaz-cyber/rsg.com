@@ -40,17 +40,18 @@
                             {% endfor %}
                         {% endwith %}
 
-                        <form method="POST">
+                        <form method="POST" novalidate>
+                            <input type="hidden" name="next" value="{{ next }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
                             <div class="form-group text-left">
                                 <label>Email</label>
-                                <input class="form-control" name="email" type="email" placeholder="you@example.com" required>
+                                <input class="form-control" id="email" name="email" type="email" autocomplete="username" placeholder="you@example.com" required autofocus>
                             </div>
 
                             <div class="form-group text-left">
                                 <label>Password</label>
-                                <input class="form-control" name="password" type="password" required>
+                                <input class="form-control" id="password" name="password" type="password" autocomplete="current-password" required>
                             </div>
 
                             <button class="btn btn-dark btn-block btn-lg mt-3">Log in</button>
