@@ -123,6 +123,8 @@ class CatalogProduct(db.Model):
     status = db.Column(db.String(50), default="in_development")
     image_url = db.Column(db.String(500), default="")
     price = db.Column(db.String(40), default="$29.99")
+    price_minor_units = db.Column(db.Integer, nullable=False, default=2999)
+    currency = db.Column(db.String(3), nullable=False, default="USD")
     description = db.Column(db.Text, default="")
     buy_url = db.Column(db.String(500), default="")
 
