@@ -22,21 +22,25 @@ def slugify(value):
 
 
 def seed_catalog():
-    if CatalogProduct.query.count() == 0:
-        db.session.add(CatalogProduct(
-            id="seabee",
-            name="Republic RC-3 Seabee",
-            simulator="MSFS 2024",
-            version="0.1.0-dev",
-            folder_name="rsg-seabee",
-            download_url=os.getenv("SEABEE_DOWNLOAD_URL", ""),
-            image_url=DEFAULT_IMAGE,
-            price="$29.99",
-            description="Amphibious flying boat for Microsoft Flight Simulator 2024.",
-            buy_url=DEFAULT_BUY,
-        ))
-        db.session.commit()
+    existing = db.session.get(CatalogProduct, "seabee")
+    if existing is not None:
+        return
 
+    db.session.add(CatalogProduct(
+        id="seabee",
+        name="Republic RC-3 Seabee",
+        simulator="MSFS 2024",
+        version="0.1.0-dev",
+        folder_name="rsg-seabee",
+        download_url=os.getenv("SEABEE_DOWNLOAD_URL", ""),
+        image_url=DEFAULT_IMAGE,
+        price="$29.99",
+        price_minor_units=2999,
+        currency="USD",
+        description="Amphibious flying boat for Microsoft Flight Simulator 2024.",
+        buy_url=DEFAULT_BUY,
+    ))
+    db.session.commit()
 
 def bearer_token():
     return request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -140,6 +144,8 @@ def product_dict(item, owned):
         "owned": owned,
         "image_url": item.image_url or DEFAULT_IMAGE,
         "price": item.price or "$29.99",
+        "price_minor_units": item.price_minor_units,
+        "currency": item.currency or "USD",
         "description": item.description or "",
         "buy_url": item.buy_url or DEFAULT_BUY,
     }
@@ -166,7 +172,10 @@ def livery_dict(item, owned):
 @require_account
 def api_products(account, kind):
     owned = owns_content(account, kind)
-    items = [product_dict(item, owned) for item in CatalogProduct.query.order_by(CatalogProduct.name).all()]
+    items = [
+        product_dict(item, owned)
+        for item in CatalogProduct.query.filter(CatalogProduct.status.notin_(("draft", "archived"))).order_by(CatalogProduct.name).all()
+    ]
     return jsonify({"products": items})
 
 
@@ -209,9 +218,21 @@ def api_add_product(admin):
     item.download_url = data.get("download_url") if data.get("download_url") is not None else (item.download_url or "")
     item.image_url = data.get("image_url") or item.image_url or DEFAULT_IMAGE
     item.price = data.get("price") or item.price or "$29.99"
+    if data.get("price_minor_units") is not None:
+        value = data["price_minor_units"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return jsonify({"error": "price_minor_units must be a non-negative integer"}), 400
+        item.price_minor_units = value
+    currency = (data.get("currency") or item.currency or "USD").strip().upper()
+    if currency not in ("USD", "SEK", "EUR", "GBP"):
+        return jsonify({"error": "currency must be USD, SEK, EUR, or GBP"}), 400
+    item.currency = currency
     item.description = data.get("description") if data.get("description") is not None else (item.description or "")
     item.buy_url = data.get("buy_url") or item.buy_url or DEFAULT_BUY
-    item.status = data.get("status") or item.status or "in_development"
+    status = data.get("status") or item.status or "in_development"
+    if status not in ("draft", "in_development", "coming_soon", "published", "archived"):
+        return jsonify({"error": "Invalid product status"}), 400
+    item.status = status
     db.session.commit()
     return jsonify({"ok": True, "product": product_dict(item, True)})
 
