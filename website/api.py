@@ -219,14 +219,20 @@ def api_add_product(admin):
     item.image_url = data.get("image_url") or item.image_url or DEFAULT_IMAGE
     item.price = data.get("price") or item.price or "$29.99"
     if data.get("price_minor_units") is not None:
-        try:
-            item.price_minor_units = max(0, int(data["price_minor_units"]))
-        except (TypeError, ValueError):
+        value = data["price_minor_units"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return jsonify({"error": "price_minor_units must be a non-negative integer"}), 400
-    item.currency = (data.get("currency") or item.currency or "USD").strip().upper()[:3]
+        item.price_minor_units = value
+    currency = (data.get("currency") or item.currency or "USD").strip().upper()
+    if currency not in ("USD", "SEK", "EUR", "GBP"):
+        return jsonify({"error": "currency must be USD, SEK, EUR, or GBP"}), 400
+    item.currency = currency
     item.description = data.get("description") if data.get("description") is not None else (item.description or "")
     item.buy_url = data.get("buy_url") or item.buy_url or DEFAULT_BUY
-    item.status = data.get("status") or item.status or "in_development"
+    status = data.get("status") or item.status or "in_development"
+    if status not in ("draft", "in_development", "coming_soon", "published", "archived"):
+        return jsonify({"error": "Invalid product status"}), 400
+    item.status = status
     db.session.commit()
     return jsonify({"ok": True, "product": product_dict(item, True)})
 
