@@ -54,6 +54,10 @@ def upgrade_database_schema():
                 connection.execute(text("ALTER TABLE catalog_product ADD COLUMN image_url VARCHAR(500)"))
             if "price" not in product_cols:
                 connection.execute(text("ALTER TABLE catalog_product ADD COLUMN price VARCHAR(40)"))
+            if "price_minor_units" not in product_cols:
+                connection.execute(text("ALTER TABLE catalog_product ADD COLUMN price_minor_units INTEGER NOT NULL DEFAULT 2999"))
+            if "currency" not in product_cols:
+                connection.execute(text("ALTER TABLE catalog_product ADD COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'USD'"))
             if "description" not in product_cols:
                 connection.execute(text("ALTER TABLE catalog_product ADD COLUMN description TEXT"))
             if "buy_url" not in product_cols:
@@ -174,13 +178,14 @@ def create_app():
     from .admin import admin
     app.register_blueprint(admin)
 
-    from .api import api
+    from .api import api, seed_catalog
     app.register_blueprint(api)
     csrf.exempt(api)
 
     with app.app_context():
         db.create_all()
         upgrade_database_schema()
+        seed_catalog()
         ensure_bootstrap_owner()
 
     return app
