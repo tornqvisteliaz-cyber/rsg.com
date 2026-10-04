@@ -3,7 +3,7 @@
 import os
 from datetime import timedelta
 
-from flask import Flask
+from flask import Flask, request
 from sqlalchemy import inspect, text
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -152,6 +152,18 @@ def create_app():
     @app.get("/health")
     def health_check():
         return {"status": "ok"}, 200
+
+    @app.after_request
+    def protect_sensitive_responses(response):
+        sensitive_paths = ("/admin", "/account", "/login", "/signup", "/logout", "/verify-email", "/api")
+        if any(request.path == path or request.path.startswith(path + "/") for path in sensitive_paths):
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Vary"] = "Cookie"
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        return response
 
     from .views import views
     app.register_blueprint(views)
