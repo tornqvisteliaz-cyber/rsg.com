@@ -28,6 +28,7 @@ def dashboard():
     recent_logs = AuditLog.query.order_by(AuditLog.created_at.desc()).limit(10).all()
     return render_template("admin/dashboard.html",
         revenue=paid_revenue, total_admins=AdminUser.query.count(), total_customers=Customer.query.count(),
+        total_products=CatalogProduct.query.count(), draft_products=CatalogProduct.query.filter_by(status="draft").count(),
         active_users=AdminSession.query.filter_by(active=True).count(), total_orders=Order.query.count(),
         pending_orders=Order.query.filter_by(status="Pending").count(), recent_sessions=recent_sessions,
         recent_orders=recent_orders, recent_logs=recent_logs,
