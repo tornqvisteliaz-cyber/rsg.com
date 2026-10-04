@@ -6,11 +6,14 @@
         <h1 class="h2 mb-1">Dashboard</h1>
         <p class="text-muted mb-0">Overview of store activity and administrator access.</p>
     </div>
-    <a class="btn btn-dark mt-2 mt-md-0" href="{{ url_for('admin.orders') }}">View orders</a>
+    <div class="mt-2 mt-md-0">
+        <a class="btn btn-outline-dark mr-2" href="{{ url_for('admin.products') }}">Manage products ({{ total_products }})</a>
+        {% if session.get('role') in ['Admin', 'Owner'] %}<a class="btn btn-dark" href="{{ url_for('admin.product_new') }}">Add product</a>{% endif %}
+    </div>
 </div>
 
 <section aria-label="Key metrics" class="row">
-{% for label,value in [('Paid revenue', revenue ~ ' SEK'),('Total orders',total_orders),('Pending orders',pending_orders),('Active sessions',active_users),('Customers',total_customers),('Administrators',total_admins)] %}
+{% for label,value in [('Paid revenue', revenue ~ ' SEK'),('Total orders',total_orders),('Pending orders',pending_orders),('Active sessions',active_users),('Customers',total_customers),('Administrators',total_admins),('Products',total_products),('Draft products',draft_products)] %}
     <div class="col-sm-6 col-xl-4 mb-3">
         <div class="card h-100 shadow-sm">
             <div class="card-body">
