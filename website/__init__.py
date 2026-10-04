@@ -5,6 +5,7 @@ import os
 from flask import Flask
 from sqlalchemy import inspect, text
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .extensions import (
     bcrypt,
@@ -100,9 +101,11 @@ def ensure_bootstrap_owner():
 def create_app():
     app = Flask(__name__)
 
-    app.config["SECRET_KEY"] = os.getenv(
-        "SECRET_KEY", "development-only-change-this-secret"
-    )
+    app_env = os.getenv("APP_ENV", "development").lower()
+    secret_key = os.getenv("SECRET_KEY")
+    if app_env == "production" and not secret_key:
+        raise RuntimeError("SECRET_KEY must be set when APP_ENV=production")
+    app.config["SECRET_KEY"] = secret_key or "development-only-change-this-secret"
 
     database_url = os.getenv("DATABASE_URL", "sqlite:///database.db")
 
@@ -115,6 +118,22 @@ def create_app():
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = app_env == "production"
+    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 12
+
+    # Enable only when the configured hosting proxy overwrites these headers.
+    # Set each hop count explicitly; never trust forwarded headers by default.
+    proxy_x_for = int(os.getenv("PROXY_FIX_X_FOR", "0"))
+    proxy_x_proto = int(os.getenv("PROXY_FIX_X_PROTO", "0"))
+    if proxy_x_for or proxy_x_proto:
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=proxy_x_for,
+            x_proto=proxy_x_proto,
+            x_host=0,
+            x_port=0,
+            x_prefix=0,
+        )
 
     db.init_app(app)
     bcrypt.init_app(app)
@@ -128,6 +147,10 @@ def create_app():
     @login_manager.user_loader
     def load_user(user_id):
         return AdminUser.query.get(int(user_id))
+
+    @app.get("/health")
+    def health_check():
+        return {"status": "ok"}, 200
 
     from .views import views
     app.register_blueprint(views)
