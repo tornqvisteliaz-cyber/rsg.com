@@ -1,5 +1,268 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Account | RSG Software</title><link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css"></head>
-<body><nav class="navbar navbar-light bg-white border-bottom"><div class="container"><a class="navbar-brand" href="/"><strong>RSG</strong> Software</a><div id="auth-buttons"></div></div></nav>
-<div class="container py-5" style="max-width:640px"><h1>Account</h1><p id="who"></p><h3>Orders</h3><div>No orders yet.</div></div>
-<script src="/auth.js"></script><script>document.getElementById('who').textContent=localStorage.getItem('rsg_name')||'Not logged in';</script></body></html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>My Account | RSG Software</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+    <div class="container">
+        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
+        <div class="ml-auto" id="auth-buttons"></div>
+    </div>
+</nav>
+
+<main class="container py-5" style="max-width: 900px;">
+    <div id="alert-box"></div>
+
+    <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+        <div>
+            <h1 class="h2 mb-1" id="cust-welcome">Welcome to your Account</h1>
+            <p class="text-muted mb-0" id="cust-email">Loading account...</p>
+        </div>
+        <div>
+            <button class="btn btn-outline-dark btn-sm" onclick="toggleSettings()">Account Settings</button>
+            <a href="/" class="btn btn-outline-dark btn-sm ml-2">Home</a>
+        </div>
+    </div>
+
+    <!-- Settings Card -->
+    <div id="settings-card" class="card shadow-sm mb-4 d-none">
+        <div class="card-header bg-white font-weight-bold">Account Settings</div>
+        <div class="card-body">
+            <form id="settings-form" onsubmit="saveSettings(event)">
+                <div class="form-group">
+                    <label class="small font-weight-bold">Full Name</label>
+                    <input type="text" id="settings-name" class="form-control" required>
+                </div>
+                <div class="form-group">
+                    <label class="small font-weight-bold">Current Password (only if changing password)</label>
+                    <input type="password" id="settings-cur-password" class="form-control" placeholder="••••••••">
+                </div>
+                <div class="form-group">
+                    <label class="small font-weight-bold">New Password</label>
+                    <input type="password" id="settings-new-password" class="form-control" placeholder="•••••••• (min 6 characters)">
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <button type="submit" class="btn btn-dark btn-sm">Save Changes</button>
+                    <span id="settings-status" class="small text-muted"></span>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="row mb-4">
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <h6 class="text-muted text-uppercase small">Orders on File</h6>
+                    <p class="display-4 font-weight-bold mb-0" id="order-count">0</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <h6 class="text-muted text-uppercase small">Account Type</h6>
+                    <p class="h3 font-weight-bold mb-0 text-capitalize" id="cust-role">Customer</p>
+                    <small class="text-muted">Personal Flight Sim License</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Product Downloads & Licenses -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-white font-weight-bold">Product Downloads & Licenses</div>
+        <div class="card-body p-0">
+            <div id="downloads-list" class="p-3">Loading downloads...</div>
+        </div>
+    </div>
+
+    <!-- Orders History -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-white font-weight-bold">Order History</div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped mb-0">
+                    <thead class="thead-light">
+                        <tr>
+                            <th>Order #</th>
+                            <th>Status</th>
+                            <th>Payment</th>
+                            <th>Amount</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orders-tbody">
+                        <tr><td colspan="5" class="text-center py-4 text-muted">Loading orders...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</main>
+
+<footer class="py-4 text-center border-top bg-white">
+    <p class="mb-2">
+        <a href="/terms" class="text-muted mr-3">Terms of Service</a>
+        <a href="/privacy" class="text-muted">Privacy Policy</a>
+    </p>
+    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+</footer>
+
+<script src="/auth.js"></script>
+<script>
+function authHeader() {
+    return {
+        'content-type': 'application/json',
+        'Authorization': 'Bearer ' + (localStorage.getItem('rsg_token') || '')
+    };
+}
+
+async function initAccount() {
+    const token = localStorage.getItem('rsg_token');
+    if (!token) {
+        location.href = '/login';
+        return;
+    }
+
+    try {
+        const meRes = await fetch('/api/me', { headers: authHeader() });
+        if (!meRes.ok) {
+            localStorage.removeItem('rsg_token');
+            location.href = '/login';
+            return;
+        }
+        const meData = await meRes.json();
+        const user = meData.user;
+        document.getElementById('cust-welcome').textContent = 'Welcome, ' + (user.name || 'Pilot');
+        document.getElementById('cust-email').textContent = user.email || '';
+        document.getElementById('cust-role').textContent = user.role || 'Customer';
+        document.getElementById('settings-name').value = user.name || '';
+        document.getElementById('order-count').textContent = user.orders_count || 0;
+
+        loadDownloads();
+        loadOrders();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function loadDownloads() {
+    const container = document.getElementById('downloads-list');
+    try {
+        const res = await fetch('/api/products', { headers: authHeader() });
+        const data = await res.json();
+        const products = data.products || [];
+
+        if (!products.length) {
+            container.innerHTML = '<p class="text-muted mb-0">No catalog products found.</p>';
+            return;
+        }
+
+        container.innerHTML = products.map(p => `
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center py-3 border-bottom">
+                <div class="d-flex align-items-center mb-2 mb-md-0">
+                    <img src="${p.image_url || 'https://i.postimg.cc/28WybSM2/metroliner.jpg'}" alt="${p.name}" class="rounded mr-3" style="width: 70px; height: 50px; object-fit: cover;">
+                    <div>
+                        <div class="font-weight-bold">${p.name}</div>
+                        <small class="text-muted">${p.simulator || 'MSFS 2024'} · Version ${p.version || '0.1.0'} · ${p.status === 'in_development' ? 'In Development' : 'Available'}</small>
+                    </div>
+                </div>
+                <div>
+                    ${p.owned && p.download_url ? `
+                        <a href="${p.download_url}" target="_blank" class="btn btn-success btn-sm font-weight-bold">
+                            Download Package
+                        </a>
+                    ` : p.owned ? `
+                        <span class="badge badge-success p-2">Licensed (Build preparing)</span>
+                    ` : `
+                        <a href="/aircraft/seabee" class="btn btn-outline-dark btn-sm">
+                            Get License (${p.price || '$29.99'})
+                        </a>
+                    `}
+                </div>
+            </div>
+        `).join('');
+    } catch (e) {
+        container.innerHTML = '<p class="text-danger mb-0">Failed to load product downloads.</p>';
+    }
+}
+
+async function loadOrders() {
+    const tbody = document.getElementById('orders-tbody');
+    try {
+        const res = await fetch('/api/account/orders', { headers: authHeader() });
+        const data = await res.json();
+        const orders = data.orders || [];
+
+        if (!orders.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">You have no orders yet.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = orders.map(o => `
+            <tr>
+                <td class="font-weight-bold">#${o.id}</td>
+                <td><span class="badge badge-light border">${o.status || 'Completed'}</span></td>
+                <td><span class="badge badge-${o.payment_status === 'Paid' ? 'success' : 'warning'}">${o.payment_status || 'Paid'}</span></td>
+                <td>$${Number(o.amount || 29.99).toFixed(2)} USD</td>
+                <td>${o.created_at ? o.created_at.slice(0, 10) : 'Recent'}</td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-danger">Failed to load orders.</td></tr>';
+    }
+}
+
+function toggleSettings() {
+    const card = document.getElementById('settings-card');
+    card.classList.toggle('d-none');
+}
+
+async function saveSettings(e) {
+    e.preventDefault();
+    const status = document.getElementById('settings-status');
+    status.textContent = 'Saving...';
+    status.className = 'small text-muted';
+
+    const name = document.getElementById('settings-name').value;
+    const curPassword = document.getElementById('settings-cur-password').value;
+    const newPassword = document.getElementById('settings-new-password').value;
+
+    const res = await fetch('/api/account/settings', {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify({
+            name: name,
+            current_password: curPassword,
+            new_password: newPassword
+        })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+        status.textContent = data.error || 'Failed to update settings';
+        status.className = 'small text-danger';
+        return;
+    }
+
+    status.textContent = 'Settings updated successfully.';
+    status.className = 'small text-success';
+    localStorage.setItem('rsg_name', name);
+    document.getElementById('cust-welcome').textContent = 'Welcome, ' + name;
+    document.getElementById('settings-cur-password').value = '';
+    document.getElementById('settings-new-password').value = '';
+}
+
+document.addEventListener('DOMContentLoaded', initAccount);
+</script>
+</body>
+</html>
