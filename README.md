@@ -2,6 +2,8 @@
 
 Website made for the developers of RSG Software. All rights to RSG Software, Eliaz T and Vanya.
 
+Deployment path: GitHub → Python hosting service running Flask/Gunicorn → Cloudflare DNS/proxy for `rotaidem.com`. Cloudflare does not build or run the Python application in this setup.
+
 ## Production deployment
 
 The application exposes the Flask WSGI object as `main:app`. Use a Python hosting service that supports Gunicorn, or build the included Dockerfile.
@@ -19,11 +21,11 @@ The initial Owner is created from the environment settings when the app starts. 
 
 ### Cloudflare
 
-Cloudflare readiness does not depend on having a domain yet. When a domain is available and the hosting origin is reachable, add the provider-recommended DNS record and enable Cloudflare proxying for it. Configure Cloudflare's SSL/TLS mode to **Full (strict)** when the hosting origin has a valid TLS certificate. The provider-specific DNS target can only be filled in after the app is deployed.
+After the Python host serves the app on its temporary hostname, add `rotaidem.com` as a custom domain at the host and in Cloudflare DNS. Use the DNS target and verification records supplied by the host; those values depend on the selected provider. If the host requires DNS-only records for domain verification, use that during verification, then enable Cloudflare proxying. Set Cloudflare SSL/TLS to **Full (strict)** when the host origin has a valid TLS certificate. Cloudflare is the DNS/proxy layer here; build and run Flask on the Python host.
 
 The application marks session cookies as Secure in production and sends private, no-store cache headers for login, account, admin, verification, and API routes. In Cloudflare, keep dynamic/authenticated routes bypassed from cache; do not use a broad "Cache Everything" rule for the application.
 
-Forwarded client IP and HTTPS headers are ignored by default. Set `PROXY_FIX_X_FOR` and `PROXY_FIX_X_PROTO` only after confirming the exact number of trusted proxy hops in your Starto and Cloudflare route, and that those proxies overwrite the forwarded headers. Keep the origin restricted to trusted ingress where the provider supports it. This avoids accepting spoofed client IP or scheme headers.
+Forwarded client IP and HTTPS headers are ignored by default. Set `PROXY_FIX_X_FOR` and `PROXY_FIX_X_PROTO` only after confirming the exact number of trusted proxy hops in your Python-host and Cloudflare route, and that those proxies overwrite the forwarded headers. Keep the origin restricted to trusted ingress where the provider supports it. This avoids accepting spoofed client IP or scheme headers.
 
 ### Start command
 
