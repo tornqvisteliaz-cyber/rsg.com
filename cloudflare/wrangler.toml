@@ -1,0 +1,10 @@
+name = "rsg-com"
+compatibility_date = "2026-10-05"
+pages_build_output_dir = "./public"
+
+# Create the database with: npx wrangler d1 create rsg
+# Then paste the database_id here. The site itself is not a Node server.
+[[d1_databases]]
+binding = "DB"
+database_name = "rsg"
+database_id = "replace-after-d1-create"
