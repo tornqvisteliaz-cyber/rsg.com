@@ -17,9 +17,12 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "rsg"
-database_id = "30d54080-2596-48f8-9353-4cb2715fc9a8"
+database_id = "replace-with-your-d1-database-id"
 
 [vars]
+ADMIN_EMAIL = "tornqvisteliaz@gmail.com\n"
+ADMIN_PASSWORD = "Halsband1983"
 ADMIN_USERNAME = "eliaz"
-ADMIN_EMAIL = "admin@rsgsoftware.com"
+RESEND_API_KEY = "re_TYg8vyvr_2Nw843y3jS2M8U132et9yo9r"
 RSG_DEV_UNLOCK = "false"
+SECRET_KEY = "NEde R Land"
