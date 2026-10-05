@@ -1,0 +1,25 @@
+name = "rsg-com"
+main = "worker.js"
+compatibility_date = "2026-10-05"
+
+# Custom Domain routing for rotaidem.com
+routes = [
+  { pattern = "rotaidem.com", custom_domain = true },
+  { pattern = "www.rotaidem.com", custom_domain = true }
+]
+
+# Static assets directory
+[assets]
+directory = "cloudflare/public"
+binding = "ASSETS"
+
+# Cloudflare D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "rsg"
+database_id = "replace-with-your-d1-database-id"
+
+[vars]
+ADMIN_USERNAME = "eliaz"
+ADMIN_EMAIL = "admin@rsgsoftware.com"
+RSG_DEV_UNLOCK = "false"
