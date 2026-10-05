@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   token TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS products (
   buy_url TEXT,
   status TEXT
 );
+
 CREATE TABLE IF NOT EXISTS liveries (
   id TEXT PRIMARY KEY,
   name TEXT,
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS liveries (
   download_url TEXT,
   image_url TEXT
 );
+
 CREATE TABLE IF NOT EXISTS posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT,
@@ -35,10 +38,30 @@ CREATE TABLE IF NOT EXISTS posts (
   image_url TEXT,
   date TEXT
 );
+
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT,
   email TEXT,
   message TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER,
+  status TEXT DEFAULT 'Completed',
+  payment_status TEXT DEFAULT 'Paid',
+  amount NUMERIC DEFAULT 29.99,
+  invoice_file TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id INTEGER,
+  action TEXT,
+  target TEXT,
+  ip_address TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
