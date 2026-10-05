@@ -1,0 +1,5 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Account | RSG Software</title><link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css"></head>
+<body><nav class="navbar navbar-light bg-white border-bottom"><div class="container"><a class="navbar-brand" href="/"><strong>RSG</strong> Software</a><div id="auth-buttons"></div></div></nav>
+<div class="container py-5" style="max-width:640px"><h1>Account</h1><p id="who"></p><h3>Orders</h3><div>No orders yet.</div></div>
+<script src="/auth.js"></script><script>document.getElementById('who').textContent=localStorage.getItem('rsg_name')||'Not logged in';</script></body></html>
