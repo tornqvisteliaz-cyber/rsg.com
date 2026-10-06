@@ -17,7 +17,11 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "rsg"
+<<<<<<< HEAD
 database_id = "30d54080-2596-48f8-9353-4cb2715fc9a8"
+=======
+database_id = "30d54080-2596-48f8-9353-4cb2715fc9a"
+>>>>>>> 5be6e5e (rotaidem)
 
 [vars]
 ADMIN_EMAIL = "tornqvisteliaz@gmail.com\n"
