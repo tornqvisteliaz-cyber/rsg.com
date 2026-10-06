@@ -16,12 +16,10 @@ binding = "ASSETS"
 # Cloudflare D1 Database Binding
 [[d1_databases]]
 binding = "DB"
-database_name = "rsg"
-<<<<<<< HEAD
+database_name = "rotadiem"
 database_id = "30d54080-2596-48f8-9353-4cb2715fc9a8"
-=======
-database_id = "30d54080-2596-48f8-9353-4cb2715fc9a"
->>>>>>> 5be6e5e (rotaidem)
+
+
 [observability.logs]
 enabled = false
 invocation_logs = true
