@@ -4,21 +4,58 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Our Aircraft | RSG Software</title>
+    <title>Addons | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <style>
-        .hero { min-height: 72vh; background: linear-gradient(to top, rgba(0,0,0,.62), rgba(0,0,0,.18)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg') center/cover no-repeat; display: flex; align-items: flex-end; color: #fff; }
-        .hero-inner { padding: 48px 0 56px; }
-        .hero h1 { font-size: 42px; font-weight: 700; }
-        .buy-btn { display: inline-block; background: #fff; color: #111; padding: 12px 22px; font-weight: 600; }
-        .content { max-width: 860px; margin: 0 auto; padding: 48px 20px 72px; }
+        .hero { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg') no-repeat center 35%; background-size: cover; min-height: 320px; display: flex; align-items: flex-end; color: white; }
+        .card-addon { border: 0; box-shadow: 0 8px 24px rgba(0,0,0,.08); overflow: hidden; height: 100%; }
+        .card-addon img { height: 210px; object-fit: cover; width: 100%; }
     </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom"><div class="container"><a class="navbar-brand" href="/"><strong>RSG</strong> Software</a><ul class="navbar-nav ml-auto"><li class="nav-item"><a class="nav-link" href="/">Home</a></li><li class="nav-item"><a class="nav-link active" href="/aircraft">Our Aircraft</a></li><li class="nav-item"><a class="nav-link" href="/about">About</a></li><li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li><li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li><li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li></ul><div class="ml-lg-3" id="auth-buttons"></div></div></nav>
-<section class="hero"><div class="container hero-inner"><div>In development · MSFS 2024</div><h1>Republic RC-3 Seabee</h1><p>A four-seat amphibious flying boat for water and land operations.</p><a href="/aircraft/seabee" class="buy-btn">Buy here</a></div></section>
-<section class="content"><h3>About the Seabee</h3><p>The Republic RC-3 Seabee comes from the 1940s. It was built as a small flying boat for private and utility use, with a pusher propeller and a metal hull.</p><p>That is the aircraft we are making for Microsoft Flight Simulator 2024.</p><ul><li>Detailed exterior and interior</li><li>Water and land operations</li><li>Custom systems and sound</li></ul><p class="text-muted">Release date TBA.</p></section>
-<footer class="py-4 text-center border-top"><a href="/terms" class="text-muted mr-3">Terms of Service</a><a href="/privacy" class="text-muted">Privacy Policy</a></footer>
+<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+    <div class="container">
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar"><span class="navbar-toggler-icon"></span></button>
+        <div class="collapse navbar-collapse" id="navbar">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                <li class="nav-item"><a class="nav-link" href="/addons">Addons</a></li>
+                <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
+                <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+                <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+            </ul>
+            <div class="ml-lg-3 mt-3 mt-lg-0" id="auth-buttons"></div>
+        </div>
+    </div>
+</nav>
+<header class="hero"><div class="container pb-5"><span class="badge badge-light px-3 py-2">MSFS 2024</span><h1 class="display-4 font-weight-bold mt-3">Addons</h1><p class="lead mb-0">Aircraft and extras from Rotaidem.</p></div></header>
+<section class="py-5 bg-light"><div class="container"><div class="row" id="addon-list"><div class="col-12 text-muted">Loading addons...</div></div></div></section>
+<footer class="py-4 text-center border-top bg-white"><a href="/terms" class="text-muted mr-3">Terms of Service</a><a href="/privacy" class="text-muted">Privacy Policy</a></footer>
 <script src="/auth.js"></script>
+<script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
+<script>
+const fallback = [{
+    id: "seabee",
+    name: "Republic RC-3 Seabee",
+    price: "$29.99",
+    description: "A four-seat amphibious flying boat for water and land operations.",
+    image_url: "https://i.postimg.cc/28WybSM2/metroliner.jpg",
+    status: "in_development"
+}];
+function card(item) {
+    const img = item.image_url || "https://i.postimg.cc/28WybSM2/metroliner.jpg";
+    return `<div class="col-md-6 col-lg-4 mb-4"><div class="card card-addon"><img src="${img}" alt="${item.name}"><div class="card-body"><div class="text-muted small mb-2">${item.status || "in_development"} · ${item.price || ""}</div><h3>${item.name}</h3><p class="text-muted">${item.description || ""}</p><a class="btn btn-dark" href="/addons/view?id=${encodeURIComponent(item.id)}">Buy here</a></div></div></div>`;
+}
+fetch("/api/products").then(r => r.json()).then(data => {
+    const items = (data.products || []).length ? data.products : fallback;
+    document.getElementById("addon-list").innerHTML = items.map(card).join("");
+}).catch(() => {
+    document.getElementById("addon-list").innerHTML = fallback.map(card).join("");
+});
+</script>
 </body>
 </html>
