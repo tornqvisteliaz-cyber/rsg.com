@@ -4,13 +4,21 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}RSG Admin{% endblock %}</title>
+    <title>{% block title %}Rotaidem Admin{% endblock %}</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body class="bg-light">
 
-<nav class="navbar navbar-expand navbar-dark bg-dark">
-    <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">RSG Admin</a>
+<nav class="navbar navbar-expand navbar-dark bg-dark admin-navbar">
+    <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">Rotaidem Admin</a>
 
     <div class="navbar-nav">
         <a class="nav-link" href="{{ url_for('admin.dashboard') }}">Overview</a>

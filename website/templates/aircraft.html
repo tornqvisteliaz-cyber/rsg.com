@@ -4,7 +4,7 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Our Aircraft | RSG Software</title>
+    <title>Our Aircraft | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <style>
         body { background: #fff; color: #1a1a1a; }
@@ -37,21 +37,26 @@
         .features { margin-top: 28px; padding-left: 18px; }
         .note { color: #666; margin-top: 28px; }
     </style>
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body>
 
 <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom">
     <div class="container">
-        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbar">
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <div class="navbar-collapse" id="navbar">
             <ul class="navbar-nav ml-auto">
                 <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
                 <li class="nav-item"><a class="nav-link active" href="/aircraft">Our Aircraft</a></li>
                 <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
-                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
                 <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
                 <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
             </ul>
@@ -111,7 +116,7 @@
         <a href="{{ url_for('views.terms') }}" class="text-muted mr-3">Terms of Service</a>
         <a href="{{ url_for('views.privacy') }}" class="text-muted">Privacy Policy</a>
     </p>
-    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+    <p class="text-muted mb-0">© 2026 Rotaidem. All rights reserved.</p>
 </footer>
 
 <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>

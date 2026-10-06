@@ -4,7 +4,7 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>RC-3 Seabee | RSG Software</title>
+    <title>RC-3 Seabee | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <style>
         body { background: #0b0d10; color: #f4f4f4; }
@@ -55,6 +55,14 @@
         .section { padding: 90px 0; }
         .muted { color: #b9c0c8; }
     </style>
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body>
 
@@ -96,7 +104,7 @@
                     <ul class="list-unstyled my-4 muted">
                         <li class="mb-2">• Instant download after release</li>
                         <li class="mb-2">• Free product updates</li>
-                        <li class="mb-2">• Saved to your RSG account</li>
+                        <li class="mb-2">• Saved to your Rotaidem account</li>
                     </ul>
                     {% if session.get('customer_id') or session.get('logged_in') %}
                         <button class="btn btn-light btn-block" disabled>Add to cart — coming soon</button>
@@ -152,7 +160,7 @@
         <a href="{{ url_for('views.terms') }}" class="mr-3">Terms of Service</a>
         <a href="{{ url_for('views.privacy') }}">Privacy Policy</a>
     </p>
-    <p class="muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+    <p class="muted mb-0">© 2026 Rotaidem. All rights reserved.</p>
 </footer>
 
 </body>

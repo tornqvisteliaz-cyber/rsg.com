@@ -4,15 +4,50 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Terms of Service | RSG Software</title>
+    <title>Terms of Service | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body class="bg-light">
 
-<nav class="navbar navbar-light bg-white shadow-sm">
+<nav class="navbar navbar-expand navbar-light bg-white shadow-sm site-navbar">
     <div class="container">
-        <a class="navbar-brand" href="{{ url_for('views.home') }}"><strong>RSG</strong> Software</a>
-        <a href="{{ url_for('views.home') }}" class="btn btn-outline-dark btn-sm">Home</a>
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <div class="navbar-collapse" id="navbar">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                <li class="nav-item"><a class="nav-link" href="/aircraft">Our Aircraft</a></li>
+                <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
+                <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+                <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+            </ul>
+            <div class="ml-lg-3 mt-2 mt-lg-0">
+                {% if session.get('logged_in') %}
+                    <a href="{{ url_for('admin.dashboard') }}" class="btn btn-success btn-sm mr-2">Admin dashboard</a>
+                    <form method="post" action="{{ url_for('auth.logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% elif session.get('customer_id') %}
+                    <a href="{{ url_for('auth.account') }}" class="btn btn-success btn-sm mr-2">My Account ({{ session.get('customer_name') }})</a>
+                    <form method="post" action="{{ url_for('auth.customer_logout') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-dark btn-sm">Logout</button>
+                    </form>
+                {% else %}
+                    <a href="{{ url_for('auth.login') }}" class="btn btn-outline-dark btn-sm mr-2">Login</a>
+                    <a href="{{ url_for('auth.signup') }}" class="btn btn-dark btn-sm">Sign Up</a>
+                {% endif %}
+            </div>
+        </div>
     </div>
 </nav>
 
@@ -20,9 +55,9 @@
     <h1 class="mb-2">Terms of Service</h1>
     <p class="text-muted mb-4">Last updated: August 8, 2026</p>
 
-    <h4>1. About RSG Software</h4>
+    <h4>1. About Rotaidem</h4>
     <p>
-        These Terms of Service (“Terms”) govern your use of the website and services operated by RSG Software
+        These Terms of Service (“Terms”) govern your use of the website and services operated by Rotaidem
         (“we”, “us”, “our”), including accounts, purchases, downloads and related content.
     </p>
 
@@ -45,7 +80,7 @@
     <p>
         Prices are shown in the currency stated at checkout. Payment processing may be handled by third-party providers.
         Refund requests are handled according to applicable consumer law and our stated refund policy for digital goods.
-        Contact <strong>support@rsgsoftware.site</strong> for order issues.
+        Contact <strong>Olle@rotaidem.com</strong> for order issues.
     </p>
 
     <h4>5. Acceptable use</h4>
@@ -59,7 +94,7 @@
 
     <h4>6. Intellectual property</h4>
     <p>
-        All website content, branding, software, models, systems and documentation remain the property of RSG Software
+        All website content, branding, software, models, systems and documentation remain the property of Rotaidem
         or our licensors. No rights are granted except as expressly stated in a product license.
     </p>
 
@@ -78,7 +113,7 @@
     <h4>9. Contact</h4>
     <p>
         Questions about these Terms:<br>
-        <strong>support@rsgsoftware.site</strong>
+        <strong>Olle@rotaidem.com</strong>
     </p>
 
     <p class="mt-4">

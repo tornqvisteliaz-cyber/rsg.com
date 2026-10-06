@@ -4,7 +4,7 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Who are we? | RSG Software</title>
+    <title>Who are we? | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
     <style>
@@ -29,21 +29,26 @@
             margin: 0 auto 1rem auto;
         }
     </style>
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+<nav class="navbar navbar-expand navbar-light bg-white shadow-sm site-navbar">
     <div class="container">
-        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbar">
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <div class="navbar-collapse" id="navbar">
             <ul class="navbar-nav ml-auto">
                 <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
                 <li class="nav-item"><a class="nav-link" href="/aircraft">Our Aircraft</a></li>
                 <li class="nav-item"><a class="nav-link active" href="/about">About</a></li>
-                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
                 <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
                 <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
             </ul>
@@ -72,16 +77,16 @@
 <header class="page-header">
     <div class="container text-center">
         <h1 class="display-4 font-weight-bold">Who are we?</h1>
-        <p class="lead mb-0">The people behind RSG Software</p>
+        <p class="lead mb-0">The people behind Rotaidem</p>
     </div>
 </header>
 
 <section class="py-5">
     <div class="container text-center">
-        <img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="RSG Software" style="width: 200px; max-width: 100%;" class="mb-4">
+        <div class="mb-4 font-weight-bold" style="font-size: 2.2rem; letter-spacing: 1px;">Rotaidem</div>
         <h2 class="mb-3">Realistic aircraft for serious sim pilots</h2>
         <p class="lead text-muted mx-auto" style="max-width: 650px;">
-            RSG is a team who has their orgin all over the place! But orignally founded by Eliaz, bringing a passion for aviation and flight simulation.
+            Rotaidem is a team who has their orgin all over the place! But orignally founded by Eliaz, bringing a passion for aviation and flight simulation.
         </p>
     </div>
 </section>
@@ -141,7 +146,7 @@
         <a href="{{ url_for('views.terms') }}" class="text-muted mr-3">Terms of Service</a>
         <a href="{{ url_for('views.privacy') }}" class="text-muted">Privacy Policy</a>
     </p>
-    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+    <p class="text-muted mb-0">© 2026 Rotaidem. All rights reserved.</p>
 </footer>
 
 <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>

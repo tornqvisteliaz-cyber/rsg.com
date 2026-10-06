@@ -4,7 +4,7 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='rsgfav.png') }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>RSG Software</title>
+    <title>Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
     <style>
@@ -22,21 +22,26 @@
         .hero h1 { font-size: 4.5rem; font-weight: 700; letter-spacing: 2px; }
         .section-intro { padding: 80px 0; background: #f8f9fa; }
     </style>
+<style>
+        .site-navbar { position: sticky; top: 0; z-index: 1030; background: #fff; }
+        .site-navbar .navbar-collapse { display: flex !important; flex-basis: auto; align-items: center; }
+        .site-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+        .site-navbar .nav-link { white-space: nowrap; }
+        .admin-navbar { position: sticky; top: 0; z-index: 1030; flex-wrap: wrap; }
+        .admin-navbar .navbar-nav { flex-direction: row; flex-wrap: wrap; }
+</style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+<nav class="navbar navbar-expand navbar-light bg-white shadow-sm site-navbar">
     <div class="container">
-        <a class="navbar-brand" href="/"><strong>RSG</strong> Software</a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbar">
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <div class="navbar-collapse" id="navbar">
             <ul class="navbar-nav ml-auto">
                 <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
                 <li class="nav-item"><a class="nav-link" href="/aircraft">Our Aircraft</a></li>
                 <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
-                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at RSG</a></li>
+                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
                 <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
                 <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
             </ul>
@@ -68,9 +73,9 @@
             <div class="mb-3">
                 <span class="badge badge-light px-3 py-2" style="font-size: 0.9rem; letter-spacing: 1px;">IN DEVELOPMENT</span>
             </div>
-            <h1 class="display-3 font-weight-bold">Welcome to RSG</h1>
+            <h1 class="display-3 font-weight-bold">Welcome to Rotaidem</h1>
             <h2 class="mb-4" style="font-size: 2.2rem; font-weight: 300;">Developer for Microsoft Flight Simulator 2024</h2>
-            <p class="lead mb-5" style="max-width: 600px; margin: 0 auto;">Welcome to RSG</p>
+            <p class="lead mb-5" style="max-width: 600px; margin: 0 auto;">Welcome to Rotaidem</p>
             <a href="/about" class="btn btn-primary btn-lg px-5 py-3">Who are we?</a>
         </div>
     </div>
@@ -78,8 +83,8 @@
 
 <section class="section-intro py-5">
     <div class="container text-center">
-        <img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="RSG Software Logo" class="mb-4" style="width: 400px; max-width: 100%;">
-        <h1 class="mb-3">Welcome to RSG Software</h1>
+        <div class="mb-4 font-weight-bold" style="font-size: 3rem; letter-spacing: 1px;">Rotaidem</div>
+        <h1 class="mb-3">Welcome to Rotaidem</h1>
         <p class="lead text-muted mx-auto" style="max-width: 750px;">
             We develop high-fidelity aircraft and simulation systems for Microsoft Flight Simulator.
         </p>
@@ -90,7 +95,7 @@
     <div class="container text-center">
         <h2 class="mb-3">Are you a creator?</h2>
         <p class="text-muted mx-auto" style="max-width: 600px;">Are you a creator? We want you! Contact us for more information</p>
-        <a href="mailto:Collab@rsgsoftware.se" class="btn btn-dark mt-3 px-5">Contact Us</a>
+        <a href="mailto:Eliaz@rotaidem.com" class="btn btn-dark mt-3 px-5">Contact Us</a>
     </div>
 </section>
 
@@ -99,7 +104,7 @@
         <a href="{{ url_for('views.terms') }}" class="text-muted mr-3">Terms of Service</a>
         <a href="{{ url_for('views.privacy') }}" class="text-muted">Privacy Policy</a>
     </p>
-    <p class="text-muted mb-0">© 2026 RSG Software. All rights reserved.</p>
+    <p class="text-muted mb-0">© 2026 Rotaidem. All rights reserved.</p>
 </footer>
 
 <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
