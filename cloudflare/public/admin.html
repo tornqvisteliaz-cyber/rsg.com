@@ -4,504 +4,185 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Admin Dashboard | RSG Software</title>
+    <title>Admin | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+    <style>
+        .hero { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg') no-repeat center 35%; background-size: cover; min-height: 240px; display: flex; align-items: flex-end; color: white; }
+        body { background: #f8f9fa; }
+    </style>
 </head>
-<body class="bg-light">
-
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+<body>
+<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
     <div class="container">
-        <a class="navbar-brand font-weight-bold" href="/admin">RSG Admin Console</a>
-        <div class="navbar-nav ml-auto">
+        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
+        <div class="navbar-nav ml-auto align-items-center">
             <span class="navbar-text mr-3" id="admin-badge">Admin</span>
-            <a class="nav-link text-white mr-3" href="/" target="_blank">View Site</a>
-            <button class="btn btn-outline-light btn-sm" onclick="rsgLogout()">Logout</button>
+            <a class="nav-link" href="/addons">View addons</a>
+            <a class="nav-link" href="/">Home</a>
+            <button class="btn btn-outline-dark btn-sm" onclick="rsgLogout()">Logout</button>
         </div>
     </div>
 </nav>
-
+<header class="hero"><div class="container pb-4"><span class="badge badge-light">Admin control</span><h1 class="display-4 font-weight-bold mt-2">Addons</h1></div></header>
 <main class="container py-4">
-    <div id="global-msg" class="mb-3"></div>
-
-    <ul class="nav nav-pills mb-4" id="admin-tabs" role="tablist">
-        <li class="nav-item">
-            <a class="nav-link active font-weight-bold" id="tab-overview-btn" data-toggle="pill" href="#tab-overview">Overview</a>
-        </li>
-        <li class="nav-item">
-            <a class="nav-link font-weight-bold" id="tab-products-btn" data-toggle="pill" href="#tab-products">Aircraft & Products</a>
-        </li>
-        <li class="nav-item">
-            <a class="nav-link font-weight-bold" id="tab-newsletter-btn" data-toggle="pill" href="#tab-newsletter">Newsletter</a>
-        </li>
-        <li class="nav-item">
-            <a class="nav-link font-weight-bold" id="tab-orders-btn" data-toggle="pill" href="#tab-orders">Orders & Customers</a>
-        </li>
+    <div id="global-msg"></div>
+    <ul class="nav nav-pills mb-4">
+        <li class="nav-item"><a class="nav-link active font-weight-bold" data-toggle="pill" href="#tab-addons">Addons</a></li>
+        <li class="nav-item"><a class="nav-link font-weight-bold" data-toggle="pill" href="#tab-newsletter">Newsletter</a></li>
+        <li class="nav-item"><a class="nav-link font-weight-bold" data-toggle="pill" href="#tab-orders">Orders</a></li>
     </ul>
-
-    <div class="tab-content" id="admin-tab-content">
-        <!-- Overview Tab -->
-        <div class="tab-pane fade show active" id="tab-overview">
-            <div class="row mb-4">
-                <div class="col-md-3 col-sm-6 mb-3">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body">
-                            <h6 class="text-muted text-uppercase small font-weight-bold">Products</h6>
-                            <p class="h2 font-weight-bold mb-0" id="stat-products">0</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3 col-sm-6 mb-3">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body">
-                            <h6 class="text-muted text-uppercase small font-weight-bold">Customers</h6>
-                            <p class="h2 font-weight-bold mb-0" id="stat-customers">0</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3 col-sm-6 mb-3">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body">
-                            <h6 class="text-muted text-uppercase small font-weight-bold">Orders</h6>
-                            <p class="h2 font-weight-bold mb-0" id="stat-orders">0</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3 col-sm-6 mb-3">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body">
-                            <h6 class="text-muted text-uppercase small font-weight-bold">Articles</h6>
-                            <p class="h2 font-weight-bold mb-0" id="stat-posts">0</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card shadow-sm border-0">
-                <div class="card-header bg-white font-weight-bold">Administrative Controls</div>
-                <div class="card-body">
-                    <p class="text-muted">Manage your Cloudflare Workers deployment, D1 database content, catalog licenses, and newsletter broadcasts.</p>
-                    <button class="btn btn-dark btn-sm mr-2" onclick="showTab('tab-products')">Manage Aircraft</button>
-                    <button class="btn btn-outline-dark btn-sm mr-2" onclick="showTab('tab-newsletter')">New Newsletter Article</button>
-                    <button class="btn btn-outline-dark btn-sm" onclick="showTab('tab-orders')">View Orders & Customers</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Products Tab -->
-        <div class="tab-pane fade" id="tab-products">
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="tab-addons">
             <div class="row">
                 <div class="col-lg-5 mb-4">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-header bg-white font-weight-bold">Add / Edit Aircraft</div>
+                    <div class="card border-0 shadow-sm">
                         <div class="card-body">
+                            <h2 class="h5">Add or edit an addon</h2>
+                            <p class="text-muted small">Saving creates the public page at /addons/view?id=...</p>
                             <form id="product-form" onsubmit="saveProduct(event)">
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Aircraft Name *</label>
-                                    <input id="p-name" class="form-control form-control-sm" placeholder="e.g. Republic RC-3 Seabee" required>
-                                </div>
-                                <div class="form-row">
-                                    <div class="form-group col-md-6">
-                                        <label class="small font-weight-bold">Simulator</label>
-                                        <input id="p-sim" class="form-control form-control-sm" value="MSFS 2024">
-                                    </div>
-                                    <div class="form-group col-md-6">
-                                        <label class="small font-weight-bold">Version</label>
-                                        <input id="p-version" class="form-control form-control-sm" value="0.1.0-dev">
-                                    </div>
-                                </div>
-                                <div class="form-row">
-                                    <div class="form-group col-md-6">
-                                        <label class="small font-weight-bold">Price Display</label>
-                                        <input id="p-price" class="form-control form-control-sm" value="$29.99">
-                                    </div>
-                                    <div class="form-group col-md-6">
-                                        <label class="small font-weight-bold">Status</label>
-                                        <select id="p-status" class="form-control form-control-sm">
-                                            <option value="in_development">In Development</option>
-                                            <option value="published">Published</option>
-                                            <option value="coming_soon">Coming Soon</option>
-                                            <option value="draft">Draft</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Folder Name</label>
-                                    <input id="p-folder" class="form-control form-control-sm" placeholder="rsg-seabee">
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Download Package URL (Protected)</label>
-                                    <input id="p-url" class="form-control form-control-sm" placeholder="https://...">
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Image URL</label>
-                                    <input id="p-image" class="form-control form-control-sm" value="https://i.postimg.cc/28WybSM2/metroliner.jpg">
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Description</label>
-                                    <textarea id="p-desc" class="form-control form-control-sm" rows="3">Amphibious flying boat for Microsoft Flight Simulator 2024.</textarea>
-                                </div>
-                                <button type="submit" class="btn btn-dark btn-sm btn-block">Save Aircraft</button>
-                                <div id="p-status-msg" class="small mt-2"></div>
+                                <input id="p-id" type="hidden">
+                                <input id="p-name" class="form-control mb-2" placeholder="Addon name" required>
+                                <input id="p-price" class="form-control mb-2" placeholder="Price, for example $29.99" value="$29.99">
+                                <select id="p-status" class="form-control mb-2">
+                                    <option value="in_development">In development</option>
+                                    <option value="published">Published</option>
+                                    <option value="coming_soon">Coming soon</option>
+                                </select>
+                                <input id="p-image" class="form-control mb-2" placeholder="Cover image URL">
+                                <textarea id="p-images" class="form-control mb-2" rows="4" placeholder="More image URLs, one per line"></textarea>
+                                <textarea id="p-desc" class="form-control mb-2" rows="4" placeholder="Description"></textarea>
+                                <input id="p-buy" class="form-control mb-3" placeholder="Buy link, or leave empty for email"></input>
+                                <button class="btn btn-dark btn-block" type="submit">Save addon</button>
+                                <button class="btn btn-outline-dark btn-block" type="button" onclick="resetForm()">Clear form</button>
+                                <p id="p-status-msg" class="small mt-2"></p>
                             </form>
                         </div>
                     </div>
                 </div>
-
                 <div class="col-lg-7">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-header bg-white font-weight-bold d-flex justify-content-between align-items-center">
-                            <span>Catalog Aircraft</span>
-                            <button class="btn btn-outline-dark btn-sm" onclick="loadProducts()">Refresh</button>
-                        </div>
-                        <div class="card-body p-0">
-                            <div class="list-group list-group-flush" id="products-list">
-                                <div class="p-3 text-muted">Loading aircraft...</div>
-                            </div>
-                        </div>
+                    <div class="card border-0 shadow-sm">
+                        <div class="card-body p-0" id="products-list"><div class="p-3 text-muted">Loading addons...</div></div>
                     </div>
                 </div>
             </div>
         </div>
-
-        <!-- Newsletter Tab -->
         <div class="tab-pane fade" id="tab-newsletter">
-            <div class="row">
-                <div class="col-lg-5 mb-4">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-header bg-white font-weight-bold">Publish Newsletter Post</div>
-                        <div class="card-body">
-                            <form id="newsletter-form" onsubmit="savePost(event)">
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Title *</label>
-                                    <input id="n-title" class="form-control form-control-sm" placeholder="Post title" required>
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Cover Image URL</label>
-                                    <input id="n-image" class="form-control form-control-sm" placeholder="https://...">
-                                </div>
-                                <div class="form-group">
-                                    <label class="small font-weight-bold">Content *</label>
-                                    <textarea id="n-content" class="form-control form-control-sm" rows="6" placeholder="Newsletter article content..." required></textarea>
-                                </div>
-                                <button type="submit" class="btn btn-dark btn-sm btn-block">Publish Article</button>
-                                <div id="n-status-msg" class="small mt-2"></div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-lg-7">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-header bg-white font-weight-bold d-flex justify-content-between align-items-center">
-                            <span>Published Articles</span>
-                            <button class="btn btn-outline-dark btn-sm" onclick="loadNewsletter()">Refresh</button>
-                        </div>
-                        <div class="card-body p-0">
-                            <div class="list-group list-group-flush" id="posts-list">
-                                <div class="p-3 text-muted">Loading posts...</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <div class="card border-0 shadow-sm"><div class="card-body">
+                <form onsubmit="savePost(event)">
+                    <input id="n-title" class="form-control mb-2" placeholder="Title" required>
+                    <input id="n-image" class="form-control mb-2" placeholder="Image URL">
+                    <textarea id="n-content" class="form-control mb-2" rows="5" placeholder="Article" required></textarea>
+                    <button class="btn btn-dark">Publish</button>
+                    <p id="n-status-msg" class="small mt-2"></p>
+                </form>
+                <div id="posts-list" class="mt-3"></div>
+            </div></div>
         </div>
-
-        <!-- Orders & Customers Tab -->
         <div class="tab-pane fade" id="tab-orders">
-            <div class="card shadow-sm border-0 mb-4">
-                <div class="card-header bg-white font-weight-bold d-flex justify-content-between align-items-center">
-                    <span>Recent Customer Orders</span>
-                    <button class="btn btn-outline-dark btn-sm" onclick="loadAdminOrders()">Refresh</button>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-striped mb-0">
-                            <thead class="thead-light">
-                                <tr>
-                                    <th>Order #</th>
-                                    <th>Customer</th>
-                                    <th>Amount</th>
-                                    <th>Status</th>
-                                    <th>Payment</th>
-                                    <th>Date</th>
-                                </tr>
-                            </thead>
-                            <tbody id="admin-orders-tbody">
-                                <tr><td colspan="6" class="text-center py-3 text-muted">Loading orders...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card shadow-sm border-0">
-                <div class="card-header bg-white font-weight-bold d-flex justify-content-between align-items-center">
-                    <span>Registered Customers</span>
-                    <button class="btn btn-outline-dark btn-sm" onclick="loadAdminCustomers()">Refresh</button>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-striped mb-0">
-                            <thead class="thead-light">
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Name</th>
-                                    <th>Email</th>
-                                    <th>Role</th>
-                                    <th>Joined</th>
-                                </tr>
-                            </thead>
-                            <tbody id="admin-customers-tbody">
-                                <tr><td colspan="5" class="text-center py-3 text-muted">Loading customers...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+            <div class="card border-0 shadow-sm mb-3"><div class="card-body p-0"><table class="table mb-0"><tbody id="admin-orders-tbody"></tbody></table></div></div>
+            <div class="card border-0 shadow-sm"><div class="card-body p-0"><table class="table mb-0"><tbody id="admin-customers-tbody"></tbody></table></div></div>
         </div>
     </div>
 </main>
-
 <script src="/auth.js"></script>
 <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
 <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
-
 <script>
+let catalog = [];
 function authHeader() {
-    return {
-        'content-type': 'application/json',
-        'Authorization': 'Bearer ' + (localStorage.getItem('rsg_token') || '')
-    };
+    return { "content-type": "application/json", "Authorization": "Bearer " + (localStorage.getItem("rsg_token") || "") };
 }
-
 function checkAdmin() {
-    const isAdmin = localStorage.getItem('rsg_admin') === 'true';
-    if (!isAdmin) {
-        location.href = '/login';
-        return false;
-    }
-    const name = localStorage.getItem('rsg_name') || 'Admin';
-    document.getElementById('admin-badge').textContent = name + ' (Admin)';
+    if (localStorage.getItem("rsg_admin") !== "true") { location.href = "/login"; return false; }
+    document.getElementById("admin-badge").textContent = (localStorage.getItem("rsg_name") || "Admin") + " · Admin";
     return true;
 }
-
-function showTab(tabId) {
-    $('#admin-tabs a[href="#' + tabId + '"]').tab('show');
+function resetForm() {
+    document.getElementById("product-form").reset();
+    document.getElementById("p-id").value = "";
 }
-
-async function loadOverview() {
-    try {
-        const res = await fetch('/api/admin/overview', { headers: authHeader() });
-        if (!res.ok) return;
-        const data = await res.json();
-        document.getElementById('stat-products').textContent = data.products || 0;
-        document.getElementById('stat-customers').textContent = data.customers || 0;
-        document.getElementById('stat-orders').textContent = data.orders || 0;
-        document.getElementById('stat-posts').textContent = data.posts || 0;
-    } catch (e) {
-        console.error(e);
-    }
+function editProduct(id) {
+    const item = catalog.find(p => p.id === id);
+    if (!item) return;
+    document.getElementById("p-id").value = item.id;
+    document.getElementById("p-name").value = item.name || "";
+    document.getElementById("p-price").value = item.price || "";
+    document.getElementById("p-status").value = item.status || "in_development";
+    document.getElementById("p-image").value = item.image_url || "";
+    document.getElementById("p-images").value = (item.images || []).join("\n");
+    document.getElementById("p-desc").value = item.description || "";
+    document.getElementById("p-buy").value = item.buy_url || "";
 }
-
 async function loadProducts() {
-    const list = document.getElementById('products-list');
-    try {
-        const res = await fetch('/api/products', { headers: authHeader() });
-        const data = await res.json();
-        const products = data.products || [];
-        if (!products.length) {
-            list.innerHTML = '<div class="p-3 text-muted">No aircraft found.</div>';
-            return;
-        }
-        list.innerHTML = products.map(p => `
-            <div class="list-group-item d-flex justify-content-between align-items-center">
-                <div class="d-flex align-items-center">
-                    <img src="${p.image_url || 'https://i.postimg.cc/28WybSM2/metroliner.jpg'}" class="rounded mr-3" style="width: 50px; height: 35px; object-fit: cover;">
-                    <div>
-                        <div class="font-weight-bold">${p.name} <span class="badge badge-light border ml-1">${p.price || '$29.99'}</span></div>
-                        <small class="text-muted">${p.simulator || 'MSFS 2024'} · ${p.version || '0.1.0'} · ${p.status || 'in_development'}</small>
-                    </div>
-                </div>
-                <div>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteProduct('${p.id}')">Delete</button>
-                </div>
-            </div>
-        `).join('');
-    } catch (e) {
-        list.innerHTML = '<div class="p-3 text-danger">Failed to load aircraft.</div>';
-    }
+    const list = document.getElementById("products-list");
+    const res = await fetch("/api/products", { headers: authHeader() });
+    const data = await res.json();
+    if (!res.ok) { list.innerHTML = '<div class="p-3 text-danger">' + (data.error || "Could not load addons") + "</div>"; return; }
+    catalog = data.products || [];
+    if (!catalog.length) { list.innerHTML = '<div class="p-3 text-muted">No addons yet.</div>'; return; }
+    list.innerHTML = catalog.map(p => `<div class="p-3 border-bottom d-flex justify-content-between"><div><strong>${p.name}</strong><div class="small text-muted">${p.price || ""} · ${p.status || ""} · /addons/view?id=${p.id}</div></div><div><button class="btn btn-outline-dark btn-sm mr-2" onclick="editProduct('${p.id}')">Edit</button><button class="btn btn-outline-danger btn-sm" onclick="deleteProduct('${p.id}')">Remove</button></div></div>`).join("");
 }
-
 async function saveProduct(e) {
     e.preventDefault();
-    const msg = document.getElementById('p-status-msg');
-    msg.textContent = 'Saving...';
-    msg.className = 'small text-muted mt-2';
-
+    const msg = document.getElementById("p-status-msg");
+    msg.textContent = "Saving...";
     const body = {
-        name: document.getElementById('p-name').value,
-        simulator: document.getElementById('p-sim').value,
-        version: document.getElementById('p-version').value,
-        price: document.getElementById('p-price').value,
-        status: document.getElementById('p-status').value,
-        folder_name: document.getElementById('p-folder').value,
-        download_url: document.getElementById('p-url').value,
-        image_url: document.getElementById('p-image').value,
-        description: document.getElementById('p-desc').value
+        id: document.getElementById("p-id").value,
+        name: document.getElementById("p-name").value,
+        price: document.getElementById("p-price").value,
+        status: document.getElementById("p-status").value,
+        image_url: document.getElementById("p-image").value,
+        images: document.getElementById("p-images").value.split(/\n+/).map(s => s.trim()).filter(Boolean),
+        description: document.getElementById("p-desc").value,
+        buy_url: document.getElementById("p-buy").value
     };
-
-    const res = await fetch('/api/save-product', {
-        method: 'POST',
-        headers: authHeader(),
-        body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        msg.textContent = data.error || 'Failed to save product';
-        msg.className = 'small text-danger mt-2';
-        return;
-    }
-    msg.textContent = 'Aircraft saved to catalog.';
-    msg.className = 'small text-success mt-2';
+    const res = await fetch("/api/save-product", { method: "POST", headers: authHeader(), body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { msg.textContent = data.error || "Could not save. Check that the D1 database is connected."; return; }
+    msg.textContent = "Saved. The page is /addons/view?id=" + data.id;
+    resetForm();
     loadProducts();
-    loadOverview();
 }
-
 async function deleteProduct(id) {
-    if (!confirm('Remove this aircraft from catalog?')) return;
-    const res = await fetch('/api/products/' + id, { method: 'DELETE', headers: authHeader() });
-    if (res.ok) {
-        loadProducts();
-        loadOverview();
-    }
+    if (!confirm("Remove this addon?")) return;
+    const res = await fetch("/api/products/" + encodeURIComponent(id), { method: "DELETE", headers: authHeader() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(data.error || "Could not remove addon"); return; }
+    loadProducts();
 }
-
 async function loadNewsletter() {
-    const list = document.getElementById('posts-list');
-    try {
-        const res = await fetch('/api/newsletter', { headers: authHeader() });
-        const data = await res.json();
-        const posts = data.posts || [];
-        if (!posts.length) {
-            list.innerHTML = '<div class="p-3 text-muted">No newsletter articles published yet.</div>';
-            return;
-        }
-        list.innerHTML = posts.map(p => `
-            <div class="list-group-item d-flex justify-content-between align-items-center">
-                <div>
-                    <div class="font-weight-bold">${p.title}</div>
-                    <small class="text-muted">${p.date || 'Recent'}</small>
-                </div>
-                <div>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deletePost(${p.id})">Delete</button>
-                </div>
-            </div>
-        `).join('');
-    } catch (e) {
-        list.innerHTML = '<div class="p-3 text-danger">Failed to load articles.</div>';
-    }
+    const res = await fetch("/api/newsletter");
+    const data = await res.json();
+    const posts = data.posts || [];
+    document.getElementById("posts-list").innerHTML = posts.map(p => `<div class="border-top py-2 d-flex justify-content-between"><span>${p.title}</span><button class="btn btn-outline-danger btn-sm" onclick="deletePost(${p.id})">Remove</button></div>`).join("") || "<p class='text-muted'>No articles.</p>";
 }
-
 async function savePost(e) {
     e.preventDefault();
-    const msg = document.getElementById('n-status-msg');
-    msg.textContent = 'Publishing...';
-    msg.className = 'small text-muted mt-2';
-
-    const body = {
-        title: document.getElementById('n-title').value,
-        image_url: document.getElementById('n-image').value,
-        content: document.getElementById('n-content').value
-    };
-
-    const res = await fetch('/api/newsletter', {
-        method: 'POST',
-        headers: authHeader(),
-        body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        msg.textContent = data.error || 'Failed to publish post';
-        msg.className = 'small text-danger mt-2';
-        return;
-    }
-    msg.textContent = 'Article published.';
-    msg.className = 'small text-success mt-2';
-    document.getElementById('n-title').value = '';
-    document.getElementById('n-image').value = '';
-    document.getElementById('n-content').value = '';
+    const res = await fetch("/api/newsletter", { method: "POST", headers: authHeader(), body: JSON.stringify({ title: document.getElementById("n-title").value, image_url: document.getElementById("n-image").value, content: document.getElementById("n-content").value }) });
+    const data = await res.json().catch(() => ({}));
+    document.getElementById("n-status-msg").textContent = res.ok ? "Published." : (data.error || "Could not publish");
+    if (res.ok) e.target.reset();
     loadNewsletter();
-    loadOverview();
 }
-
 async function deletePost(id) {
-    if (!confirm('Delete this article?')) return;
-    const res = await fetch('/api/newsletter/' + id, { method: 'DELETE', headers: authHeader() });
-    if (res.ok) {
-        loadNewsletter();
-        loadOverview();
-    }
+    await fetch("/api/newsletter/" + id, { method: "DELETE", headers: authHeader() });
+    loadNewsletter();
 }
-
-async function loadAdminOrders() {
-    const tbody = document.getElementById('admin-orders-tbody');
-    try {
-        const res = await fetch('/api/admin/orders', { headers: authHeader() });
-        const data = await res.json();
-        const orders = data.orders || [];
-        if (!orders.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-muted">No orders found.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = orders.map(o => `
-            <tr>
-                <td class="font-weight-bold">#${o.id}</td>
-                <td>${o.customer_name || 'Customer'} <small class="text-muted">(${o.customer_email || 'No email'})</small></td>
-                <td>$${Number(o.amount || 29.99).toFixed(2)}</td>
-                <td><span class="badge badge-light border">${o.status}</span></td>
-                <td><span class="badge badge-${o.payment_status === 'Paid' ? 'success' : 'secondary'}">${o.payment_status}</span></td>
-                <td>${o.created_at ? o.created_at.slice(0, 10) : 'Recent'}</td>
-            </tr>
-        `).join('');
-    } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-danger">Failed to load orders.</td></tr>';
-    }
+async function loadOrders() {
+    const res = await fetch("/api/admin/orders", { headers: authHeader() });
+    const data = await res.json();
+    const orders = data.orders || [];
+    document.getElementById("admin-orders-tbody").innerHTML = orders.map(o => `<tr><td>#${o.id}</td><td>${o.customer_name || ""}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td>${o.status || ""}</td></tr>`).join("") || "<tr><td class='p-3 text-muted'>No orders.</td></tr>";
+    const people = await fetch("/api/admin/customers", { headers: authHeader() });
+    const customers = (await people.json()).customers || [];
+    document.getElementById("admin-customers-tbody").innerHTML = customers.map(c => `<tr><td>${c.name}</td><td>${c.email}</td><td>${c.role}</td></tr>`).join("");
 }
-
-async function loadAdminCustomers() {
-    const tbody = document.getElementById('admin-customers-tbody');
-    try {
-        const res = await fetch('/api/admin/customers', { headers: authHeader() });
-        const data = await res.json();
-        const customers = data.customers || [];
-        if (!customers.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">No customers found.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = customers.map(c => `
-            <tr>
-                <td>#${c.id}</td>
-                <td class="font-weight-bold">${c.name}</td>
-                <td>${c.email}</td>
-                <td><span class="badge badge-${c.role === 'Customer' ? 'info' : 'dark'}">${c.role}</span></td>
-                <td>${c.created_at ? c.created_at.slice(0, 10) : 'Recent'}</td>
-            </tr>
-        `).join('');
-    } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-danger">Failed to load customers.</td></tr>';
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    if (checkAdmin()) {
-        loadOverview();
-        loadProducts();
-        loadNewsletter();
-        loadAdminOrders();
-        loadAdminCustomers();
-    }
+document.addEventListener("DOMContentLoaded", () => {
+    if (!checkAdmin()) return;
+    loadProducts().catch(() => { document.getElementById("products-list").innerHTML = "<div class='p-3 text-danger'>Addon API is not responding.</div>"; });
+    loadNewsletter();
+    loadOrders();
 });
 </script>
 </body>
