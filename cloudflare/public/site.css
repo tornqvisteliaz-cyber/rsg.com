@@ -1,0 +1,12 @@
+.rotaidem-nav { background: #fff; border-bottom: 1px solid #eee; }
+.rotaidem-nav .container { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; padding-top: 10px; padding-bottom: 10px; }
+.rotaidem-nav .navbar-brand { color: #111 !important; font-weight: 700; display: flex; align-items: center; gap: 8px; margin-right: 8px; }
+.rotaidem-nav .navbar-brand img { width: 36px; height: 36px; object-fit: cover; border-radius: 50%; }
+.rotaidem-nav .navbar-nav { display: flex; flex-direction: row; flex-wrap: wrap; margin-left: auto; }
+.rotaidem-nav .nav-link { color: #111 !important; font-weight: 700; padding: .35rem .7rem; }
+.rotaidem-nav .nav-link:hover { color: #111 !important; text-decoration: underline; }
+footer a, .legal a, .page a, .fun-card a, .legal-card a { color: #111 !important; text-decoration: underline; }
+.hero-band { min-height: 320px; display: flex; align-items: flex-end; color: #fff; background-size: cover; background-position: center; }
+.fun-card { background: #fff; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.08); padding: 24px; height: 100%; }
+.legal-card { background: #fff; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.06); padding: 28px; margin-bottom: 16px; }
+body { color: #111; }

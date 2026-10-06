@@ -1,6 +1,48 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Contact | Rotaidem</title><link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css"></head>
-<body><nav class="navbar navbar-light bg-white border-bottom"><div class="container"><a class="navbar-brand" href="/"><strong>Rotaidem</strong></a><a class="nav-link" href="/addons">Addons</a><div id="auth-buttons"></div></div></nav>
-<div class="container py-5" style="max-width:720px"><h1>Contact</h1><p>Questions about addons, collaborations or support.</p><p><strong>General:</strong> <a href="mailto:Collab@rsgsoftware.se">Collab@rsgsoftware.se</a></p><p><strong>Careers:</strong> <a href="mailto:careers@rsgsoftware.site">careers@rsgsoftware.site</a></p>
-<form id="contact-form" class="mt-4"><input class="form-control mb-3" id="cname" placeholder="Name" required><input class="form-control mb-3" id="cemail" type="email" placeholder="Email" required><textarea class="form-control mb-3" id="cmessage" rows="5" placeholder="Message" required></textarea><button class="btn btn-dark">Send</button><p id="cstatus" class="mt-3"></p></form></div>
-<script src="/auth.js"></script><script>document.getElementById('contact-form').onsubmit=async(e)=>{e.preventDefault();const status=document.getElementById('cstatus');const res=await fetch('/api/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.getElementById('cname').value,email:document.getElementById('cemail').value,message:document.getElementById('cmessage').value})});status.textContent=res.ok?'Message saved.':'Could not send.';};</script></body></html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Contact | Rotaidem</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/site.css">
+</head>
+<body class="bg-light">
+<nav class="navbar rotaidem-nav">
+    <div class="container">
+        <a class="navbar-brand" href="/"><img src="/images/mark.jpg" alt=""> Rotaidem</a>
+        <ul class="navbar-nav">
+            <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+            <li class="nav-item"><a class="nav-link" href="/addons">Addons</a></li>
+            <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
+            <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work</a></li>
+            <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+            <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+        </ul>
+        <div id="auth-buttons"></div>
+    </div>
+</nav>
+<header class="hero-band" style="background-image: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('/images/seabee-dock.jpg');"><div class="container pb-5"><h1 class="display-4 font-weight-bold">Say hello</h1><p class="lead mb-0">Questions, collabs, or a wild addon idea. We read them.</p></div></header>
+<section class="py-5"><div class="container">
+    <div class="row">
+        <div class="col-md-4 mb-4"><div class="fun-card"><h3>General</h3><p>Addon questions, support, and partnerships.</p><a href="mailto:Collab@rsgsoftware.se">Collab@rsgsoftware.se</a></div></div>
+        <div class="col-md-4 mb-4"><div class="fun-card"><h3>Work with us</h3><p>No open seats right now, but good notes still land.</p><a href="/work-at-rsg">See the work page</a></div></div>
+        <div class="col-md-4 mb-4"><div class="fun-card"><h3>Quick note</h3><p>Use the form. It stays on this site.</p><a href="#note">Jump to the form</a></div></div>
+    </div>
+    <div class="fun-card" id="note">
+        <h2>Send a note</h2>
+        <form id="contact-form" class="mt-3">
+            <input class="form-control mb-3" id="cname" placeholder="Name" required>
+            <input class="form-control mb-3" id="cemail" type="email" placeholder="Email" required>
+            <textarea class="form-control mb-3" id="cmessage" rows="5" placeholder="What should we know?" required></textarea>
+            <button class="btn btn-dark">Send</button>
+            <p id="cstatus" class="mt-3"></p>
+        </form>
+    </div>
+</div></section>
+<footer class="py-4 text-center bg-white border-top"><a href="/terms" class="mr-3">Terms of Service</a><a href="/privacy">Privacy Policy</a></footer>
+<script src="/auth.js"></script>
+<script>document.getElementById('contact-form').onsubmit=async(e)=>{e.preventDefault();const status=document.getElementById('cstatus');const res=await fetch('/api/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.getElementById('cname').value,email:document.getElementById('cemail').value,message:document.getElementById('cmessage').value})});status.textContent=res.ok?'Message saved.':'Could not send.';};</script>
+</body>
+</html>

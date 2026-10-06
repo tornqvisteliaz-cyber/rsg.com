@@ -6,35 +6,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/site.css">
     <style>
-        .hero { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg') no-repeat center 35%; background-size: cover; height: 100vh; min-height: 700px; display: flex; align-items: center; color: white; }
+        .hero { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('/images/seabee-water.jpg') no-repeat center 35%; background-size: cover; height: 100vh; min-height: 700px; display: flex; align-items: center; color: white; }
         .hero-content { text-align: center; }
         .hero h1 { font-size: 4.5rem; font-weight: 700; letter-spacing: 2px; }
-        .section-intro { padding: 80px 0; background: #f8f9fa; }
     </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+<nav class="navbar rotaidem-nav">
     <div class="container">
-        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar"><span class="navbar-toggler-icon"></span></button>
-        <div class="collapse navbar-collapse" id="navbar">
-            <ul class="navbar-nav ml-auto">
-                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
-                <li class="nav-item"><a class="nav-link" href="/addons">Addons</a></li>
-                <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
-                <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work at Rotaidem</a></li>
-                <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
-                <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
-            </ul>
-            <div class="ml-lg-3 mt-3 mt-lg-0" id="auth-buttons"><a href="/login" class="btn btn-outline-dark btn-sm mr-2">Login</a><a href="/signup" class="btn btn-dark btn-sm">Sign Up</a></div>
-        </div>
+        <a class="navbar-brand" href="/"><img src="/images/mark.jpg" alt=""> Rotaidem</a>
+        <ul class="navbar-nav">
+            <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+            <li class="nav-item"><a class="nav-link" href="/addons">Addons</a></li>
+            <li class="nav-item"><a class="nav-link" href="/about">About</a></li>
+            <li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work</a></li>
+            <li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li>
+            <li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li>
+        </ul>
+        <div id="auth-buttons"></div>
     </div>
 </nav>
-<header class="hero"><div class="container"><div class="hero-content"><div class="mb-3"><span class="badge badge-light px-3 py-2">IN DEVELOPMENT</span></div><h1 class="display-3 font-weight-bold">Welcome to Rotaidem</h1><h2 class="mb-4" style="font-size: 2.2rem; font-weight: 300;">Developer for Microsoft Flight Simulator 2024</h2><a href="/about" class="btn btn-primary btn-lg px-5 py-3">Who are we?</a></div></div></header>
-<section class="section-intro py-5"><div class="container text-center"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="Rotaidem" class="mb-4" style="width: 400px; max-width: 100%;"><h1 class="mb-3">Welcome to Rotaidem</h1><p class="lead text-muted mx-auto" style="max-width: 750px;">We develop high-fidelity addons and simulation systems for Microsoft Flight Simulator.</p></div></section>
-<section class="section-intro py-5 bg-light"><div class="container text-center"><h2 class="mb-3">Are you a creator?</h2><p class="text-muted mx-auto" style="max-width: 600px;">Are you a creator? We want you! Contact us for more information</p><a href="mailto:Collab@rsgsoftware.se" class="btn btn-dark mt-3 px-5">Contact Us</a></div></section>
-<footer class="py-4 text-center border-top bg-white"><p class="mb-2"><a href="/terms" class="text-muted mr-3">Terms of Service</a><a href="/privacy" class="text-muted">Privacy Policy</a></p><p class="text-muted mb-0">© 2026 Rotaidem. All rights reserved.</p></footer>
+<header class="hero"><div class="container"><div class="hero-content"><div class="mb-3"><span class="badge badge-light px-3 py-2">IN DEVELOPMENT</span></div><h1 class="display-3 font-weight-bold">Welcome to Rotaidem</h1><h2 class="mb-4" style="font-size: 2.2rem; font-weight: 300;">Developer for Microsoft Flight Simulator 2024</h2><a href="/about" class="btn btn-dark btn-lg px-5 py-3">Who are we?</a></div></div></header>
+<section class="py-5"><div class="container text-center"><img src="/images/mark.jpg" alt="Rotaidem" class="mb-4" style="width: 160px;"><h1 class="mb-3">Welcome to Rotaidem</h1><p class="lead text-muted mx-auto" style="max-width: 750px;">We develop high-fidelity addons and simulation systems for Microsoft Flight Simulator.</p></div></section>
+<section class="py-5 bg-light"><div class="container text-center"><h2 class="mb-3">Are you a creator?</h2><p class="text-muted mx-auto" style="max-width: 600px;">We want you. Contact us if you build aircraft, art, or sound.</p><a href="/contact" class="btn btn-dark mt-3 px-5">Contact Us</a></div></section>
+<footer class="py-4 text-center border-top bg-white"><p class="mb-2"><a href="/terms" class="mr-3">Terms of Service</a><a href="/privacy">Privacy Policy</a></p><p class="text-muted mb-0">© 2026 Rotaidem. All rights reserved.</p></footer>
 <script src="/auth.js"></script>
 <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
