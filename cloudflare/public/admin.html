@@ -6,82 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Admin | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
-    <style>
-        .hero { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg') no-repeat center 35%; background-size: cover; min-height: 240px; display: flex; align-items: flex-end; color: white; }
-        body { background: #f8f9fa; }
-    </style>
+    <link rel="stylesheet" href="/site.css">
+    <style>.preview { width: 100%; height: 180px; object-fit: cover; background: #eee; border-radius: 12px; } .addon-row { display: flex; gap: 12px; align-items: center; padding: 14px; border-bottom: 1px solid #eee; } .addon-row img { width: 88px; height: 64px; object-fit: cover; border-radius: 8px; background: #eee; }</style>
 </head>
-<body>
-<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
-    <div class="container">
-        <a class="navbar-brand" href="/"><strong>Rotaidem</strong></a>
-        <div class="navbar-nav ml-auto align-items-center">
-            <span class="navbar-text mr-3" id="admin-badge">Admin</span>
-            <a class="nav-link" href="/addons">View addons</a>
-            <a class="nav-link" href="/">Home</a>
-            <button class="btn btn-outline-dark btn-sm" onclick="rsgLogout()">Logout</button>
-        </div>
-    </div>
-</nav>
-<header class="hero"><div class="container pb-4"><span class="badge badge-light">Admin control</span><h1 class="display-4 font-weight-bold mt-2">Addons</h1></div></header>
+<body class="bg-light">
+<nav class="navbar rotaidem-nav"><div class="container"><a class="navbar-brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt=""> Rotaidem</a><ul class="navbar-nav"><li class="nav-item"><a class="nav-link" href="/">Home</a></li><li class="nav-item"><a class="nav-link" href="/addons/">Addons</a></li><li class="nav-item"><a class="nav-link" href="/admin">Admin</a></li></ul><span class="font-weight-bold" id="admin-badge">Admin</span><button class="btn btn-outline-dark btn-sm" onclick="rsgLogout()">Logout</button></div></nav>
+<header class="hero-band" style="background-image: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg');"><div class="container pb-4"><span class="badge badge-light">Admin control</span><h1 class="display-4 font-weight-bold mt-2">Addons</h1><p class="mb-0">Add a page, extra pictures, or remove an addon.</p></div></header>
 <main class="container py-4">
-    <div id="global-msg"></div>
-    <ul class="nav nav-pills mb-4">
-        <li class="nav-item"><a class="nav-link active font-weight-bold" data-toggle="pill" href="#tab-addons">Addons</a></li>
-        <li class="nav-item"><a class="nav-link font-weight-bold" data-toggle="pill" href="#tab-newsletter">Newsletter</a></li>
-        <li class="nav-item"><a class="nav-link font-weight-bold" data-toggle="pill" href="#tab-orders">Orders</a></li>
-    </ul>
+    <ul class="nav mb-4"><li class="nav-item"><a class="nav-link active font-weight-bold text-dark" data-toggle="pill" href="#tab-addons">Addons</a></li><li class="nav-item"><a class="nav-link font-weight-bold text-dark" data-toggle="pill" href="#tab-newsletter">Newsletter</a></li><li class="nav-item"><a class="nav-link font-weight-bold text-dark" data-toggle="pill" href="#tab-orders">Orders</a></li></ul>
     <div class="tab-content">
-        <div class="tab-pane fade show active" id="tab-addons">
-            <div class="row">
-                <div class="col-lg-5 mb-4">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body">
-                            <h2 class="h5">Add or edit an addon</h2>
-                            <p class="text-muted small">Saving creates the public page at /addons/view?id=...</p>
-                            <form id="product-form" onsubmit="saveProduct(event)">
-                                <input id="p-id" type="hidden">
-                                <input id="p-name" class="form-control mb-2" placeholder="Addon name" required>
-                                <input id="p-price" class="form-control mb-2" placeholder="Price, for example $29.99" value="$29.99">
-                                <select id="p-status" class="form-control mb-2">
-                                    <option value="in_development">In development</option>
-                                    <option value="published">Published</option>
-                                    <option value="coming_soon">Coming soon</option>
-                                </select>
-                                <input id="p-image" class="form-control mb-2" placeholder="Cover image URL">
-                                <textarea id="p-images" class="form-control mb-2" rows="4" placeholder="More image URLs, one per line"></textarea>
-                                <textarea id="p-desc" class="form-control mb-2" rows="4" placeholder="Description"></textarea>
-                                <input id="p-buy" class="form-control mb-3" placeholder="Buy link, or leave empty for email"></input>
-                                <button class="btn btn-dark btn-block" type="submit">Save addon</button>
-                                <button class="btn btn-outline-dark btn-block" type="button" onclick="resetForm()">Clear form</button>
-                                <p id="p-status-msg" class="small mt-2"></p>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-lg-7">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body p-0" id="products-list"><div class="p-3 text-muted">Loading addons...</div></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="tab-pane fade" id="tab-newsletter">
-            <div class="card border-0 shadow-sm"><div class="card-body">
-                <form onsubmit="savePost(event)">
-                    <input id="n-title" class="form-control mb-2" placeholder="Title" required>
-                    <input id="n-image" class="form-control mb-2" placeholder="Image URL">
-                    <textarea id="n-content" class="form-control mb-2" rows="5" placeholder="Article" required></textarea>
-                    <button class="btn btn-dark">Publish</button>
-                    <p id="n-status-msg" class="small mt-2"></p>
-                </form>
-                <div id="posts-list" class="mt-3"></div>
-            </div></div>
-        </div>
-        <div class="tab-pane fade" id="tab-orders">
-            <div class="card border-0 shadow-sm mb-3"><div class="card-body p-0"><table class="table mb-0"><tbody id="admin-orders-tbody"></tbody></table></div></div>
-            <div class="card border-0 shadow-sm"><div class="card-body p-0"><table class="table mb-0"><tbody id="admin-customers-tbody"></tbody></table></div></div>
-        </div>
+        <div class="tab-pane fade show active" id="tab-addons"><div class="row"><div class="col-lg-5 mb-4"><div class="fun-card"><h2 class="h5">Add or edit</h2><img id="preview" class="preview mb-3" src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt=""><form id="product-form" onsubmit="saveProduct(event)"><input id="p-id" type="hidden"><input id="p-name" class="form-control mb-2" placeholder="Addon name" required><input id="p-price" class="form-control mb-2" placeholder="Price" value="$29.99"><select id="p-status" class="form-control mb-2"><option value="in_development">In development</option><option value="published">Published</option><option value="coming_soon">Coming soon</option></select><input id="p-image" class="form-control mb-2" placeholder="Cover image URL, must start with https://" oninput="previewImage()"><textarea id="p-images" class="form-control mb-2" rows="4" placeholder="More image URLs, one https:// link per line"></textarea><textarea id="p-desc" class="form-control mb-2" rows="4" placeholder="Description"></textarea><input id="p-buy" class="form-control mb-3" placeholder="Buy link, empty uses Eliaz@rotaidem.com"><button class="btn btn-dark btn-block" type="submit">Save addon page</button><button class="btn btn-outline-dark btn-block" type="button" onclick="resetForm()">Clear</button><p id="p-status-msg" class="small mt-2"></p></form></div></div><div class="col-lg-7"><div class="fun-card p-0" id="products-list"><div class="p-3 text-muted">Loading addons...</div></div></div></div></div>
+        <div class="tab-pane fade" id="tab-newsletter"><div class="fun-card"><form onsubmit="savePost(event)"><input id="n-title" class="form-control mb-2" placeholder="Title" required><input id="n-image" class="form-control mb-2" placeholder="Image URL"><textarea id="n-content" class="form-control mb-2" rows="5" placeholder="Article" required></textarea><button class="btn btn-dark">Publish</button><p id="n-status-msg" class="small mt-2"></p></form><div id="posts-list" class="mt-3"></div></div></div>
+        <div class="tab-pane fade" id="tab-orders"><div class="fun-card mb-3 p-0"><table class="table mb-0"><tbody id="admin-orders-tbody"></tbody></table></div><div class="fun-card p-0"><table class="table mb-0"><tbody id="admin-customers-tbody"></tbody></table></div></div>
     </div>
 </main>
 <script src="/auth.js"></script>
@@ -89,101 +25,22 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
 <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
 <script>
+const FALLBACK = "https://i.postimg.cc/28WybSM2/metroliner.jpg";
 let catalog = [];
-function authHeader() {
-    return { "content-type": "application/json", "Authorization": "Bearer " + (localStorage.getItem("rsg_token") || "") };
-}
-function checkAdmin() {
-    if (localStorage.getItem("rsg_admin") !== "true") { location.href = "/login"; return false; }
-    document.getElementById("admin-badge").textContent = (localStorage.getItem("rsg_name") || "Admin") + " · Admin";
-    return true;
-}
-function resetForm() {
-    document.getElementById("product-form").reset();
-    document.getElementById("p-id").value = "";
-}
-function editProduct(id) {
-    const item = catalog.find(p => p.id === id);
-    if (!item) return;
-    document.getElementById("p-id").value = item.id;
-    document.getElementById("p-name").value = item.name || "";
-    document.getElementById("p-price").value = item.price || "";
-    document.getElementById("p-status").value = item.status || "in_development";
-    document.getElementById("p-image").value = item.image_url || "";
-    document.getElementById("p-images").value = (item.images || []).join("\n");
-    document.getElementById("p-desc").value = item.description || "";
-    document.getElementById("p-buy").value = item.buy_url || "";
-}
-async function loadProducts() {
-    const list = document.getElementById("products-list");
-    const res = await fetch("/api/products", { headers: authHeader() });
-    const data = await res.json();
-    if (!res.ok) { list.innerHTML = '<div class="p-3 text-danger">' + (data.error || "Could not load addons") + "</div>"; return; }
-    catalog = data.products || [];
-    if (!catalog.length) { list.innerHTML = '<div class="p-3 text-muted">No addons yet.</div>'; return; }
-    list.innerHTML = catalog.map(p => `<div class="p-3 border-bottom d-flex justify-content-between"><div><strong>${p.name}</strong><div class="small text-muted">${p.price || ""} · ${p.status || ""} · /addons/view?id=${p.id}</div></div><div><button class="btn btn-outline-dark btn-sm mr-2" onclick="editProduct('${p.id}')">Edit</button><button class="btn btn-outline-danger btn-sm" onclick="deleteProduct('${p.id}')">Remove</button></div></div>`).join("");
-}
-async function saveProduct(e) {
-    e.preventDefault();
-    const msg = document.getElementById("p-status-msg");
-    msg.textContent = "Saving...";
-    const body = {
-        id: document.getElementById("p-id").value,
-        name: document.getElementById("p-name").value,
-        price: document.getElementById("p-price").value,
-        status: document.getElementById("p-status").value,
-        image_url: document.getElementById("p-image").value,
-        images: document.getElementById("p-images").value.split(/\n+/).map(s => s.trim()).filter(Boolean),
-        description: document.getElementById("p-desc").value,
-        buy_url: document.getElementById("p-buy").value
-    };
-    const res = await fetch("/api/save-product", { method: "POST", headers: authHeader(), body: JSON.stringify(body) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { msg.textContent = data.error || "Could not save. Check that the D1 database is connected."; return; }
-    msg.textContent = "Saved. The page is /addons/view?id=" + data.id;
-    resetForm();
-    loadProducts();
-}
-async function deleteProduct(id) {
-    if (!confirm("Remove this addon?")) return;
-    const res = await fetch("/api/products/" + encodeURIComponent(id), { method: "DELETE", headers: authHeader() });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(data.error || "Could not remove addon"); return; }
-    loadProducts();
-}
-async function loadNewsletter() {
-    const res = await fetch("/api/newsletter");
-    const data = await res.json();
-    const posts = data.posts || [];
-    document.getElementById("posts-list").innerHTML = posts.map(p => `<div class="border-top py-2 d-flex justify-content-between"><span>${p.title}</span><button class="btn btn-outline-danger btn-sm" onclick="deletePost(${p.id})">Remove</button></div>`).join("") || "<p class='text-muted'>No articles.</p>";
-}
-async function savePost(e) {
-    e.preventDefault();
-    const res = await fetch("/api/newsletter", { method: "POST", headers: authHeader(), body: JSON.stringify({ title: document.getElementById("n-title").value, image_url: document.getElementById("n-image").value, content: document.getElementById("n-content").value }) });
-    const data = await res.json().catch(() => ({}));
-    document.getElementById("n-status-msg").textContent = res.ok ? "Published." : (data.error || "Could not publish");
-    if (res.ok) e.target.reset();
-    loadNewsletter();
-}
-async function deletePost(id) {
-    await fetch("/api/newsletter/" + id, { method: "DELETE", headers: authHeader() });
-    loadNewsletter();
-}
-async function loadOrders() {
-    const res = await fetch("/api/admin/orders", { headers: authHeader() });
-    const data = await res.json();
-    const orders = data.orders || [];
-    document.getElementById("admin-orders-tbody").innerHTML = orders.map(o => `<tr><td>#${o.id}</td><td>${o.customer_name || ""}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td>${o.status || ""}</td></tr>`).join("") || "<tr><td class='p-3 text-muted'>No orders.</td></tr>";
-    const people = await fetch("/api/admin/customers", { headers: authHeader() });
-    const customers = (await people.json()).customers || [];
-    document.getElementById("admin-customers-tbody").innerHTML = customers.map(c => `<tr><td>${c.name}</td><td>${c.email}</td><td>${c.role}</td></tr>`).join("");
-}
-document.addEventListener("DOMContentLoaded", () => {
-    if (!checkAdmin()) return;
-    loadProducts().catch(() => { document.getElementById("products-list").innerHTML = "<div class='p-3 text-danger'>Addon API is not responding.</div>"; });
-    loadNewsletter();
-    loadOrders();
-});
+function authHeader() { return { "content-type": "application/json", "Authorization": "Bearer " + (localStorage.getItem("rsg_token") || "") }; }
+function safeImage(url) { return /^https?:\/\/.+\..+/.test(url || "") ? url : FALLBACK; }
+function checkAdmin() { if (localStorage.getItem("rsg_admin") !== "true") { location.href = "/login"; return false; } document.getElementById("admin-badge").textContent = localStorage.getItem("rsg_name") || "Admin"; return true; }
+function previewImage() { document.getElementById("preview").src = safeImage(document.getElementById("p-image").value); }
+function resetForm() { document.getElementById("product-form").reset(); document.getElementById("p-id").value = ""; previewImage(); }
+function editProduct(id) { const item = catalog.find(p => p.id === id); if (!item) return; document.getElementById("p-id").value = item.id; document.getElementById("p-name").value = item.name || ""; document.getElementById("p-price").value = item.price || ""; document.getElementById("p-status").value = item.status || "in_development"; document.getElementById("p-image").value = /^https?:\/\//.test(item.image_url || "") ? item.image_url : ""; document.getElementById("p-images").value = (item.images || []).filter(url => /^https?:\/\//.test(url)).join("\n"); document.getElementById("p-desc").value = item.description || ""; document.getElementById("p-buy").value = item.buy_url || ""; previewImage(); }
+async function loadProducts() { const list = document.getElementById("products-list"); const res = await fetch("/api/products", { headers: authHeader() }); const data = await res.json(); if (!res.ok) { list.innerHTML = '<div class="p-3 text-danger">' + (data.error || "Could not load addons") + "</div>"; return; } catalog = data.products || []; if (!catalog.length) { list.innerHTML = '<div class="p-3 text-muted">No addons yet.</div>'; return; } list.innerHTML = catalog.map(p => `<div class="addon-row"><img src="${safeImage(p.image_url)}" alt=""><div><strong>${p.name}</strong><div class="small text-muted">${p.price || ""} · ${p.status || ""}</div><a href="/addons/view?id=${p.id}">Open page</a></div><div class="ml-auto"><button class="btn btn-outline-dark btn-sm mr-2" onclick="editProduct('${p.id}')">Edit</button><button class="btn btn-outline-danger btn-sm" onclick="deleteProduct('${p.id}')">Remove</button></div></div>`).join(""); }
+async function saveProduct(e) { e.preventDefault(); const msg = document.getElementById("p-status-msg"); const image = document.getElementById("p-image").value.trim(); const images = document.getElementById("p-images").value.split(/\n+/).map(s => s.trim()).filter(Boolean); if (image && !/^https?:\/\//.test(image)) { msg.textContent = "Cover image must be a full https:// link."; return; } if (images.some(url => !/^https?:\/\//.test(url))) { msg.textContent = "Every extra image must be a full https:// link."; return; } msg.textContent = "Saving..."; const body = { id: document.getElementById("p-id").value, name: document.getElementById("p-name").value, price: document.getElementById("p-price").value, status: document.getElementById("p-status").value, image_url: image || FALLBACK, images, description: document.getElementById("p-desc").value, buy_url: document.getElementById("p-buy").value || "mailto:Eliaz@rotaidem.com" }; const res = await fetch("/api/save-product", { method: "POST", headers: authHeader(), body: JSON.stringify(body) }); const data = await res.json().catch(() => ({})); if (!res.ok) { msg.textContent = data.error || "Could not save."; return; } msg.textContent = "Saved. Page: /addons/view?id=" + data.id; resetForm(); loadProducts(); }
+async function deleteProduct(id) { if (!confirm("Remove this addon?")) return; const res = await fetch("/api/products/" + encodeURIComponent(id), { method: "DELETE", headers: authHeader() }); const data = await res.json().catch(() => ({})); if (!res.ok) { alert(data.error || "Could not remove addon"); return; } loadProducts(); }
+async function loadNewsletter() { const res = await fetch("/api/newsletter"); const data = await res.json(); document.getElementById("posts-list").innerHTML = (data.posts || []).map(p => `<div class="border-top py-2 d-flex justify-content-between"><span>${p.title}</span><button class="btn btn-outline-danger btn-sm" onclick="deletePost(${p.id})">Remove</button></div>`).join("") || "<p class='text-muted'>No articles.</p>"; }
+async function savePost(e) { e.preventDefault(); const res = await fetch("/api/newsletter", { method: "POST", headers: authHeader(), body: JSON.stringify({ title: document.getElementById("n-title").value, image_url: document.getElementById("n-image").value, content: document.getElementById("n-content").value }) }); document.getElementById("n-status-msg").textContent = res.ok ? "Published." : "Could not publish"; if (res.ok) e.target.reset(); loadNewsletter(); }
+async function deletePost(id) { await fetch("/api/newsletter/" + id, { method: "DELETE", headers: authHeader() }); loadNewsletter(); }
+async function loadOrders() { const res = await fetch("/api/admin/orders", { headers: authHeader() }); const data = await res.json(); document.getElementById("admin-orders-tbody").innerHTML = (data.orders || []).map(o => `<tr><td>#${o.id}</td><td>${o.customer_name || ""}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td>${o.status || ""}</td></tr>`).join("") || "<tr><td class='p-3 text-muted'>No orders.</td></tr>"; const people = await fetch("/api/admin/customers", { headers: authHeader() }); document.getElementById("admin-customers-tbody").innerHTML = ((await people.json()).customers || []).map(c => `<tr><td>${c.name}</td><td>${c.email}</td><td>${c.role}</td></tr>`).join(""); }
+document.addEventListener("DOMContentLoaded", () => { if (!checkAdmin()) return; loadProducts(); loadNewsletter(); loadOrders(); });
 </script>
 </body>
 </html>

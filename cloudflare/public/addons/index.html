@@ -7,24 +7,24 @@
     <title>Addons | Rotaidem</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
     <link rel="stylesheet" href="/site.css">
-    <style>.card-addon { border: 0; box-shadow: 0 8px 24px rgba(0,0,0,.08); overflow: hidden; height: 100%; } .card-addon img { height: 210px; object-fit: cover; width: 100%; }</style>
+    <style>.card-addon { border: 0; box-shadow: 0 8px 24px rgba(0,0,0,.08); overflow: hidden; height: 100%; } .card-addon img { height: 210px; object-fit: cover; width: 100%; background: #eee; }</style>
 </head>
 <body class="bg-light">
-<nav class="navbar rotaidem-nav"><div class="container"><a class="navbar-brand" href="/"><img src="/images/mark.jpg" alt=""> Rotaidem</a><ul class="navbar-nav"><li class="nav-item"><a class="nav-link" href="/">Home</a></li><li class="nav-item"><a class="nav-link" href="/addons">Addons</a></li><li class="nav-item"><a class="nav-link" href="/about">About</a></li><li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work</a></li><li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li><li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li></ul><div id="auth-buttons"></div></div></nav>
-<header class="hero-band" style="background-image: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('/images/seabee-water.jpg');"><div class="container pb-5"><h1 class="display-4 font-weight-bold">Addons</h1><p class="lead mb-0">Aircraft and extras from Rotaidem.</p></div></header>
+<nav class="navbar rotaidem-nav"><div class="container"><a class="navbar-brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt=""> Rotaidem</a><ul class="navbar-nav"><li class="nav-item"><a class="nav-link" href="/">Home</a></li><li class="nav-item"><a class="nav-link" href="/addons/">Addons</a></li><li class="nav-item"><a class="nav-link" href="/about">About</a></li><li class="nav-item"><a class="nav-link" href="/work-at-rsg">Work</a></li><li class="nav-item"><a class="nav-link" href="/contact">Contact</a></li><li class="nav-item"><a class="nav-link" href="/newsletter">Newsletter</a></li></ul><div id="auth-buttons"></div></div></nav>
+<header class="hero-band" style="background-image: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg');"><div class="container pb-5"><h1 class="display-4 font-weight-bold">Addons</h1><p class="lead mb-0">Aircraft and extras from Rotaidem.</p></div></header>
 <section class="py-5"><div class="container"><div class="row" id="addon-list"><div class="col-12 text-muted">Loading addons...</div></div></div></section>
 <footer class="py-4 text-center bg-white border-top"><a href="/terms" class="mr-3">Terms of Service</a><a href="/privacy">Privacy Policy</a></footer>
 <script src="/auth.js"></script>
 <script>
-const fallback = [{ id: "seabee", name: "Republic RC-3 Seabee", price: "$29.99", description: "A four-seat amphibious flying boat for water and land operations.", image_url: "/images/seabee-water.jpg", status: "in_development" }];
+const FALLBACK = "https://i.postimg.cc/28WybSM2/metroliner.jpg";
+function safeImage(url) { return /^https?:\/\/.+\..+/.test(url || "") ? url : FALLBACK; }
 function card(item) {
-    const img = item.image_url || "/images/seabee-water.jpg";
-    return `<div class="col-md-6 col-lg-4 mb-4"><div class="card card-addon"><img src="${img}" alt="${item.name}"><div class="card-body"><div class="text-muted small mb-2">${item.status || "in_development"} · ${item.price || ""}</div><h3>${item.name}</h3><p class="text-muted">${item.description || ""}</p><a class="btn btn-dark" href="/addons/view?id=${encodeURIComponent(item.id)}">Buy here</a></div></div></div>`;
+    return `<div class="col-md-6 col-lg-4 mb-4"><div class="card card-addon"><img src="${safeImage(item.image_url)}" alt="${item.name}"><div class="card-body"><div class="text-muted small mb-2">${item.status || "in_development"} · ${item.price || ""}</div><h3>${item.name}</h3><p class="text-muted">${item.description || ""}</p><a class="btn btn-dark" href="/addons/view?id=${encodeURIComponent(item.id)}">Buy here</a></div></div></div>`;
 }
 fetch("/api/products").then(r => r.json()).then(data => {
-    const items = (data.products || []).length ? data.products : fallback;
-    document.getElementById("addon-list").innerHTML = items.map(card).join("");
-}).catch(() => { document.getElementById("addon-list").innerHTML = fallback.map(card).join(""); });
+    const items = data.products || [];
+    document.getElementById("addon-list").innerHTML = items.length ? items.map(card).join("") : "<div class='col-12 text-muted'>No addons yet.</div>";
+}).catch(() => { document.getElementById("addon-list").innerHTML = "<div class='col-12 text-danger'>Could not load addons.</div>"; });
 </script>
 </body>
 </html>
