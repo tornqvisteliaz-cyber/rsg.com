@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 concurrency:
   group: pages
@@ -36,3 +37,13 @@ jobs:
           git add -A
           git commit -qm "Deploy ${GITHUB_SHA}"
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+      - name: Clear Pages custom domain (preview must stay on github.io)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Current Pages config:"
+          gh api "repos/${GITHUB_REPOSITORY}/pages" --jq '{url: .html_url, cname: .cname, source: .source}' || true
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/pages" -F cname=null \
+            && echo "Custom domain cleared." \
+            || echo "::warning::Could not clear the custom domain automatically. Remove it in Settings → Pages → Custom domain."
