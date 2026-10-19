@@ -54,7 +54,7 @@ p { margin: 0 0 1em; }
 .header { position: sticky; top: 0; z-index: 50; background: rgba(var(--navy-rgb), .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--navy-line); color: #fff; }
 .header .wrap { display: flex; align-items: center; height: 72px; gap: 40px; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: #fff; font-weight: 600; font-size: 17px; letter-spacing: .14em; text-transform: uppercase; }
-.brand img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
+.brand img { height: 22px; width: auto; }
 .menu { display: flex; height: 100%; gap: 4px; }
 .menu-item { position: relative; display: flex; align-items: center; }
 .menu-link { display: flex; align-items: center; gap: 8px; height: 100%; padding: 0 14px; text-decoration: none; font-size: 15px; color: #b8c1cc; border-bottom: 2px solid transparent; }

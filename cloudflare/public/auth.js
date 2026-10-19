@@ -1,6 +1,6 @@
 // Shared layout: header toolbar with dropdowns, footer and login state.
 // <body data-layout="off"> skips the layout, data-footer="off" skips only the footer.
-const LOGO = "https://i.postimg.cc/rwKST91B/rsgsoftware.png";
+const LOGO = "/logo.svg";
 const MENU = [
     ["Products", "/addons/", [["/heavypro", "HeavyPro", "Airliner control feel for MSFS 2024"], ["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
     ["Support", "/support", [["/support", "Help and FAQ", "Answers to common questions"], ["/installation", "Installation guide", "Set up HeavyPro step by step"], ["/downloads", "Downloads", "Installers and updates"], ["/contact", "Contact us", "Email and contact form"]]],
@@ -33,7 +33,7 @@ function renderLayout() {
     }).join("");
     const header = document.createElement("header");
     header.className = "header";
-    header.innerHTML = `<div class="wrap"><a class="brand" href="/"><img src="${LOGO}" alt="">Rotaidem</a>` +
+    header.innerHTML = `<div class="wrap"><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a>` +
         `<nav class="menu">${menu}</nav><div class="header-cta" id="auth-links"></div>` +
         `<button class="nav-toggle" aria-label="Menu" onclick="this.closest('.header').classList.toggle('open')"><span></span><span></span><span></span></button></div>`;
     body.prepend(header);
@@ -42,7 +42,7 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${LOGO}" alt="">Rotaidem</a><p style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
                 <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
             <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
