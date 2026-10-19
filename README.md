@@ -1,6 +1,6 @@
 # Rotaidem website
 
-Home of HeavyPro for Microsoft Flight Simulator 2024. All rights to Rotaidem, Eliaz T and Vanya.
+Home of HeavyPro, a control-feel app for Microsoft Flight Simulator 2024. All rights to Rotaidem, Eliaz T and Vanya.
 
 The site lives in `cloudflare/public` (static pages) and has one API with two interchangeable backends:
 

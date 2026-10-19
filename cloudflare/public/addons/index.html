@@ -4,26 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Products | Rotaidem</title>
-    <meta name="description" content="All Rotaidem products for Microsoft Flight Simulator 2024.">
+    <meta name="description" content="Rotaidem products for Microsoft Flight Simulator 2024.">
     <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
     <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-<header class="hero hero-short" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')">
-    <div class="wrap"><span class="eyebrow">Products</span><h1 class="title-xl">The hangar</h1><p class="lead">HeavyPro aircraft and extras for Microsoft Flight Simulator 2024.</p></div>
-</header>
-<section class="section-tight">
-    <div class="wrap"><div class="grid grid-3" id="addon-list"><div class="empty" style="grid-column:1/-1">Loading products…</div></div></div>
-</section>
+<section class="page-head" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / Products</div><h1>Products</h1><p>Software for Microsoft Flight Simulator 2024.</p></div></section>
+<section class="section-tight"><div class="wrap"><div class="grid grid-3" id="list"><p class="muted">Loading products…</p></div></div></section>
 <script src="/auth.js"></script>
 <script>
-function tile(p) {
-    return `<a class="tile" href="/addons/view?id=${encodeURIComponent(p.id)}"><img src="${esc(safeImage(p.image_url))}" alt=""><div class="tile-body"><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span><h3>${esc(p.name)}</h3><p class="muted" style="margin:0 0 6px">${esc(p.tagline || p.simulator || "")}</p><span class="price">${esc(p.price)}</span></div></a>`;
-}
-fetch("/api/products").then(r => r.json()).then(data => {
-    const items = data.products || [];
-    document.getElementById("addon-list").innerHTML = items.length ? items.map(tile).join("") : '<div class="empty" style="grid-column:1/-1"><h3>No products yet</h3><p>HeavyPro is on its way. Follow the <a href="/newsletter">news</a> for updates.</p></div>';
-}).catch(() => { document.getElementById("addon-list").innerHTML = '<div class="empty" style="grid-column:1/-1">Could not load products.</div>'; });
+const none = '<div class="empty" style="grid-column:1/-1"><h3>Nothing to show yet</h3><p>HeavyPro is our first product. It will appear here at launch. <a href="/heavypro">Read about HeavyPro</a>.</p></div>';
+fetch("/api/products").then(r => r.json()).then(d => {
+    const items = d.products || [];
+    document.getElementById("list").innerHTML = items.length ? items.map(productCard).join("") : none;
+}).catch(() => { document.getElementById("list").innerHTML = none; });
 </script>
 </body>
 </html>

@@ -9,24 +9,21 @@
     <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-<header class="hero" id="hero" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')">
-    <div class="wrap">
-        <a href="/addons/" class="muted" style="text-decoration:none;font-size:13px;letter-spacing:.14em;text-transform:uppercase">← All products</a>
-        <div style="margin-top:18px"><span class="badge" id="status"></span></div>
-        <h1 class="title-xl" id="title" style="margin-top:14px">Loading…</h1>
-        <p class="lead" id="tagline"></p>
-        <div class="actions"><a id="buy" class="btn" href="mailto:Eliaz@rotaidem.com">Buy now</a><span class="title-lg" id="price" style="font-size:32px;align-self:center"></span></div>
-    </div>
-</header>
+<section class="page-head" id="hero" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')"><div class="wrap" style="padding-top:110px;padding-bottom:70px">
+    <div class="crumbs"><a href="/">Home</a> / <a href="/addons/">Products</a> / <span id="crumb"></span></div>
+    <h1 id="title">Loading…</h1><p id="tagline"></p>
+</div></section>
 <section class="section">
     <div class="wrap split" style="align-items:start">
-        <div><span class="eyebrow">Overview</span><div id="description" class="lead" style="white-space:pre-line"></div></div>
-        <div class="card"><h3>Specifications</h3><table class="table"><tbody id="specs"></tbody></table><ul id="features" style="padding-left:18px;margin:20px 0 0;color:#c4cbd6"></ul></div>
+        <div><h2>Overview</h2><p id="description" class="lead" style="white-space:pre-line"></p><ul class="list-plain" id="features"></ul></div>
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><span class="stat-num" id="price"></span><span class="badge" id="status"></span></div>
+            <a id="buy" class="btn btn-accent btn-block" href="mailto:Eliaz@rotaidem.com">Buy now</a>
+            <table class="table" style="margin-top:22px"><tbody id="specs"></tbody></table>
+        </div>
     </div>
 </section>
-<section class="section alt" id="gallery-section">
-    <div class="wrap"><span class="eyebrow">Gallery</span><h2 class="title-lg">In the sim</h2><div class="grid grid-3" id="gallery" style="margin-top:32px"></div></div>
-</section>
+<section class="section alt" id="gallery-section"><div class="wrap"><h2>Screenshots</h2><div class="grid grid-3" id="gallery" style="margin-top:28px"></div></div></section>
 <script src="/auth.js"></script>
 <script>
 const id = new URLSearchParams(location.search).get("id") || "";
@@ -34,27 +31,22 @@ function show(p) {
     document.title = p.name + " | Rotaidem";
     const hero = safeImage(p.image_url);
     document.getElementById("hero").style.backgroundImage = "url('" + hero.replace(/'/g, "%27") + "')";
-    document.getElementById("title").textContent = p.name;
-    document.getElementById("tagline").textContent = p.tagline || "";
-    document.getElementById("description").textContent = p.description || "";
-    document.getElementById("price").textContent = p.price || "";
-    const status = document.getElementById("status");
-    status.textContent = STATUS_LABEL[p.status] || p.status || "";
-    status.className = "badge " + (p.status || "");
+    for (const [k, v] of [["title", p.name], ["crumb", p.name], ["tagline", p.tagline], ["description", p.description], ["price", p.price]]) document.getElementById(k).textContent = v || "";
+    const st = document.getElementById("status");
+    st.textContent = STATUS_LABEL[p.status] || p.status || ""; st.className = "badge " + (p.status || "");
     const buy = document.getElementById("buy");
     if (p.buy_url && /^(https?:|mailto:)/.test(p.buy_url)) buy.href = p.buy_url;
-    if (p.status !== "published") buy.textContent = "Register interest";
-    document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version], ["Status", STATUS_LABEL[p.status] || p.status]]
-        .filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
+    if (p.status !== "published") buy.textContent = "Notify me";
+    document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
     document.getElementById("features").innerHTML = (p.features || []).map(f => `<li>${esc(f)}</li>`).join("");
-    const images = [hero].concat((p.images || []).map(safeImage)).filter((u, i, l) => l.indexOf(u) === i);
-    document.getElementById("gallery").innerHTML = images.map(u => `<a class="tile" href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt=""></a>`).join("");
+    const imgs = [hero].concat((p.images || []).map(safeImage)).filter((u, i, l) => l.indexOf(u) === i);
+    document.getElementById("gallery").innerHTML = imgs.map(u => `<a class="tile" href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt=""></a>`).join("");
 }
-fetch("/api/products").then(r => r.json()).then(data => {
-    const p = (data.products || []).find(x => x.id === id);
-    if (!p) { document.getElementById("title").textContent = "Not found"; document.getElementById("gallery-section").remove(); return; }
+fetch("/api/products").then(r => r.json()).then(d => {
+    const p = (d.products || []).find(x => x.id === id);
+    if (!p) { document.getElementById("title").textContent = "Product not found"; document.getElementById("gallery-section").remove(); return; }
     show(p);
-}).catch(() => { document.getElementById("title").textContent = "Could not load"; });
+}).catch(() => { document.getElementById("title").textContent = "Product not found"; document.getElementById("gallery-section").remove(); });
 </script>
 </body>
 </html>

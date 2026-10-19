@@ -9,26 +9,29 @@
     <link rel="stylesheet" href="/site.css">
 </head>
 <body data-footer="off">
-<main class="auth-page">
-    <form class="auth-card" id="login-form">
-        <span class="eyebrow">Welcome back</span>
-        <h1 class="title-lg" style="font-size:36px">Log in</h1>
-        <div class="field"><label for="email">Email or username</label><input id="email" autocomplete="username" required></div>
-        <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
-        <button class="btn btn-block">Log in</button>
-        <p id="error" class="msg"></p>
-        <p class="muted" style="font-size:14px">No account? <a href="/signup">Create one</a></p>
-    </form>
+<main class="auth">
+    <div class="auth-side" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')"><div><h2>Welcome back</h2><p>Your licences, downloads and orders are waiting in your account.</p></div></div>
+    <div class="auth-form">
+        <form id="form">
+            <h1 style="font-size:32px">Log in</h1>
+            <p class="muted" style="margin-bottom:26px">Use the email address or username you signed up with.</p>
+            <div class="field"><label for="email">Email or username</label><input id="email" autocomplete="username" required></div>
+            <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+            <button class="btn btn-block">Log in</button>
+            <p id="error" class="msg"></p>
+            <p class="alt-link">New to Rotaidem? <a href="/signup">Create an account</a></p>
+        </form>
+    </div>
 </main>
 <script src="/auth.js"></script>
 <script>
-document.getElementById("login-form").onsubmit = async e => {
+const $ = id => document.getElementById(id);
+$("form").onsubmit = async e => {
     e.preventDefault();
-    const msg = document.getElementById("error");
-    msg.className = "msg"; msg.textContent = "Signing in…";
-    const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: document.getElementById("email").value, password: document.getElementById("password").value }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Login failed"; return; }
+    const msg = $("error"); msg.className = "msg"; msg.textContent = "Logging in…";
+    const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: $("email").value, password: $("password").value }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Login is not available right now."; return; }
     saveSession(data);
     location.href = data.is_admin ? "/admin" : "/account";
 };
