@@ -29,7 +29,7 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM
-        sync: false
+        value: Rotaidem <no-reply@rotaidem.com>
 
 databases:
   - name: rotaidem-db

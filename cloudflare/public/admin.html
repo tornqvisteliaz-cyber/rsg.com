@@ -152,7 +152,7 @@
     </section>
 
     <section class="pane" id="pane-email" data-title="Email a product">
-        <div class="notice" id="email-setup" style="display:none">Email sending is not set up yet. Add <strong>RESEND_API_KEY</strong> (from resend.com) and <strong>MAIL_FROM</strong> (for example <code>Rotaidem &lt;news@rotaidem.com&gt;</code>) to the server's environment variables, then redeploy. You can still prepare a message and see who would receive it.</div>
+        <div class="notice" id="email-setup" style="display:none">Email sending is not set up yet. Add <strong>RESEND_API_KEY</strong> (from resend.com) to the server's environment variables and redeploy. Emails are sent from <strong>Rotaidem &lt;no-reply@rotaidem.com&gt;</strong>, so rotaidem.com must be verified in Resend. You can still prepare a message and see who would receive it.</div>
         <div class="compose">
             <form class="panel" id="email-form">
                 <div class="panel-head"><h2>Compose</h2><span class="muted" style="font-size:13px" id="e-from"></span></div>

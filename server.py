@@ -36,7 +36,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "in
 STAFF = ("Owner", "Admin", "Support")
 SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
-MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <onboarding@resend.dev>"
+MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 ROLES = ("Customer", "Support", "Admin", "Owner")
@@ -612,7 +612,7 @@ def explain_resend_error(status, raw):
     if "own email address" in text or ("verify a domain" in text and "resend.dev" in MAIL_FROM):
         return ("Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address "
                 "you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com "
-                "at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <news@rotaidem.com>.")
+                "at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <no-reply@rotaidem.com>.")
     if "domain is not verified" in text or "not verified" in text:
         return (f"The sender domain in MAIL_FROM ({MAIL_FROM}) is not verified in Resend yet. Finish the DNS setup at "
                 "resend.com/domains, or remove MAIL_FROM to use Resend's test sender.")
@@ -622,7 +622,7 @@ def explain_resend_error(status, raw):
     if "error code: 1010" in text or "<html" in text:
         return "Resend's firewall blocked the request. Try again in a minute; if it keeps happening, contact Resend support."
     if "from" in text and ("invalid" in text or "format" in text):
-        return f"MAIL_FROM is not a valid sender ({MAIL_FROM}). Use the format: Rotaidem <news@rotaidem.com>"
+        return f"MAIL_FROM is not a valid sender ({MAIL_FROM}). Use the format: Rotaidem <no-reply@rotaidem.com>"
     return f"Resend said ({status}): {message or raw[:200]}"
 
 
@@ -661,7 +661,7 @@ def admin_broadcast():
     if not user:
         return err("Only the Owner or an Admin can send emails", 403)
     if not RESEND_API_KEY:
-        return err("Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the server environment.", 400)
+        return err("Email is not set up. Add RESEND_API_KEY to the server environment and redeploy.", 400)
     b = body()
     subject = str(b.get("subject", "")).strip()
     message = str(b.get("message", "")).strip()

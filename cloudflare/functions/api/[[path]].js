@@ -307,7 +307,7 @@ const AUDIENCE_SQL = {
   subscribers: "SELECT email FROM subscribers WHERE unsubscribed = 0",
   contacts: "SELECT DISTINCT email FROM messages",
 };
-const mailFrom = env => String(env.MAIL_FROM || "").trim() || "Rotaidem <onboarding@resend.dev>";
+const mailFrom = env => String(env.MAIL_FROM || "").trim() || "Rotaidem <no-reply@rotaidem.com>";
 const resendKey = env => String(env.RESEND_API_KEY || "").trim();
 
 function explainResendError(env, status, raw) {
@@ -316,13 +316,13 @@ function explainResendError(env, status, raw) {
   const text = (message || raw).toLowerCase();
   const from = mailFrom(env);
   if (text.includes("own email address") || (text.includes("verify a domain") && from.includes("resend.dev")))
-    return "Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <news@rotaidem.com>.";
+    return "Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <no-reply@rotaidem.com>.";
   if (text.includes("not verified"))
     return `The sender domain in MAIL_FROM (${from}) is not verified in Resend yet. Finish the DNS setup at resend.com/domains, or remove MAIL_FROM to use Resend's test sender.`;
   if ((status === 401 || status === 403) && /api key|unauthorized|restricted/.test(text))
     return "Resend rejected the API key. Check RESEND_API_KEY (it starts with re_ and must have sending access), save, and redeploy.";
   if (text.includes("from") && /invalid|format/.test(text))
-    return `MAIL_FROM is not a valid sender (${from}). Use the format: Rotaidem <news@rotaidem.com>`;
+    return `MAIL_FROM is not a valid sender (${from}). Use the format: Rotaidem <no-reply@rotaidem.com>`;
   return `Resend said (${status}): ${message || raw.slice(0, 200)}`;
 }
 const escHtml = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -393,7 +393,7 @@ async function adminAudience(request, env) {
 async function adminBroadcast(request, env) {
   const user = await currentUser(request, env);
   if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
-  if (!resendKey(env)) return json({ error: "Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the environment variables." }, 400);
+  if (!resendKey(env)) return json({ error: "Email is not set up. Add RESEND_API_KEY to the environment variables and redeploy." }, 400);
   const body = await request.json();
   const subject = String(body.subject || "").trim();
   const message = String(body.message || "").trim();

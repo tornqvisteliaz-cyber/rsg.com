@@ -23,7 +23,7 @@ Admin → **Email a product** sends a product announcement to any mix of: everyo
 Sending uses [Resend](https://resend.com). Set these environment variables:
 
 - `RESEND_API_KEY`: your Resend API key.
-- `MAIL_FROM`: the sender, e.g. `Rotaidem <news@rotaidem.com>`. The domain must be verified in Resend; until then only `onboarding@resend.dev` works, and only to your own address.
+- `MAIL_FROM` (optional): the sender. Defaults to `Rotaidem <no-reply@rotaidem.com>`; the rotaidem.com domain must be verified in Resend.
 - `SECRET_KEY`: any long random value; it signs unsubscribe links (the Render blueprint generates one).
 - `SITE_URL` (optional): public address used for links in emails, e.g. `https://rotaidem.com`.
 
