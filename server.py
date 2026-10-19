@@ -15,6 +15,8 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -36,12 +38,30 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
 # ---------- database ----------
 
+def pg_options():
+    # External (public) database URLs need TLS; internal hosts and localhost may not support it.
+    opts = {"connect_timeout": 10}
+    if "sslmode=" not in DATABASE_URL:
+        host = re.sub(r"^postgresql://([^@]*@)?", "", DATABASE_URL).split("/")[0].split(":")[0]
+        if host not in ("localhost", "127.0.0.1") and "." in host:
+            opts["sslmode"] = "require"
+    return opts
+
+
 class DB:
     def __init__(self):
         if USE_PG:
             import psycopg
             from psycopg.rows import dict_row
-            self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
+            # Retry briefly: managed databases can drop the first connection while waking up.
+            for attempt in range(5):
+                try:
+                    self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True, **pg_options())
+                    break
+                except psycopg.OperationalError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(2 ** attempt)
         else:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(DATA_DIR / "rotaidem.db")
@@ -519,7 +539,29 @@ def headers(resp):
     return resp
 
 
-ensure_schema()
+SCHEMA_READY = False
+
+
+def init_schema():
+    """Create tables once. A database outage must not stop the site from serving pages."""
+    global SCHEMA_READY
+    if SCHEMA_READY:
+        return True
+    try:
+        ensure_schema()
+        SCHEMA_READY = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"Database not ready: {exc}", file=sys.stderr, flush=True)
+    return SCHEMA_READY
+
+
+@app.before_request
+def schema_guard():
+    if request.path.startswith("/api/") and not init_schema():
+        return err("Database is not reachable right now. Try again in a minute.", 503)
+
+
+init_schema()
 
 if __name__ == "__main__":
     app.run(port=int(os.environ.get("PORT", 8000)), debug=True)
