@@ -1,22 +1,22 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 
 :root {
-  --navy: #0b1f3a;
-  --navy-rgb: 11, 31, 58;
-  --navy-hover: #1a3560;
-  --navy-2: #12294b;
-  --navy-line: #21406b;
+  --navy: #141517;
+  --navy-rgb: 20, 21, 23;
+  --navy-hover: #2a2d31;
+  --navy-2: #1e2023;
+  --navy-line: #30333a;
   --bg: #ffffff;
-  --bg-2: #f3f4f6;
-  --ink: #0b1f3a;
-  --text: #39424e;
-  --muted: #6b7480;
-  --line: #e2e5e9;
-  --accent: #5aaef5;
-  --accent-ink: #1f6db3;
-  --accent-rgb: 90, 174, 245;
-  --accent-hover: #80c2fa;
-  --accent-soft: #e2f0fd;
+  --bg-2: #f4f4f5;
+  --ink: #141517;
+  --text: #3a3c40;
+  --muted: #6d6f75;
+  --line: #e4e4e7;
+  --accent: #f26a1b;
+  --accent-ink: #b84a0c;
+  --accent-rgb: 242, 106, 27;
+  --accent-hover: #ff8340;
+  --accent-soft: #fdeadf;
   --ok: #1f7a4a;
   --danger: #b4232b;
   --wrap: 1200px;

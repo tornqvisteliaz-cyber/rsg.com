@@ -406,8 +406,8 @@ function renderPreview() {
     const msg = esc($("e-message").value || "Your message appears here.").replace(/\n/g, "<br>");
     let block = "";
     if (p) block = (/^https:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : "") +
-        `<div style="font-size:20px;font-weight:bold;color:#0b1f3a">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#0b1f3a">${esc(p.price || "")}</div>`;
-    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${block}<span style="display:inline-block;background:#0b1f3a;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
+        `<div style="font-size:20px;font-weight:bold;color:#141517">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#141517">${esc(p.price || "")}</div>`;
+    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${block}<span style="display:inline-block;background:#141517;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
 }
 ["e-product", "e-message"].forEach(id => $(id).addEventListener("input", renderPreview));
 async function sendEmail(test) {
