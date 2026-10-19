@@ -1,6 +1,5 @@
-from website import create_app
-
-app = create_app()
+# Entry point for Python hosts (Starto, Docker, Procfile): gunicorn main:app
+from server import app
 
 if __name__ == "__main__":
     app.run()

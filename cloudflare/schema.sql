@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS products (
   price TEXT,
   description TEXT,
   buy_url TEXT,
-  status TEXT
+  status TEXT,
+  images TEXT,
+  tagline TEXT,
+  features TEXT,
+  sort_order INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS liveries (
@@ -50,6 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id INTEGER,
+  product_id TEXT,
   status TEXT DEFAULT 'Completed',
   payment_status TEXT DEFAULT 'Paid',
   amount NUMERIC DEFAULT 29.99,
@@ -64,4 +69,9 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   target TEXT,
   ip_address TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
 );

@@ -37,6 +37,6 @@ The first login with those values creates the Owner account.
 
 ## Pages
 
-Home, aircraft, Seabee, about, work, contact, newsletter, login, signup, account, admin, terms, privacy.
+Home (HeavyPro), products, product page, about, careers, contact, news, login, signup, account, admin, terms, privacy.
 
 The installer API is the same shape: `/api/login`, `/api/products`, `/api/liveries`, `/api/save-product`, `/api/save-livery`.
