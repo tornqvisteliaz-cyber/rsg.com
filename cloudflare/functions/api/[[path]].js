@@ -350,14 +350,14 @@ async function productEmailHtml(env, base, product, message, email) {
   let block = "";
   if (product) {
     const img = /^https:\/\//.test(product.image_url || "") ? `<img src="${escHtml(product.image_url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">` : "";
-    block = `${img}<h2 style="margin:0 0 6px;font-size:22px;color:#0d1520">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#0d1520">${escHtml(product.price || "")}</p>`;
+    block = `${img}<h2 style="margin:0 0 6px;font-size:22px;color:#0b1f3a">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#0b1f3a">${escHtml(product.price || "")}</p>`;
   }
   return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
-<tr><td style="background:#0d1520;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="background:#0b1f3a;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
 <tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">${text}</td></tr>
-<tr><td style="padding:12px 28px 28px">${block}<a href="${escHtml(link)}" style="display:inline-block;background:#0d1520;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">${product ? "View " + escHtml(product.name) : "Visit rotaidem.com"}</a></td></tr>
+<tr><td style="padding:12px 28px 28px">${block}<a href="${escHtml(link)}" style="display:inline-block;background:#0b1f3a;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">${product ? "View " + escHtml(product.name) : "Visit rotaidem.com"}</a></td></tr>
 <tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
 <a href="${escHtml(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
 </table></td></tr></table></body></html>`;
