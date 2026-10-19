@@ -29,7 +29,7 @@ Sending uses [Resend](https://resend.com). Set these environment variables:
 
 ## Licence keys
 
-HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator program in `licensing/`, or in Admin → **Licences**, and activated by the app and installer through `/api/licenses/*`. Set `LICENSE_API_KEY` on the server so the generator can register keys. See [licensing/README.md](licensing/README.md).
+HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator program in `licensing/`, or in Admin → **Licences**, and activated by the app and installer through `/api/licenses/*`. Set `LICENSE_API_KEY` on the server so the generator can register keys. When a customer email is filled in (admin panel, generator, or an order with a licence), the key is emailed to the customer automatically. See [licensing/README.md](licensing/README.md).
 
 ## Deploy on Starto
 

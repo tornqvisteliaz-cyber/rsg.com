@@ -32,11 +32,12 @@ Build it with `dotnet run --project src/Rotaidem.LicenseGenerator`, or download 
 
 ```
 RotaidemLicenseGenerator generate --count 10 --email buyer@example.com --note "Launch batch"
+RotaidemLicenseGenerator generate --count 1 --email buyer@example.com --no-email   # register only, no email
 RotaidemLicenseGenerator generate --count 50 --no-upload --out batch.csv
 RotaidemLicenseGenerator verify HPRO-7KQM-2XRT-9HCW
 ```
 
-Every run saves a CSV. Keys made with `--no-upload` (or while offline) can be registered later in Admin → Licences → Import.
+When `--email` is given (or an email is typed in the menu), the website emails the keys to that customer, with activation instructions, from `MAIL_FROM` via Resend. Add `--no-email` to skip that. Every run saves a CSV. Keys made with `--no-upload` (or while offline) can be registered later in Admin → Licences → Import.
 
 ## Using it in the installer
 
@@ -96,7 +97,7 @@ To let users move to a new computer, call `DeactivateAsync(key)` from a menu ite
 | `POST /api/licenses/activate` | `key`, `machine_id`, `machine_name`, `product` | `{ valid, activations_used, max_activations }` or `{ valid: false, reason, error }` |
 | `POST /api/licenses/validate` | `key`, `machine_id`, `product` | as above; does not use an activation |
 | `POST /api/licenses/deactivate` | `key`, `machine_id` | `{ ok: true }` |
-| `POST /api/licenses/import` | `licenses: [{ key, product_id, email, max_activations, note }]` with header `X-License-Api-Key` | `{ created, skipped, invalid }` |
+| `POST /api/licenses/import` | `licenses: [{ key, product_id, email, max_activations, note }]`, optional `send_email: true`, header `X-License-Api-Key` | `{ created, skipped, invalid, emailed, email_error }` |
 
 `reason` is one of `invalid_format`, `not_found`, `revoked`, `wrong_product`, `activation_limit`, `not_activated`, `missing_machine`.
 

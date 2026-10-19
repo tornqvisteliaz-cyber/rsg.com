@@ -534,6 +534,12 @@ def admin_save_order():
                               2, "Created with order", user["name"]):
                 key = candidate
         audit(user, "create_licenses", f"{key} for order")
+        email = customer["email"] if customer else ""
+        if b.get("send_email", True) and email:
+            error = email_license_keys(email, [key], b["product_id"])
+            if not error:
+                audit(user, "email_licenses", email)
+            return jsonify({"ok": True, "license_key": key, **email_reply(email, error)})
     return jsonify({"ok": True, "license_key": key})
 
 
@@ -612,6 +618,49 @@ def clamp_int(value, default, low, high):
         return default
 
 
+def license_email_html(keys, product_name, max_activations):
+    base = site_url()
+    rows = "".join(f'<tr><td style="padding:14px 18px;background:#f4f4f5;border:1px solid #e4e4e7;font:bold 20px/1.2 Consolas,Menlo,monospace;letter-spacing:2px;color:#111315;text-align:center">{escape(k)}</td></tr><tr><td style="height:8px"></td></tr>' for k in keys)
+    plural = len(keys) > 1
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Your {escape(product_name)} licence key{"s" if plural else ""}</h1>
+<p style="margin:0 0 20px">Thank you for choosing {escape(product_name)}. Here {"are your keys" if plural else "is your key"}:</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows}</table></td></tr>
+<tr><td style="padding:12px 28px 8px;font-size:15px;line-height:1.6">
+<h2 style="margin:0 0 8px;font-size:17px;color:#111315">How to activate</h2>
+<ol style="margin:0 0 16px;padding-left:20px">
+<li>Download the installer from <a href="{escape(base)}/downloads" style="color:#111315">{escape(base.split("://")[-1])}/downloads</a>.</li>
+<li>Run it and enter your key when asked.</li>
+<li>Each key works on {max_activations} computer{"s" if max_activations != 1 else ""}. To move to a new PC, deactivate it in {escape(product_name)} first.</li>
+</ol></td></tr>
+<tr><td style="padding:4px 28px 28px"><a href="{escape(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">View my keys</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Keep this email somewhere safe. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def email_license_keys(email, keys, product_id):
+    """Email licence keys to a customer. Returns an error message, or '' when sent."""
+    if not keys or not email:
+        return ""
+    if not RESEND_API_KEY:
+        return "Email is not set up (RESEND_API_KEY is missing), so the key was not emailed."
+    product = db().first("SELECT name FROM products WHERE id = ?", product_id)
+    name = product["name"] if product else ("HeavyPro" if product_id == "heavypro" else product_id)
+    lic = db().first("SELECT max_activations FROM licenses WHERE license_key = ?", keys[0])
+    subject = f"Your {name} licence key" + ("s" if len(keys) > 1 else "")
+    sent, error = send_batch([{"from": MAIL_FROM, "to": [email], "subject": subject,
+                               "html": license_email_html(keys, name, lic["max_activations"] if lic else 2)}])
+    return "" if sent else error
+
+
+def email_reply(email, error):
+    return {"emailed": [email] if email and not error else [], "email_error": error}
+
+
 @app.post("/api/licenses/import")
 def licenses_import():
     """Used by the License Generator program to register keys it created."""
@@ -622,6 +671,7 @@ def licenses_import():
     if not isinstance(items, list) or len(items) > 1000:
         return err("Send a list of at most 1000 licences", 400)
     created, skipped, invalid = [], [], []
+    by_email = {}
     for item in items:
         key = normalize_key(item.get("key"))
         if not key:
@@ -632,9 +682,18 @@ def licenses_import():
         ok = insert_license(key, str(item.get("product_id") or "heavypro")[:60], email, customer["id"] if customer else None, None,
                             clamp_int(item.get("max_activations"), 2, 1, 100), str(item.get("note") or "")[:200], user["name"])
         (created if ok else skipped).append(key)
+        if ok and email and EMAIL_RE.match(email):
+            by_email.setdefault((email, str(item.get("product_id") or "heavypro")[:60]), []).append(key)
     if created:
         audit(user, "import_licenses", f"{len(created)} keys")
-    return jsonify({"ok": True, "created": created, "skipped": skipped, "invalid": invalid})
+    emailed, errors = [], []
+    if body().get("send_email"):
+        for (email, product_id), keys in by_email.items():
+            error = email_license_keys(email, keys, product_id)
+            (errors.append(f"{email}: {error}") if error else emailed.append(email))
+        if emailed:
+            audit(user, "email_licenses", ", ".join(emailed))
+    return jsonify({"ok": True, "created": created, "skipped": skipped, "invalid": invalid, "emailed": emailed, "email_error": "; ".join(errors)})
 
 
 @app.post("/api/admin/licenses/generate")
@@ -656,7 +715,10 @@ def admin_generate_licenses():
                           clamp_int(b.get("max_activations"), 2, 1, 100), str(b.get("note") or "")[:200], user["name"]):
             keys.append(key)
     audit(user, "create_licenses", f"{count} x {prefix}" + (f" for {email}" if email else ""))
-    return jsonify({"ok": True, "keys": keys})
+    error = email_license_keys(email, keys, str(b.get("product_id") or "heavypro")[:60]) if email and b.get("send_email", True) else ""
+    if email and b.get("send_email", True) and not error:
+        audit(user, "email_licenses", email)
+    return jsonify({"ok": True, "keys": keys, **email_reply(email if b.get("send_email", True) else "", error)})
 
 
 @app.get("/api/admin/licenses")
@@ -698,6 +760,24 @@ def admin_update_license(license_id):
              str(b.get("note", lic["note"]) or "")[:200], license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
     return jsonify({"ok": True})
+
+
+@app.post("/api/admin/licenses/<int:license_id>/email")
+def admin_email_license(license_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can email licences", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    email = str(body().get("email") or lic["email"] or "").strip().lower()
+    if not EMAIL_RE.match(email):
+        return err("This licence has no valid customer email. Add one first.", 400)
+    error = email_license_keys(email, [lic["license_key"]], lic["product_id"])
+    if error:
+        return err(error, 502)
+    audit(user, "email_licenses", f"{lic['license_key']} to {email}")
+    return jsonify({"ok": True, "emailed": [email]})
 
 
 @app.delete("/api/admin/licenses/<int:license_id>/activations/<int:activation_id>")

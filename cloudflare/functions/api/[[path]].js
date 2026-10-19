@@ -39,6 +39,7 @@ export async function onRequest(context) {
     if (method === "GET" && path === "/api/admin/licenses") return adminLicenses(request, env);
     if (method === "GET" && /^\/api\/admin\/licenses\/\d+$/.test(path)) return adminLicenseDetail(request, env, Number(path.split("/")[4]));
     if (method === "POST" && /^\/api\/admin\/licenses\/\d+$/.test(path)) return adminUpdateLicense(request, env, Number(path.split("/")[4]));
+    if (method === "POST" && /^\/api\/admin\/licenses\/\d+\/email$/.test(path)) return adminEmailLicense(request, env, Number(path.split("/")[4]));
     if (method === "DELETE" && /^\/api\/admin\/licenses\/\d+\/activations\/\d+$/.test(path)) return adminResetActivation(request, env, Number(path.split("/")[4]), Number(path.split("/")[6]));
     if (method === "POST" && path === "/api/subscribe") return subscribe(request, env);
     if (method === "POST" && path === "/api/unsubscribe") return unsubscribe(request, env);
@@ -281,6 +282,12 @@ async function adminSaveOrder(request, env) {
       if (await insertLicense(env, candidate, body.product_id, customer ? customer.email : "", Number(body.customer_id), order ? order.id : null, 2, "Created with order", user.name)) key = candidate;
     }
     await audit(env, user, "create_licenses", key + " for order");
+    const email = customer ? customer.email : "";
+    if (body.send_email !== false && email) {
+      const error = await emailLicenseKeys(env, request, email, [key], body.product_id);
+      if (!error) await audit(env, user, "email_licenses", email);
+      return json({ ok: true, license_key: key, emailed: error ? [] : [email], email_error: error });
+    }
     return json({ ok: true, license_key: key });
   }
   return json({ ok: true });
@@ -368,21 +375,89 @@ async function customerIdFor(env, email) {
   return row ? row.id : null;
 }
 
+function licenseEmailHtml(base, keys, productName, max) {
+  const rows = keys.map(k => `<tr><td style="padding:14px 18px;background:#f4f4f5;border:1px solid #e4e4e7;font:bold 20px/1.2 Consolas,Menlo,monospace;letter-spacing:2px;color:#111315;text-align:center">${escHtml(k)}</td></tr><tr><td style="height:8px"></td></tr>`).join("");
+  const plural = keys.length > 1;
+  return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Your ${escHtml(productName)} licence key${plural ? "s" : ""}</h1>
+<p style="margin:0 0 20px">Thank you for choosing ${escHtml(productName)}. Here ${plural ? "are your keys" : "is your key"}:</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0">${rows}</table></td></tr>
+<tr><td style="padding:12px 28px 8px;font-size:15px;line-height:1.6">
+<h2 style="margin:0 0 8px;font-size:17px;color:#111315">How to activate</h2>
+<ol style="margin:0 0 16px;padding-left:20px">
+<li>Download the installer from <a href="${escHtml(base)}/downloads" style="color:#111315">${escHtml(base.split("://").pop())}/downloads</a>.</li>
+<li>Run it and enter your key when asked.</li>
+<li>Each key works on ${max} computer${max !== 1 ? "s" : ""}. To move to a new PC, deactivate it in ${escHtml(productName)} first.</li>
+</ol></td></tr>
+<tr><td style="padding:4px 28px 28px"><a href="${escHtml(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">View my keys</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Keep this email somewhere safe. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>`;
+}
+
+// Returns an error message, or "" when the email was sent.
+async function emailLicenseKeys(env, request, email, keys, productId) {
+  if (!keys.length || !email) return "";
+  if (!resendKey(env)) return "Email is not set up (RESEND_API_KEY is missing), so the key was not emailed.";
+  const product = await env.DB.prepare("SELECT name FROM products WHERE id = ?").bind(productId).first();
+  const name = product ? product.name : (productId === "heavypro" ? "HeavyPro" : productId);
+  const lic = await env.DB.prepare("SELECT max_activations FROM licenses WHERE license_key = ?").bind(keys[0]).first();
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const res = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify([{ from: mailFrom(env), to: [email], subject: `Your ${name} licence key${keys.length > 1 ? "s" : ""}`, html: licenseEmailHtml(base, keys, name, lic ? lic.max_activations : 2) }]),
+  });
+  return res.ok ? "" : explainResendError(env, res.status, await res.text());
+}
+
+async function adminEmailLicense(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can email licences" }, 403);
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE id = ?").bind(id).first();
+  if (!lic) return json({ error: "Licence not found" }, 404);
+  const body = await request.json().catch(() => ({}));
+  const email = String(body.email || lic.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return json({ error: "This licence has no valid customer email. Add one first." }, 400);
+  const error = await emailLicenseKeys(env, request, email, [lic.license_key], lic.product_id);
+  if (error) return json({ error }, 502);
+  await audit(env, user, "email_licenses", `${lic.license_key} to ${email}`);
+  return json({ ok: true, emailed: [email] });
+}
+
 async function licensesImport(request, env) {
   const user = await licenseToolUser(request, env);
   if (!user) return json({ error: "Not allowed. Check the generator's API key." }, 403);
-  const items = (await request.json()).licenses || [];
+  const payload = await request.json();
+  const items = payload.licenses || [];
   if (!Array.isArray(items) || items.length > 1000) return json({ error: "Send a list of at most 1000 licences" }, 400);
   const created = [], skipped = [], invalid = [];
+  const byEmail = new Map();
   for (const item of items) {
     const key = normalizeKey(item.key);
     if (!key) { invalid.push(String(item.key || "").slice(0, 40)); continue; }
     const email = String(item.email || "").trim().toLowerCase();
     const ok = await insertLicense(env, key, String(item.product_id || "heavypro").slice(0, 60), email, await customerIdFor(env, email), null, clampInt(item.max_activations, 2, 1, 100), String(item.note || "").slice(0, 200), user.name);
     (ok ? created : skipped).push(key);
+    if (ok && EMAIL_RE.test(email)) {
+      const group = email + "|" + String(item.product_id || "heavypro").slice(0, 60);
+      byEmail.set(group, (byEmail.get(group) || []).concat(key));
+    }
   }
   if (created.length) await audit(env, user, "import_licenses", `${created.length} keys`);
-  return json({ ok: true, created, skipped, invalid });
+  const emailed = [], errors = [];
+  if (payload.send_email) {
+    for (const [group, keys] of byEmail) {
+      const [email, productId] = group.split("|");
+      const error = await emailLicenseKeys(env, request, email, keys, productId);
+      if (error) errors.push(`${email}: ${error}`); else emailed.push(email);
+    }
+    if (emailed.length) await audit(env, user, "email_licenses", emailed.join(", "));
+  }
+  return json({ ok: true, created, skipped, invalid, emailed, email_error: errors.join("; ") });
 }
 
 async function adminGenerateLicenses(request, env) {
@@ -400,7 +475,10 @@ async function adminGenerateLicenses(request, env) {
     if (await insertLicense(env, key, String(body.product_id || "heavypro").slice(0, 60), email, customerId, null, clampInt(body.max_activations, 2, 1, 100), String(body.note || "").slice(0, 200), user.name)) keys.push(key);
   }
   await audit(env, user, "create_licenses", `${count} x ${prefix}` + (email ? ` for ${email}` : ""));
-  return json({ ok: true, keys });
+  const send = email && body.send_email !== false;
+  const error = send ? await emailLicenseKeys(env, request, email, keys, String(body.product_id || "heavypro").slice(0, 60)) : "";
+  if (send && !error) await audit(env, user, "email_licenses", email);
+  return json({ ok: true, keys, emailed: send && !error ? [email] : [], email_error: error });
 }
 
 async function adminLicenses(request, env) {

@@ -61,6 +61,7 @@ static async Task<int> RunMenu(GeneratorSettings settings)
                     Note = Ask("Note (optional)", ""),
                     Upload = settings.CanUpload && Ask("Register the keys on the website? (y/n)", "y").StartsWith('y'),
                 };
+                options.SendEmail = options.Upload && options.Email.Length > 0 && Ask($"Email the keys to {options.Email}? (y/n)", "y").StartsWith('y');
                 await Generate(settings, options);
                 break;
             case "2":
@@ -115,6 +116,10 @@ static async Task<int> Generate(GeneratorSettings settings, GenerateOptions opti
             {
                 uploaded.UnionWith(result.Created);
                 Console.WriteLine($"Registered on {settings.SiteUrl}: {result.Created.Count}. Already existed: {result.Skipped.Count}. Rejected: {result.Invalid.Count}.");
+                if (result.Emailed.Count > 0)
+                    Console.WriteLine($"Emailed to {string.Join(", ", result.Emailed)}.");
+                if (!string.IsNullOrEmpty(result.EmailError))
+                    Console.Error.WriteLine($"Email not sent: {result.EmailError}");
             }
         }
     }
@@ -141,6 +146,7 @@ static async Task<ImportReply?> Upload(GeneratorSettings settings, List<string> 
     http.DefaultRequestHeaders.Add("X-License-Api-Key", settings.ApiKey);
     var payload = new
     {
+        send_email = options.SendEmail,
         licenses = keys.Select(k => new { key = k, product_id = options.Product, email = options.Email, max_activations = options.MaxActivations, note = options.Note }),
     };
     try
@@ -195,6 +201,7 @@ static void PrintHelp()
           --max N            computers per key (default 2)
           --note TEXT        note shown in the admin panel
           --no-upload        only save the CSV, do not register on the website
+          --no-email         do not email the keys to --email (emailing is on by default)
           --out FILE         CSV file to write
         """);
 }
@@ -208,6 +215,7 @@ sealed class GenerateOptions
     public int MaxActivations { get; set; } = 2;
     public string Note { get; set; } = "";
     public bool Upload { get; set; } = true;
+    public bool SendEmail { get; set; } = true;
     public string? OutFile { get; set; }
 
     public static GenerateOptions Parse(string[] args, GeneratorSettings settings)
@@ -226,10 +234,12 @@ sealed class GenerateOptions
                 case "--max": o.MaxActivations = Number(); break;
                 case "--note": o.Note = Next(); break;
                 case "--no-upload": o.Upload = false; break;
+                case "--no-email": o.SendEmail = false; break;
                 case "--out": o.OutFile = Next(); break;
                 default: throw new ArgumentException($"Unknown option {args[i]}");
             }
         }
+        o.SendEmail = o.SendEmail && o.Upload && o.Email.Length > 0;
         return o;
     }
 }
@@ -239,4 +249,6 @@ sealed class ImportReply
     [JsonPropertyName("created")] public List<string> Created { get; set; } = [];
     [JsonPropertyName("skipped")] public List<string> Skipped { get; set; } = [];
     [JsonPropertyName("invalid")] public List<string> Invalid { get; set; } = [];
+    [JsonPropertyName("emailed")] public List<string> Emailed { get; set; } = [];
+    [JsonPropertyName("email_error")] public string? EmailError { get; set; }
 }
