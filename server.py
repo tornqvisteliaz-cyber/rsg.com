@@ -595,6 +595,18 @@ def normalize_key(value):
     return key
 
 
+def same_product(requested, stored):
+    """Products match if their ids agree ignoring case and punctuation, or one id is the other plus
+    extra words ("heavypro" matches "heavy-pro" and "heavypro-for-msfs-2024", not "heavypro2"),
+    so a catalogue entry with a longer name does not lock customers out."""
+    def prefixes(value):
+        words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+        return {"".join(words[:i]) for i in range(1, len(words) + 1)}, "".join(words)
+    a_all, a = prefixes(requested)
+    b_all, b = prefixes(stored)
+    return bool(a) and bool(b) and (a in b_all or b in a_all)
+
+
 def license_tool_user():
     """Staff session (Owner/Admin) or the LICENSE_API_KEY used by the generator program."""
     supplied = request.headers.get("X-License-Api-Key", "")
@@ -755,9 +767,10 @@ def admin_update_license(license_id):
         return err("Status must be active or revoked", 400)
     email = str(b.get("email", lic["email"]) or "").strip().lower()
     customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
-    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ? WHERE id = ?",
+    product_id = str(b.get("product_id") or lic["product_id"] or "heavypro").strip()[:60]
+    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ?, product_id = ? WHERE id = ?",
              status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
-             str(b.get("note", lic["note"]) or "")[:200], license_id)
+             str(b.get("note", lic["note"]) or "")[:200], product_id, license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
     return jsonify({"ok": True})
 
@@ -802,7 +815,7 @@ def license_for_request():
     if lic["status"] != "active":
         return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
     product = str(b.get("product") or "").strip()
-    if product and product != lic["product_id"]:
+    if product and not same_product(product, lic["product_id"]):
         return None, "", (jsonify({"valid": False, "reason": "wrong_product", "error": "This licence key is for another product."}), 403)
     machine = str(b.get("machine_id") or "").strip()[:128]
     if not machine:

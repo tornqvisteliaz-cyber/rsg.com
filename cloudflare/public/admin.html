@@ -223,7 +223,7 @@
                 <div class="panel-head"><h2>Create licence keys</h2></div>
                 <div class="panel-body">
                     <div class="form-grid">
-                        <div class="field"><label for="l-product">Product</label><select id="l-product"></select></div>
+                        <div class="field"><label for="l-product">Product</label><select id="l-product"></select><div class="hint">HeavyPro checks for id <strong>heavypro</strong>.</div></div>
                         <div class="field"><label for="l-prefix">Key prefix</label><input id="l-prefix" value="HPRO" maxlength="8"></div>
                         <div class="field"><label for="l-count">How many</label><input id="l-count" type="number" min="1" max="500" value="1"></div>
                         <div class="field"><label for="l-max">Computers per key</label><input id="l-max" type="number" min="1" max="100" value="2"></div>
@@ -294,7 +294,7 @@
 <div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
 
 <div class="modal-bg" id="lic-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 class="key" id="ld-key" style="font-size:18px"></h3><p class="muted" id="ld-meta" style="font-size:14px;margin:0"></p></div><button class="x" type="button" onclick="$('lic-modal').classList.remove('show')" aria-label="Close">×</button></div>
-    <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field full"><label for="ld-note">Note</label><input id="ld-note"></div></div>
+    <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field"><label for="ld-product">Product</label><select id="ld-product"></select></div><div class="field"><label for="ld-note">Note</label><input id="ld-note"></div></div>
     <div class="sub">Activated computers</div><table class="table"><tbody id="ld-machines"></tbody></table>
     <div class="actions" style="margin-top:20px;justify-content:space-between"><button class="btn btn-danger" type="button" id="ld-status"></button><span class="actions"><button class="btn btn-ghost" type="button" id="ld-email-btn">Email key to customer</button><button class="btn" type="button" id="ld-save">Save</button></span></div></div></div>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
@@ -361,7 +361,11 @@ async function loadProducts() {
     renderProducts();
     const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     $("o-product").innerHTML = '<option value="">None</option>' + opts;
-    $("l-product").innerHTML = state.products.length ? opts : '<option value="heavypro">heavypro</option>';
+    const licOpts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (id: ${esc(p.id)})</option>`).join("");
+    const hasHeavyPro = state.products.some(p => p.id === "heavypro");
+    $("l-product").innerHTML = (hasHeavyPro ? "" : '<option value="heavypro">HeavyPro app (id: heavypro)</option>') + licOpts;
+    $("l-product").value = "heavypro";
+    $("ld-product").innerHTML = $("l-product").innerHTML;
     const current = $("e-product").value;
     $("e-product").innerHTML = '<option value="">No product, just a message</option>' + opts;
     if (current) $("e-product").value = current;
@@ -652,10 +656,12 @@ async function openLicense(id) {
         $("ld-key").textContent = l.license_key;
         $("ld-meta").textContent = `${l.product_id} · created ${String(l.created_at || "").slice(0, 10)}${l.created_by ? " by " + l.created_by : ""}`;
         $("ld-email").value = l.email || ""; $("ld-max").value = l.max_activations; $("ld-note").value = l.note || "";
+        if (![...$("ld-product").options].some(o => o.value === l.product_id)) $("ld-product").insertAdjacentHTML("beforeend", `<option value="${esc(l.product_id)}">${esc(l.product_id)}</option>`);
+        $("ld-product").value = l.product_id;
         $("ld-machines").innerHTML = l.machines.length ? l.machines.map(m => `<tr><td>${esc(m.machine_name || "Unknown computer")}<div class="muted key" style="font-size:12px">${esc(m.machine_id)}</div></td><td class="muted">Last seen ${date(m.last_seen)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-act="${m.id}">Remove</button></div></td></tr>`).join("") : empty(3, "Not activated on any computer yet.");
         $("ld-status").textContent = l.status === "active" ? "Revoke key" : "Restore key";
         $("ld-status").className = "btn " + (l.status === "active" ? "btn-danger" : "btn-ghost");
-        const save = async extra => { await post("/api/admin/licenses/" + id, { email: val("ld-email"), max_activations: Number(val("ld-max")) || 1, note: val("ld-note"), ...extra }); loadLicenses(); loadAudit(); };
+        const save = async extra => { await post("/api/admin/licenses/" + id, { email: val("ld-email"), max_activations: Number(val("ld-max")) || 1, note: val("ld-note"), product_id: $("ld-product").value, ...extra }); loadLicenses(); loadAudit(); };
         $("ld-save").onclick = async () => { try { await save({}); toast("Licence saved"); $("lic-modal").classList.remove("show"); } catch (err) { toast(err.message, true); } };
         $("ld-status").onclick = async () => {
             const revoke = l.status === "active";

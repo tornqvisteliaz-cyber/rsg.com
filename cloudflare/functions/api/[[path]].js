@@ -356,6 +356,13 @@ function normalizeKey(value) {
 }
 const clampInt = (v, d, lo, hi) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
 
+// Same rule as same_product() in server.py: ignore case/punctuation, and let one id be the other plus whole extra words.
+function sameProduct(requested, stored) {
+  const parts = v => { const w = String(v || "").toLowerCase().match(/[a-z0-9]+/g) || []; return { all: new Set(w.map((_, i) => w.slice(0, i + 1).join(""))), full: w.join("") }; };
+  const a = parts(requested), b = parts(stored);
+  return !!a.full && !!b.full && (b.all.has(a.full) || a.all.has(b.full));
+}
+
 async function licenseToolUser(request, env) {
   const supplied = request.headers.get("X-License-Api-Key") || "";
   const expected = String(env.LICENSE_API_KEY || "").trim();
@@ -506,8 +513,9 @@ async function adminUpdateLicense(request, env, id) {
   const status = body.status || lic.status;
   if (!["active", "revoked"].includes(status)) return json({ error: "Status must be active or revoked" }, 400);
   const email = String(body.email ?? lic.email ?? "").trim().toLowerCase();
-  await env.DB.prepare("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ? WHERE id = ?")
-    .bind(status, email, await customerIdFor(env, email), clampInt(body.max_activations, lic.max_activations, 1, 100), String(body.note ?? lic.note ?? "").slice(0, 200), id).run();
+  const productId = String(body.product_id || lic.product_id || "heavypro").trim().slice(0, 60);
+  await env.DB.prepare("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ?, product_id = ? WHERE id = ?")
+    .bind(status, email, await customerIdFor(env, email), clampInt(body.max_activations, lic.max_activations, 1, 100), String(body.note ?? lic.note ?? "").slice(0, 200), productId, id).run();
   await audit(env, user, "update_license", `${lic.license_key} (${status})`);
   return json({ ok: true });
 }
@@ -528,7 +536,7 @@ async function licenseForRequest(request, env) {
   if (!lic) return { error: json({ valid: false, reason: "not_found", error: "This licence key does not exist." }, 404) };
   if (lic.status !== "active") return { error: json({ valid: false, reason: "revoked", error: "This licence key has been revoked." }, 403) };
   const product = String(body.product || "").trim();
-  if (product && product !== lic.product_id) return { error: json({ valid: false, reason: "wrong_product", error: "This licence key is for another product." }, 403) };
+  if (product && !sameProduct(product, lic.product_id)) return { error: json({ valid: false, reason: "wrong_product", error: "This licence key is for another product." }, 403) };
   const machine = String(body.machine_id || "").trim().slice(0, 128);
   if (!machine) return { error: json({ valid: false, reason: "missing_machine", error: "machine_id is required." }, 400) };
   return { lic, machine, body };
