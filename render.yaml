@@ -1,0 +1,30 @@
+# Render blueprint: Dashboard → New → Blueprint → pick this repo.
+# Creates the website + API (server.py) and a Postgres database.
+services:
+  - type: web
+    name: rotaidem
+    runtime: python
+    plan: free
+    branch: claude/lucid-tesla-liazv2
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --preload --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 main:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rotaidem-db
+          property: connectionString
+      - key: ADMIN_USERNAME
+        value: eliaz
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+
+databases:
+  - name: rotaidem-db
+    plan: free
+    databaseName: rotaidem
+    user: rotaidem

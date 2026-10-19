@@ -7,6 +7,15 @@ The site lives in `cloudflare/public` (static pages) and has one API with two in
 - `server.py`: Flask, for Python hosts such as **Starto** (also Docker / Procfile).
 - `cloudflare/functions/api/[[path]].js`: Cloudflare Pages Functions with D1 (see `cloudflare/README.md`).
 
+## Deploy on Render (quickest way to try the backend)
+
+1. Render dashboard → **New → Blueprint** → connect this GitHub repo.
+2. Render reads `render.yaml` and creates the web service and a free Postgres database.
+3. When asked, enter `ADMIN_EMAIL` and `ADMIN_PASSWORD`, then click **Apply**.
+4. Open the `onrender.com` URL, go to `/login`, and log in with that email and password. The first login creates the Owner account and takes you to `/admin`.
+
+The free web service sleeps when idle, so the first visit after a break takes up to a minute.
+
 ## Deploy on Starto
 
 1. Create a Python app from this repository.
