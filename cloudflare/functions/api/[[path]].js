@@ -30,6 +30,16 @@ export async function onRequest(context) {
     if (method === "DELETE" && path.startsWith("/api/admin/messages/")) return adminDeleteMessage(request, env, path.split("/").pop());
     if (method === "GET" && path === "/api/admin/audit") return adminAudit(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
+    if (method === "POST" && path === "/api/licenses/import") return licensesImport(request, env);
+    if (method === "POST" && path === "/api/licenses/activate") return licenseActivate(request, env);
+    if (method === "POST" && path === "/api/licenses/validate") return licenseValidate(request, env);
+    if (method === "POST" && path === "/api/licenses/deactivate") return licenseDeactivate(request, env);
+    if (method === "GET" && path === "/api/account/licenses") return accountLicenses(request, env);
+    if (method === "POST" && path === "/api/admin/licenses/generate") return adminGenerateLicenses(request, env);
+    if (method === "GET" && path === "/api/admin/licenses") return adminLicenses(request, env);
+    if (method === "GET" && /^\/api\/admin\/licenses\/\d+$/.test(path)) return adminLicenseDetail(request, env, Number(path.split("/")[4]));
+    if (method === "POST" && /^\/api\/admin\/licenses\/\d+$/.test(path)) return adminUpdateLicense(request, env, Number(path.split("/")[4]));
+    if (method === "DELETE" && /^\/api\/admin\/licenses\/\d+\/activations\/\d+$/.test(path)) return adminResetActivation(request, env, Number(path.split("/")[4]), Number(path.split("/")[6]));
     if (method === "POST" && path === "/api/subscribe") return subscribe(request, env);
     if (method === "POST" && path === "/api/unsubscribe") return unsubscribe(request, env);
     if (method === "POST" && path === "/api/admin/audience") return adminAudience(request, env);
@@ -59,6 +69,8 @@ async function ensure(env) {
   }
   try { await env.DB.prepare("ALTER TABLE orders ADD COLUMN product_id TEXT").run(); } catch (err) {}
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS subscribers (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   // One-time wipe of the old catalog for the HeavyPro relaunch.
@@ -235,7 +247,8 @@ async function adminOverview(request, env) {
   const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
-  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  const licCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'").first();
+  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -259,6 +272,17 @@ async function adminSaveOrder(request, env) {
   if (!Number(body.customer_id)) return json({ error: "Customer and amount must be numbers" }, 400);
   await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount) VALUES (?, ?, ?, ?, ?)").bind(Number(body.customer_id), body.product_id || "", body.status || "Completed", body.payment_status || "Paid", Number(body.amount) || 0).run();
   await audit(env, user, "create_order", body.customer_id);
+  if (body.create_license && body.product_id) {
+    const customer = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(Number(body.customer_id)).first();
+    const order = await env.DB.prepare("SELECT MAX(id) AS id FROM orders WHERE customer_id = ?").bind(Number(body.customer_id)).first();
+    let key = "";
+    while (!key) {
+      const candidate = generateKey(body.license_prefix || "HPRO");
+      if (await insertLicense(env, candidate, body.product_id, customer ? customer.email : "", Number(body.customer_id), order ? order.id : null, 2, "Created with order", user.name)) key = candidate;
+    }
+    await audit(env, user, "create_licenses", key + " for order");
+    return json({ ok: true, license_key: key });
+  }
   return json({ ok: true });
 }
 
@@ -296,6 +320,183 @@ async function adminSetRole(request, env, id) {
 
 async function audit(env, user, action, target) {
   await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address) VALUES (?, ?, ?, ?)").bind(user.id, action, String(target || "").slice(0, 200), "").run();
+}
+
+// ---------- licences (same rules as server.py and licensing/src/Rotaidem.Licensing/LicenseKey.cs) ----------
+const KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const KEY_RE = /^([A-Z0-9]{2,8})-([A-Z2-9]{4})-([A-Z2-9]{4})-([A-Z2-9]{4})$/;
+
+function keyChecksum(prefix, body11) {
+  let total = 0;
+  for (const ch of prefix) total += ch.charCodeAt(0);
+  for (let i = 0; i < body11.length; i++) total += (2 * i + 1) * KEY_ALPHABET.indexOf(body11[i]);
+  return KEY_ALPHABET[total % 32];
+}
+function generateKey(prefix = "HPRO") {
+  prefix = String(prefix).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8) || "HPRO";
+  const bytes = crypto.getRandomValues(new Uint8Array(11));
+  const body = [...bytes].map(b => KEY_ALPHABET[b % 32]).join("");
+  const full = body + keyChecksum(prefix, body);
+  return `${prefix}-${full.slice(0, 4)}-${full.slice(4, 8)}-${full.slice(8, 12)}`;
+}
+function normalizeKey(value) {
+  const key = String(value || "").replace(/\s+/g, "").toUpperCase();
+  const m = KEY_RE.exec(key);
+  if (!m) return "";
+  const chars = m[2] + m[3] + m[4];
+  if ([...chars].some(c => !KEY_ALPHABET.includes(c)) || keyChecksum(m[1], chars.slice(0, 11)) !== chars[11]) return "";
+  return key;
+}
+const clampInt = (v, d, lo, hi) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+
+async function licenseToolUser(request, env) {
+  const supplied = request.headers.get("X-License-Api-Key") || "";
+  const expected = String(env.LICENSE_API_KEY || "").trim();
+  if (expected.length >= 16 && supplied && supplied === expected) return { id: null, name: "License generator", role: "Tool" };
+  const user = await currentUser(request, env);
+  return user && ["Owner", "Admin"].includes(user.role) ? user : null;
+}
+async function insertLicense(env, key, productId, email, customerId, orderId, max, note, createdBy) {
+  if (await env.DB.prepare("SELECT id FROM licenses WHERE license_key = ?").bind(key).first()) return false;
+  await env.DB.prepare("INSERT INTO licenses (license_key, product_id, email, customer_id, order_id, max_activations, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(key, productId, String(email || "").trim().toLowerCase(), customerId, orderId, max, note, createdBy).run();
+  return true;
+}
+async function customerIdFor(env, email) {
+  if (!email) return null;
+  const row = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ?").bind(email).first();
+  return row ? row.id : null;
+}
+
+async function licensesImport(request, env) {
+  const user = await licenseToolUser(request, env);
+  if (!user) return json({ error: "Not allowed. Check the generator's API key." }, 403);
+  const items = (await request.json()).licenses || [];
+  if (!Array.isArray(items) || items.length > 1000) return json({ error: "Send a list of at most 1000 licences" }, 400);
+  const created = [], skipped = [], invalid = [];
+  for (const item of items) {
+    const key = normalizeKey(item.key);
+    if (!key) { invalid.push(String(item.key || "").slice(0, 40)); continue; }
+    const email = String(item.email || "").trim().toLowerCase();
+    const ok = await insertLicense(env, key, String(item.product_id || "heavypro").slice(0, 60), email, await customerIdFor(env, email), null, clampInt(item.max_activations, 2, 1, 100), String(item.note || "").slice(0, 200), user.name);
+    (ok ? created : skipped).push(key);
+  }
+  if (created.length) await audit(env, user, "import_licenses", `${created.length} keys`);
+  return json({ ok: true, created, skipped, invalid });
+}
+
+async function adminGenerateLicenses(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can create licences" }, 403);
+  const body = await request.json();
+  const count = clampInt(body.count, 1, 1, 500);
+  const prefix = String(body.prefix || "HPRO").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8) || "HPRO";
+  const email = String(body.email || "").trim().toLowerCase();
+  if (email && !EMAIL_RE.test(email)) return json({ error: "Enter a valid email address or leave it empty" }, 400);
+  const customerId = await customerIdFor(env, email);
+  const keys = [];
+  while (keys.length < count) {
+    const key = generateKey(prefix);
+    if (await insertLicense(env, key, String(body.product_id || "heavypro").slice(0, 60), email, customerId, null, clampInt(body.max_activations, 2, 1, 100), String(body.note || "").slice(0, 200), user.name)) keys.push(key);
+  }
+  await audit(env, user, "create_licenses", `${count} x ${prefix}` + (email ? ` for ${email}` : ""));
+  return json({ ok: true, keys });
+}
+
+async function adminLicenses(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses ORDER BY licenses.id DESC LIMIT 2000").all();
+  return json({ licenses: rows.results || [] });
+}
+
+async function adminLicenseDetail(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE id = ?").bind(id).first();
+  if (!lic) return json({ error: "Licence not found" }, 404);
+  lic.machines = (await env.DB.prepare("SELECT * FROM license_activations WHERE license_id = ? ORDER BY id").bind(id).all()).results || [];
+  return json({ license: lic });
+}
+
+async function adminUpdateLicense(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can change licences" }, 403);
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE id = ?").bind(id).first();
+  if (!lic) return json({ error: "Licence not found" }, 404);
+  const body = await request.json();
+  const status = body.status || lic.status;
+  if (!["active", "revoked"].includes(status)) return json({ error: "Status must be active or revoked" }, 400);
+  const email = String(body.email ?? lic.email ?? "").trim().toLowerCase();
+  await env.DB.prepare("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ? WHERE id = ?")
+    .bind(status, email, await customerIdFor(env, email), clampInt(body.max_activations, lic.max_activations, 1, 100), String(body.note ?? lic.note ?? "").slice(0, 200), id).run();
+  await audit(env, user, "update_license", `${lic.license_key} (${status})`);
+  return json({ ok: true });
+}
+
+async function adminResetActivation(request, env, licenseId, activationId) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can change licences" }, 403);
+  await env.DB.prepare("DELETE FROM license_activations WHERE id = ? AND license_id = ?").bind(activationId, licenseId).run();
+  await audit(env, user, "reset_activation", licenseId);
+  return json({ ok: true });
+}
+
+async function licenseForRequest(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const key = normalizeKey(body.key);
+  if (!key) return { error: json({ valid: false, reason: "invalid_format", error: "That is not a valid licence key." }, 400) };
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE license_key = ?").bind(key).first();
+  if (!lic) return { error: json({ valid: false, reason: "not_found", error: "This licence key does not exist." }, 404) };
+  if (lic.status !== "active") return { error: json({ valid: false, reason: "revoked", error: "This licence key has been revoked." }, 403) };
+  const product = String(body.product || "").trim();
+  if (product && product !== lic.product_id) return { error: json({ valid: false, reason: "wrong_product", error: "This licence key is for another product." }, 403) };
+  const machine = String(body.machine_id || "").trim().slice(0, 128);
+  if (!machine) return { error: json({ valid: false, reason: "missing_machine", error: "machine_id is required." }, 400) };
+  return { lic, machine, body };
+}
+const activationCount = async (env, id) => ((await env.DB.prepare("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?").bind(id).first()) || {}).n || 0;
+const licenseReply = (lic, used) => json({ valid: true, product_id: lic.product_id, activations_used: used, max_activations: lic.max_activations, checked_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") });
+
+async function licenseActivate(request, env) {
+  const r = await licenseForRequest(request, env);
+  if (r.error) return r.error;
+  const name = String(r.body.machine_name || "").slice(0, 100);
+  const existing = await env.DB.prepare("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?").bind(r.lic.id, r.machine).first();
+  let used = await activationCount(env, r.lic.id);
+  if (existing) {
+    await env.DB.prepare("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP, machine_name = ? WHERE id = ?").bind(name, existing.id).run();
+  } else if (used >= r.lic.max_activations) {
+    return json({ valid: false, reason: "activation_limit", activations_used: used, max_activations: r.lic.max_activations, error: `This key is already active on ${used} computer(s). Deactivate one first or contact support.` }, 403);
+  } else {
+    await env.DB.prepare("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)").bind(r.lic.id, r.machine, name).run();
+    used += 1;
+  }
+  return licenseReply(r.lic, used);
+}
+
+async function licenseValidate(request, env) {
+  const r = await licenseForRequest(request, env);
+  if (r.error) return r.error;
+  const existing = await env.DB.prepare("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?").bind(r.lic.id, r.machine).first();
+  if (!existing) return json({ valid: false, reason: "not_activated", error: "This computer has not been activated with this key." }, 403);
+  await env.DB.prepare("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?").bind(existing.id).run();
+  return licenseReply(r.lic, await activationCount(env, r.lic.id));
+}
+
+async function licenseDeactivate(request, env) {
+  const r = await licenseForRequest(request, env);
+  if (r.error) return r.error;
+  await env.DB.prepare("DELETE FROM license_activations WHERE license_id = ? AND machine_id = ?").bind(r.lic.id, r.machine).run();
+  return json({ ok: true });
+}
+
+async function accountLicenses(request, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const rows = await env.DB.prepare("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC")
+    .bind(user.id, String(user.email || "").toLowerCase()).all();
+  return json({ licenses: rows.results || [] });
 }
 
 // ---------- email broadcasts ----------

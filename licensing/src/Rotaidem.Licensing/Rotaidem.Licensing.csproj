@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Rotaidem.Licensing</RootNamespace>
+    <Description>Licence keys (PREFIX-XXXX-XXXX-XXXX) and online activation against rotaidem.com, shared by HeavyPro, its installer and the licence generator.</Description>
+  </PropertyGroup>
+
+</Project>

@@ -76,6 +76,10 @@
         .toast.show { opacity: 1; transform: none; }
         .toast.error { border-left-color: var(--danger); }
         .menu-btn { display: none; }
+        .key { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 14px; letter-spacing: .04em; color: var(--ink); white-space: nowrap; }
+        .keys-out { background: var(--bg); border: 1px solid var(--line); padding: 14px 16px; margin-top: 16px; display: none; }
+        .keys-out pre { margin: 0 0 12px; font: 15px/1.8 ui-monospace, Consolas, monospace; color: var(--ink); white-space: pre-wrap; }
+        .modal.wide { max-width: 620px; }
         @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } .compose, .two { grid-template-columns: 1fr; } }
         @media (max-width: 860px) {
             body { grid-template-columns: 1fr; }
@@ -102,6 +106,7 @@
     <div class="group">Customers</div>
     <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders"></span></button>
     <button class="tab" data-tab="users">Users <span class="count" id="c-users"></span></button>
+    <button class="tab" data-tab="licenses">Licences <span class="count" id="c-licenses"></span></button>
     <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
     <div class="group">System</div>
     <button class="tab" data-tab="activity">Activity log</button>
@@ -198,6 +203,7 @@
                 <div class="field"><label for="o-amount">Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
                 <div class="field"><label for="o-pay">Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
                 <div class="field"><button class="btn">Add</button></div>
+                <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="o-license" checked> Create a licence key for this order (linked to the customer)</label>
             </div>
         </form>
         <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
@@ -209,6 +215,40 @@
             <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
         </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
+    </section>
+
+    <section class="pane" id="pane-licenses" data-title="Licences">
+        <div class="two" style="margin-bottom:24px">
+            <form class="panel" id="lic-form">
+                <div class="panel-head"><h2>Create licence keys</h2></div>
+                <div class="panel-body">
+                    <div class="form-grid">
+                        <div class="field"><label for="l-product">Product</label><select id="l-product"></select></div>
+                        <div class="field"><label for="l-prefix">Key prefix</label><input id="l-prefix" value="HPRO" maxlength="8"></div>
+                        <div class="field"><label for="l-count">How many</label><input id="l-count" type="number" min="1" max="500" value="1"></div>
+                        <div class="field"><label for="l-max">Computers per key</label><input id="l-max" type="number" min="1" max="100" value="2"></div>
+                        <div class="field full"><label for="l-email">Customer email (optional)</label><input id="l-email" type="email" list="user-emails" placeholder="Links the key to this customer's account"></div>
+                        <div class="field full"><label for="l-note">Note (optional)</label><input id="l-note" placeholder="e.g. Beta tester, giveaway, reseller batch"></div>
+                    </div>
+                    <button class="btn">Create keys</button>
+                    <div class="keys-out" id="l-out"><pre id="l-keys"></pre><button class="btn btn-ghost btn-sm" type="button" id="l-copy">Copy all</button></div>
+                </div>
+            </form>
+            <div class="panel">
+                <div class="panel-head"><h2>Import from the generator</h2></div>
+                <div class="panel-body">
+                    <p class="muted" style="font-size:14px">Keys made with the Rotaidem License Generator are registered automatically when it has an API key. If you made them offline, import the CSV file it saved here.</p>
+                    <div class="field"><input type="file" id="l-file" accept=".csv,text/csv"></div>
+                    <p class="msg" id="l-import-msg"></p>
+                    <p class="muted" style="font-size:13px;margin:0">The generator connects with <strong>LICENSE_API_KEY</strong> from the server's environment variables.</p>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-head"><h2>All licences</h2><input class="search" id="lic-search" placeholder="Search key, email or note"></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
+        </div>
+        <datalist id="user-emails"></datalist>
     </section>
 
     <section class="pane" id="pane-messages" data-title="Messages">
@@ -251,6 +291,10 @@
 </form>
 <div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
 
+<div class="modal-bg" id="lic-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 class="key" id="ld-key" style="font-size:18px"></h3><p class="muted" id="ld-meta" style="font-size:14px;margin:0"></p></div><button class="x" type="button" onclick="$('lic-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field full"><label for="ld-note">Note</label><input id="ld-note"></div></div>
+    <div class="sub">Activated computers</div><table class="table"><tbody id="ld-machines"></tbody></table>
+    <div class="actions" style="margin-top:20px;justify-content:space-between"><button class="btn btn-danger" type="button" id="ld-status"></button><button class="btn" type="button" id="ld-save">Save</button></div></div></div>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="toast" id="toast"></div>
 
@@ -315,6 +359,7 @@ async function loadProducts() {
     renderProducts();
     const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     $("o-product").innerHTML = '<option value="">None</option>' + opts;
+    $("l-product").innerHTML = state.products.length ? opts : '<option value="heavypro">heavypro</option>';
     const current = $("e-product").value;
     $("e-product").innerHTML = '<option value="">No product, just a message</option>' + opts;
     if (current) $("e-product").value = current;
@@ -503,7 +548,10 @@ async function loadOrders() {
 }
 $("order-form").onsubmit = async e => {
     e.preventDefault();
-    try { await post("/api/admin/orders", { customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay") }); toast("Order added"); e.target.reset(); loadOrders(); loadOverview(); refreshAudience(); }
+    try {
+        const r = await post("/api/admin/orders", { customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay"), create_license: $("o-license").checked });
+        toast(r.license_key ? "Order added with licence " + r.license_key : "Order added"); e.target.reset(); loadOrders(); loadOverview(); refreshAudience(); if (r.license_key) loadLicenses();
+    }
     catch (err) { toast(err.message, true); }
 };
 
@@ -511,6 +559,7 @@ $("order-form").onsubmit = async e => {
 async function loadUsers() {
     state.users = (await api("/api/admin/customers")).customers || [];
     $("c-users").textContent = state.users.length || "";
+    $("user-emails").innerHTML = state.users.map(u => `<option value="${esc(u.email)}">${esc(u.name)}</option>`).join("");
     $("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
     renderUsers();
 }
@@ -547,9 +596,78 @@ async function deleteMessage(id) {
     try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Message deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 
+// licences
+async function loadLicenses() {
+    state.licenses = (await api("/api/admin/licenses")).licenses || [];
+    $("c-licenses").textContent = state.licenses.filter(l => l.status === "active").length || "";
+    renderLicenses();
+}
+function renderLicenses() {
+    const q = val("lic-search").toLowerCase();
+    const list = (state.licenses || []).filter(l => !q || [l.license_key, l.email, l.note, l.product_id].join(" ").toLowerCase().includes(q));
+    $("lic-list").innerHTML = list.length ? list.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span>${l.note ? `<div class="muted" style="font-size:13px">${esc(l.note)}</div>` : ""}</td><td>${esc(l.product_id)}</td><td>${esc(l.email || "-")}</td>` +
+        `<td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td class="muted">${date(l.created_at)}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(l.license_key)}">Copy</button><button class="btn btn-ghost btn-sm" data-lic="${l.id}">Manage</button></div></td></tr>`).join("")
+        : empty(7, (state.licenses || []).length ? "No licences match your search." : "No licences yet. Create some above or with the License Generator.");
+}
+$("lic-search").oninput = renderLicenses;
+$("lic-list").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.copy) navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Copied " + b.dataset.copy));
+    if (b.dataset.lic) openLicense(Number(b.dataset.lic));
+};
+$("lic-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const r = await post("/api/admin/licenses/generate", { product_id: val("l-product") || "heavypro", prefix: val("l-prefix"), count: Number(val("l-count")) || 1, max_activations: Number(val("l-max")) || 2, email: val("l-email"), note: val("l-note") });
+        $("l-keys").textContent = r.keys.join("\n"); $("l-out").style.display = "block";
+        toast(`Created ${r.keys.length} key${r.keys.length === 1 ? "" : "s"}`); loadLicenses(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("l-copy").onclick = () => navigator.clipboard.writeText($("l-keys").textContent).then(() => toast("Keys copied"));
+$("l-file").onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const rows = (await file.text()).split(/\r?\n/).filter(Boolean);
+    const head = rows.shift().split(",").map(h => h.trim().toLowerCase());
+    const col = n => head.indexOf(n);
+    const cells = line => { const out = []; let cur = "", q = false; for (const ch of line) { if (ch === '"') q = !q; else if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; } out.push(cur); return out; };
+    const licenses = rows.map(cells).map(c => ({ key: c[col("key")], product_id: c[col("product")] || "heavypro", email: col("email") >= 0 ? c[col("email")] : "", max_activations: Number(c[col("max_activations")]) || 2, note: col("note") >= 0 ? c[col("note")] : "" }));
+    const msg = $("l-import-msg");
+    try {
+        const r = await post("/api/licenses/import", { licenses });
+        msg.className = "msg ok"; msg.textContent = `Imported ${r.created.length}. Already registered: ${r.skipped.length}. Not valid: ${r.invalid.length}.`;
+        loadLicenses(); loadAudit();
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+    e.target.value = "";
+};
+async function openLicense(id) {
+    try {
+        const l = (await api("/api/admin/licenses/" + id)).license;
+        $("ld-key").textContent = l.license_key;
+        $("ld-meta").textContent = `${l.product_id} · created ${String(l.created_at || "").slice(0, 10)}${l.created_by ? " by " + l.created_by : ""}`;
+        $("ld-email").value = l.email || ""; $("ld-max").value = l.max_activations; $("ld-note").value = l.note || "";
+        $("ld-machines").innerHTML = l.machines.length ? l.machines.map(m => `<tr><td>${esc(m.machine_name || "Unknown computer")}<div class="muted key" style="font-size:12px">${esc(m.machine_id)}</div></td><td class="muted">Last seen ${date(m.last_seen)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-act="${m.id}">Remove</button></div></td></tr>`).join("") : empty(3, "Not activated on any computer yet.");
+        $("ld-status").textContent = l.status === "active" ? "Revoke key" : "Restore key";
+        $("ld-status").className = "btn " + (l.status === "active" ? "btn-danger" : "btn-ghost");
+        const save = async extra => { await post("/api/admin/licenses/" + id, { email: val("ld-email"), max_activations: Number(val("ld-max")) || 1, note: val("ld-note"), ...extra }); loadLicenses(); loadAudit(); };
+        $("ld-save").onclick = async () => { try { await save({}); toast("Licence saved"); $("lic-modal").classList.remove("show"); } catch (err) { toast(err.message, true); } };
+        $("ld-status").onclick = async () => {
+            const revoke = l.status === "active";
+            $("lic-modal").classList.remove("show");
+            if (revoke && !await confirmBox("Revoke " + l.license_key + "?", "HeavyPro stops working on every computer that uses this key the next time it checks.", "Revoke", true)) { $("lic-modal").classList.add("show"); return; }
+            try { await save({ status: revoke ? "revoked" : "active" }); toast(revoke ? "Key revoked" : "Key restored"); } catch (err) { toast(err.message, true); }
+        };
+        $("ld-machines").onclick = async e => {
+            const b = e.target.closest("[data-act]"); if (!b) return;
+            try { await api(`/api/admin/licenses/${id}/activations/${b.dataset.act}`, { method: "DELETE" }); toast("Computer removed"); openLicense(id); loadLicenses(); } catch (err) { toast(err.message, true); }
+        };
+        $("lic-modal").classList.add("show");
+    } catch (err) { toast(err.message, true); }
+}
+
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    const label = a => ({ save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
+    const label = a => ({ create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
     $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
     $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
@@ -557,7 +675,7 @@ async function loadAudit() {
 (async () => {
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

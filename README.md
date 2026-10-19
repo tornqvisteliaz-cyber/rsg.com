@@ -27,6 +27,10 @@ Sending uses [Resend](https://resend.com). Set these environment variables:
 - `SECRET_KEY`: any long random value; it signs unsubscribe links (the Render blueprint generates one).
 - `SITE_URL` (optional): public address used for links in emails, e.g. `https://rotaidem.com`.
 
+## Licence keys
+
+HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator program in `licensing/`, or in Admin → **Licences**, and activated by the app and installer through `/api/licenses/*`. Set `LICENSE_API_KEY` on the server so the generator can register keys. See [licensing/README.md](licensing/README.md).
+
 ## Deploy on Starto
 
 1. Create a Python app from this repository.

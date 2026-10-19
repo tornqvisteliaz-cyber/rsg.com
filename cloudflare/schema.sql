@@ -94,3 +94,27 @@ CREATE TABLE IF NOT EXISTS campaigns (
   admin_id INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS licenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_key TEXT UNIQUE,
+  product_id TEXT,
+  email TEXT,
+  customer_id INTEGER,
+  order_id INTEGER,
+  status TEXT DEFAULT 'active',
+  max_activations INTEGER DEFAULT 2,
+  note TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS license_activations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_id INTEGER,
+  machine_id TEXT,
+  machine_name TEXT,
+  first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (license_id, machine_id)
+);

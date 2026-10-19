@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -39,6 +39,11 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
+LICENSE_API_KEY = os.environ.get("LICENSE_API_KEY", "").strip()
+# License keys: PREFIX-XXXX-XXXX-XXXX. 11 random characters plus 1 check character from a 32-letter
+# alphabet without look-alikes (no I, O, 0, 1). Must match licensing/src/Rotaidem.Licensing/LicenseKey.cs.
+KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+KEY_RE = re.compile(r"^([A-Z0-9]{2,8})-([A-Z2-9]{4})-([A-Z2-9]{4})-([A-Z2-9]{4})$")
 ROLES = ("Customer", "Support", "Admin", "Owner")
 
 app = Flask(__name__, static_folder=None)
@@ -120,6 +125,8 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT {now})",
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
         f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT {now})",
+        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT {now})",
+        f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT {now}, last_seen TEXT DEFAULT {now}, UNIQUE (license_id, machine_id))",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT {now})",
     ):
         d.run(sql)
@@ -467,6 +474,7 @@ def admin_overview():
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
                     "messages": n("SELECT COUNT(*) AS n FROM messages"),
                     "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
+                    "licenses": n("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'"),
                     "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
@@ -516,7 +524,17 @@ def admin_save_order():
     db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount) VALUES (?, ?, ?, ?, ?)",
              customer_id, b.get("product_id") or "", b.get("status") or "Completed", b.get("payment_status") or "Paid", amount)
     audit(user, "create_order", customer_id)
-    return jsonify({"ok": True})
+    key = ""
+    if b.get("create_license") and b.get("product_id"):
+        customer = db().first("SELECT id, email FROM users WHERE id = ?", customer_id)
+        order = db().first("SELECT MAX(id) AS id FROM orders WHERE customer_id = ?", customer_id)
+        while not key:
+            candidate = generate_key(str(b.get("license_prefix") or "HPRO"))
+            if insert_license(candidate, b["product_id"], customer["email"] if customer else "", customer_id, order["id"] if order else None,
+                              2, "Created with order", user["name"]):
+                key = candidate
+        audit(user, "create_licenses", f"{key} for order")
+    return jsonify({"ok": True, "license_key": key})
 
 
 @app.get("/api/admin/messages")
@@ -542,6 +560,231 @@ def admin_audit():
     return jsonify({"logs": db().all(
         "SELECT audit_logs.*, users.name AS admin_name FROM audit_logs LEFT JOIN users ON audit_logs.admin_id = users.id "
         "ORDER BY audit_logs.id DESC LIMIT 100")})
+
+
+# ---------- licences ----------
+
+def key_checksum(prefix, body11):
+    total = sum(ord(ch) for ch in prefix)
+    for i, ch in enumerate(body11):
+        total += (2 * i + 1) * KEY_ALPHABET.index(ch)
+    return KEY_ALPHABET[total % 32]
+
+
+def generate_key(prefix="HPRO"):
+    body = "".join(secrets.choice(KEY_ALPHABET) for _ in range(11))
+    full = body + key_checksum(prefix, body)
+    return f"{prefix}-{full[0:4]}-{full[4:8]}-{full[8:12]}"
+
+
+def normalize_key(value):
+    """Upper-case, strip spaces, and return the key if its format and check character are right, else ''."""
+    key = re.sub(r"\s+", "", str(value or "")).upper()
+    m = KEY_RE.match(key)
+    if not m:
+        return ""
+    chars = m.group(2) + m.group(3) + m.group(4)
+    if any(ch not in KEY_ALPHABET for ch in chars) or key_checksum(m.group(1), chars[:11]) != chars[11]:
+        return ""
+    return key
+
+
+def license_tool_user():
+    """Staff session (Owner/Admin) or the LICENSE_API_KEY used by the generator program."""
+    supplied = request.headers.get("X-License-Api-Key", "")
+    if LICENSE_API_KEY and len(LICENSE_API_KEY) >= 16 and supplied and hmac.compare_digest(supplied, LICENSE_API_KEY):
+        return {"id": None, "name": "License generator", "role": "Tool"}
+    return manager_user()
+
+
+def insert_license(key, product_id, email="", customer_id=None, order_id=None, max_activations=2, note="", created_by=""):
+    if db().first("SELECT id FROM licenses WHERE license_key = ?", key):
+        return False
+    db().run("INSERT INTO licenses (license_key, product_id, email, customer_id, order_id, max_activations, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             key, product_id, (email or "").strip().lower(), customer_id, order_id, max_activations, note, created_by)
+    return True
+
+
+def clamp_int(value, default, low, high):
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+@app.post("/api/licenses/import")
+def licenses_import():
+    """Used by the License Generator program to register keys it created."""
+    user = license_tool_user()
+    if not user:
+        return err("Not allowed. Check the generator's API key.", 403)
+    items = body().get("licenses") or []
+    if not isinstance(items, list) or len(items) > 1000:
+        return err("Send a list of at most 1000 licences", 400)
+    created, skipped, invalid = [], [], []
+    for item in items:
+        key = normalize_key(item.get("key"))
+        if not key:
+            invalid.append(str(item.get("key", ""))[:40])
+            continue
+        email = str(item.get("email") or "").strip().lower()
+        customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+        ok = insert_license(key, str(item.get("product_id") or "heavypro")[:60], email, customer["id"] if customer else None, None,
+                            clamp_int(item.get("max_activations"), 2, 1, 100), str(item.get("note") or "")[:200], user["name"])
+        (created if ok else skipped).append(key)
+    if created:
+        audit(user, "import_licenses", f"{len(created)} keys")
+    return jsonify({"ok": True, "created": created, "skipped": skipped, "invalid": invalid})
+
+
+@app.post("/api/admin/licenses/generate")
+def admin_generate_licenses():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can create licences", 403)
+    b = body()
+    count = clamp_int(b.get("count"), 1, 1, 500)
+    prefix = re.sub(r"[^A-Z0-9]", "", str(b.get("prefix") or "HPRO").upper())[:8] or "HPRO"
+    email = str(b.get("email") or "").strip().lower()
+    if email and not EMAIL_RE.match(email):
+        return err("Enter a valid email address or leave it empty", 400)
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    keys = []
+    while len(keys) < count:
+        key = generate_key(prefix)
+        if insert_license(key, str(b.get("product_id") or "heavypro")[:60], email, customer["id"] if customer else None, None,
+                          clamp_int(b.get("max_activations"), 2, 1, 100), str(b.get("note") or "")[:200], user["name"]):
+            keys.append(key)
+    audit(user, "create_licenses", f"{count} x {prefix}" + (f" for {email}" if email else ""))
+    return jsonify({"ok": True, "keys": keys})
+
+
+@app.get("/api/admin/licenses")
+def admin_licenses():
+    if not staff_user():
+        return err("Admin only", 403)
+    rows = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                    "FROM licenses ORDER BY licenses.id DESC LIMIT 2000")
+    return jsonify({"licenses": rows})
+
+
+@app.get("/api/admin/licenses/<int:license_id>")
+def admin_license_detail(license_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    lic["machines"] = db().all("SELECT * FROM license_activations WHERE license_id = ? ORDER BY id", license_id)
+    return jsonify({"license": lic})
+
+
+@app.post("/api/admin/licenses/<int:license_id>")
+def admin_update_license(license_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    b = body()
+    status = b.get("status", lic["status"])
+    if status not in ("active", "revoked"):
+        return err("Status must be active or revoked", 400)
+    email = str(b.get("email", lic["email"]) or "").strip().lower()
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ? WHERE id = ?",
+             status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
+             str(b.get("note", lic["note"]) or "")[:200], license_id)
+    audit(user, "update_license", f"{lic['license_key']} ({status})")
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/licenses/<int:license_id>/activations/<int:activation_id>")
+def admin_reset_activation(license_id, activation_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    db().run("DELETE FROM license_activations WHERE id = ? AND license_id = ?", activation_id, license_id)
+    audit(user, "reset_activation", license_id)
+    return jsonify({"ok": True})
+
+
+def license_for_request():
+    """Shared checks for the public activation endpoints. Returns (licence, machine_id, error_response)."""
+    b = body()
+    key = normalize_key(b.get("key"))
+    if not key:
+        return None, "", (jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
+    lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
+    if not lic:
+        return None, "", (jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
+    if lic["status"] != "active":
+        return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
+    product = str(b.get("product") or "").strip()
+    if product and product != lic["product_id"]:
+        return None, "", (jsonify({"valid": False, "reason": "wrong_product", "error": "This licence key is for another product."}), 403)
+    machine = str(b.get("machine_id") or "").strip()[:128]
+    if not machine:
+        return None, "", (jsonify({"valid": False, "reason": "missing_machine", "error": "machine_id is required."}), 400)
+    return lic, machine, None
+
+
+def license_reply(lic, used):
+    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used,
+                    "max_activations": lic["max_activations"], "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+
+
+@app.post("/api/licenses/activate")
+def license_activate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    name = str(body().get("machine_name") or "")[:100]
+    existing = db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
+    if existing:
+        db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP, machine_name = ? WHERE id = ?", name, existing["id"])
+    elif used >= lic["max_activations"]:
+        return jsonify({"valid": False, "reason": "activation_limit", "activations_used": used, "max_activations": lic["max_activations"],
+                        "error": f"This key is already active on {used} computer(s). Deactivate one first or contact support."}), 403
+    else:
+        db().run("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)", lic["id"], machine, name)
+        used += 1
+    return license_reply(lic, used)
+
+
+@app.post("/api/licenses/validate")
+def license_validate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    existing = db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    if not existing:
+        return jsonify({"valid": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403
+    db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", existing["id"])
+    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
+    return license_reply(lic, used)
+
+
+@app.post("/api/licenses/deactivate")
+def license_deactivate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    db().run("DELETE FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/account/licenses")
+def account_licenses():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    rows = db().all("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+                    "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                    "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
+    return jsonify({"licenses": rows})
 
 
 # ---------- email broadcasts ----------

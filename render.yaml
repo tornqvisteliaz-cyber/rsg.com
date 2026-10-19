@@ -25,6 +25,9 @@ services:
       # Signs unsubscribe links.
       - key: SECRET_KEY
         generateValue: true
+      # Lets the License Generator program register keys (copy it into generator.json).
+      - key: LICENSE_API_KEY
+        generateValue: true
       # Email sending (resend.com). Leave empty until you have an API key.
       - key: RESEND_API_KEY
         sync: false

@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{A309903B-410F-450F-B22B-1312106F4AE7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rotaidem.Licensing", "src\Rotaidem.Licensing\Rotaidem.Licensing.csproj", "{7D3DAEBC-54E6-457F-8448-7ED2832D298A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rotaidem.LicenseGenerator", "src\Rotaidem.LicenseGenerator\Rotaidem.LicenseGenerator.csproj", "{C66C663A-99F7-473C-BDBA-09553C98152C}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{7D7E9BEA-A257-4A2D-B5DC-93B07CDC9FF2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rotaidem.Licensing.Tests", "tests\Rotaidem.Licensing.Tests\Rotaidem.Licensing.Tests.csproj", "{2E1DA83A-C78F-450F-A792-407AF90BE5E3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7D3DAEBC-54E6-457F-8448-7ED2832D298A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7D3DAEBC-54E6-457F-8448-7ED2832D298A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7D3DAEBC-54E6-457F-8448-7ED2832D298A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7D3DAEBC-54E6-457F-8448-7ED2832D298A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C66C663A-99F7-473C-BDBA-09553C98152C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C66C663A-99F7-473C-BDBA-09553C98152C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C66C663A-99F7-473C-BDBA-09553C98152C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C66C663A-99F7-473C-BDBA-09553C98152C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2E1DA83A-C78F-450F-A792-407AF90BE5E3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E1DA83A-C78F-450F-A792-407AF90BE5E3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E1DA83A-C78F-450F-A792-407AF90BE5E3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E1DA83A-C78F-450F-A792-407AF90BE5E3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{7D3DAEBC-54E6-457F-8448-7ED2832D298A} = {A309903B-410F-450F-B22B-1312106F4AE7}
+		{C66C663A-99F7-473C-BDBA-09553C98152C} = {A309903B-410F-450F-B22B-1312106F4AE7}
+		{2E1DA83A-C78F-450F-A792-407AF90BE5E3} = {7D7E9BEA-A257-4A2D-B5DC-93B07CDC9FF2}
+	EndGlobalSection
+EndGlobal
