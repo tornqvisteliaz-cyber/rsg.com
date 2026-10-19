@@ -16,6 +16,17 @@ The site lives in `cloudflare/public` (static pages) and has one API with two in
 
 The free web service sleeps when idle, so the first visit after a break takes up to a minute.
 
+## Emailing a product
+
+Admin → **Email a product** sends a product announcement to any mix of: everyone with an account, newsletter subscribers (the sign-up form in the site footer and on the home page), people who used the contact form, buyers, and any extra addresses you paste in. Duplicates are removed, every email has an unsubscribe link, and unsubscribed addresses are always skipped.
+
+Sending uses [Resend](https://resend.com). Set these environment variables:
+
+- `RESEND_API_KEY`: your Resend API key.
+- `MAIL_FROM`: the sender, e.g. `Rotaidem <news@rotaidem.com>`. The domain must be verified in Resend; until then only `onboarding@resend.dev` works, and only to your own address.
+- `SECRET_KEY`: any long random value; it signs unsubscribe links (the Render blueprint generates one).
+- `SITE_URL` (optional): public address used for links in emails, e.g. `https://rotaidem.com`.
+
 ## Deploy on Starto
 
 1. Create a Python app from this repository.

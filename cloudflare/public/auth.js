@@ -42,7 +42,8 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${LOGO}" alt="">Rotaidem</a><p style="margin-top:16px;max-width:300px">An independent studio making software for Microsoft Flight Simulator 2024.</p></div>
+            <div><a class="brand" href="/"><img src="${LOGO}" alt="">Rotaidem</a><p style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+                <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
             <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
             <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
@@ -88,6 +89,19 @@ function productCard(p) {
         `<div class="meta"><h3>${esc(p.name)}</h3><span class="price">${esc(p.price || "")}</span></div>` +
         `<div class="sub">${esc(p.tagline || p.simulator || "")} · ${esc(STATUS_LABEL[p.status] || p.status || "")}</div></a>`;
 }
+
+// Any <form data-subscribe> with an email field signs the visitor up for product emails.
+document.addEventListener("submit", async e => {
+    const form = e.target.closest("[data-subscribe]");
+    if (!form) return;
+    e.preventDefault();
+    const msg = form.querySelector(".msg");
+    const res = await fetch("/api/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: form.email.value, source: location.pathname }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    msg.className = "msg " + (res && res.ok ? "ok" : "error");
+    msg.textContent = res && res.ok ? "Thanks, you are on the list." : (data.error || "Could not subscribe right now. Please try again later.");
+    if (res && res.ok) form.reset();
+});
 
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();

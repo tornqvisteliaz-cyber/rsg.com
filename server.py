@@ -17,8 +17,12 @@ import secrets
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, request, send_from_directory
@@ -30,6 +34,11 @@ if DATABASE_URL.startswith("postgres://"):
 USE_PG = DATABASE_URL.startswith("postgresql://")
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "instance"))
 STAFF = ("Owner", "Admin", "Support")
+SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+MAIL_FROM = os.environ.get("MAIL_FROM", "Rotaidem <onboarding@resend.dev>")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 ROLES = ("Customer", "Support", "Admin", "Owner")
 
 app = Flask(__name__, static_folder=None)
@@ -110,6 +119,8 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount NUMERIC DEFAULT 0, invoice_file TEXT, created_at TEXT DEFAULT {now})",
         f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT {now})",
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+        f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT {now})",
+        f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT {now})",
     ):
         d.run(sql)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -409,6 +420,37 @@ def contact():
     return jsonify({"ok": True})
 
 
+@app.post("/api/subscribe")
+def subscribe():
+    b = body()
+    email = str(b.get("email", "")).strip().lower()
+    if not EMAIL_RE.match(email) or len(email) > 200:
+        return err("Please enter a valid email address", 400)
+    existing = db().first("SELECT id FROM subscribers WHERE email = ?", email)
+    if existing:
+        db().run("UPDATE subscribers SET unsubscribed = 0 WHERE id = ?", existing["id"])
+    else:
+        db().run("INSERT INTO subscribers (email, source) VALUES (?, ?)", email, str(b.get("source", ""))[:100])
+    return jsonify({"ok": True})
+
+
+def unsubscribe_token(email):
+    return hmac.new(SECRET_KEY.encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
+
+
+@app.post("/api/unsubscribe")
+def unsubscribe():
+    b = body()
+    email = str(b.get("email", "")).strip().lower()
+    if not email or not hmac.compare_digest(unsubscribe_token(email), str(b.get("token", ""))):
+        return err("This unsubscribe link is not valid", 400)
+    if db().first("SELECT id FROM subscribers WHERE email = ?", email):
+        db().run("UPDATE subscribers SET unsubscribed = 1 WHERE email = ?", email)
+    else:
+        db().run("INSERT INTO subscribers (email, source, unsubscribed) VALUES (?, 'unsubscribe', 1)", email)
+    return jsonify({"ok": True})
+
+
 # ---------- admin ----------
 
 @app.get("/api/admin/overview")
@@ -424,6 +466,8 @@ def admin_overview():
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
                     "messages": n("SELECT COUNT(*) AS n FROM messages"),
+                    "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
+                    "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
 
@@ -498,6 +542,159 @@ def admin_audit():
     return jsonify({"logs": db().all(
         "SELECT audit_logs.*, users.name AS admin_name FROM audit_logs LEFT JOIN users ON audit_logs.admin_id = users.id "
         "ORDER BY audit_logs.id DESC LIMIT 100")})
+
+
+# ---------- email broadcasts ----------
+
+def manager_user():
+    """Owner or Admin: allowed to email people."""
+    user = current_user()
+    return user if user and user["role"] in ("Owner", "Admin") else None
+
+
+def collect_recipients(groups, extra):
+    """Unique, valid addresses from the chosen groups plus pasted extras, minus anyone who unsubscribed."""
+    found = []
+    queries = {
+        "accounts": "SELECT email FROM users",
+        "buyers": "SELECT DISTINCT users.email FROM orders JOIN users ON users.id = orders.customer_id",
+        "subscribers": "SELECT email FROM subscribers WHERE unsubscribed = 0",
+        "contacts": "SELECT DISTINCT email FROM messages",
+    }
+    for group in groups:
+        if group in queries:
+            found += [r["email"] for r in db().all(queries[group])]
+    found += re.split(r"[\s,;]+", extra or "")
+    blocked = {r["email"] for r in db().all("SELECT email FROM subscribers WHERE unsubscribed = 1")}
+    seen, result = set(), []
+    for email in found:
+        email = str(email or "").strip().lower()
+        if EMAIL_RE.match(email) and email not in seen and email not in blocked:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def site_url():
+    return (os.environ.get("SITE_URL") or request.host_url).rstrip("/")
+
+
+def product_email_html(product, message, email):
+    base = site_url()
+    link = f"{base}/addons/view?id={product['id']}" if product else base
+    unsub = f"{base}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
+    text = "<br>".join(escape(line) for line in (message or "").splitlines())
+    block = ""
+    if product:
+        image = product.get("image_url") or ""
+        img = f'<img src="{escape(image)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">' if image.startswith("https://") else ""
+        block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#0d1520">{escape(product["name"])}</h2>'
+                 f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
+                 f'<p style="margin:0 0 22px;font-weight:600;color:#0d1520">{escape(product.get("price") or "")}</p>')
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#0d1520;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>
+<tr><td style="padding:12px 28px 28px">{block}<a href="{escape(link)}" style="display:inline-block;background:#0d1520;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
+<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def send_batch(messages):
+    """Send up to 100 emails through Resend's batch API. Returns (sent, error)."""
+    req = urllib.request.Request("https://api.resend.com/emails/batch", data=json.dumps(messages).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        return len(messages), ""
+    except urllib.error.HTTPError as exc:
+        return 0, exc.read().decode(errors="replace")[:300]
+    except OSError as exc:
+        return 0, str(exc)
+
+
+@app.post("/api/admin/audience")
+def admin_audience():
+    if not staff_user():
+        return err("Admin only", 403)
+    b = body()
+    groups = [g for g in b.get("groups", []) if g in AUDIENCES]
+    counts = {g: len(collect_recipients([g], "")) for g in AUDIENCES}
+    return jsonify({"counts": counts, "total": len(collect_recipients(groups, b.get("extra", ""))),
+                    "email_ready": bool(RESEND_API_KEY), "from": MAIL_FROM})
+
+
+@app.post("/api/admin/broadcast")
+def admin_broadcast():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    if not RESEND_API_KEY:
+        return err("Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the server environment.", 400)
+    b = body()
+    subject = str(b.get("subject", "")).strip()
+    message = str(b.get("message", "")).strip()
+    if not subject or not message:
+        return err("Subject and message are required", 400)
+    product = None
+    if b.get("product_id"):
+        product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"])
+        if not product:
+            return err("That product no longer exists", 400)
+    test = str(b.get("test_email", "")).strip().lower()
+    if test:
+        if not EMAIL_RE.match(test):
+            return err("Enter a valid test address", 400)
+        recipients = [test]
+    else:
+        groups = [g for g in b.get("groups", []) if g in AUDIENCES]
+        recipients = collect_recipients(groups, b.get("extra", ""))
+    if not recipients:
+        return err("No recipients match the chosen audience", 400)
+    sent, failed, last_error = 0, 0, ""
+    for i in range(0, len(recipients), 100):
+        chunk = recipients[i:i + 100]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r)} for r in chunk]
+        ok, error = send_batch(messages)
+        sent += ok
+        if error:
+            failed += len(chunk)
+            last_error = error
+    if not test:
+        db().run("INSERT INTO campaigns (subject, product_id, audience, sent_count, failed_count, admin_id) VALUES (?, ?, ?, ?, ?, ?)",
+                 subject, product["id"] if product else "", ",".join(b.get("groups", [])) + (" +extra" if b.get("extra") else ""), sent, failed, user["id"])
+        audit(user, "send_email", f"{subject} ({sent} sent)")
+    if failed and not sent:
+        return err("Sending failed: " + last_error, 502)
+    return jsonify({"ok": True, "sent": sent, "failed": failed, "test": bool(test), "error": last_error})
+
+
+@app.get("/api/admin/campaigns")
+def admin_campaigns():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"campaigns": db().all(
+        "SELECT campaigns.*, users.name AS admin_name FROM campaigns LEFT JOIN users ON users.id = campaigns.admin_id ORDER BY campaigns.id DESC LIMIT 50")})
+
+
+@app.get("/api/admin/subscribers")
+def admin_subscribers():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"subscribers": db().all("SELECT * FROM subscribers ORDER BY id DESC")})
+
+
+@app.delete("/api/admin/subscribers/<int:sub_id>")
+def admin_delete_subscriber(sub_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can remove subscribers", 403)
+    db().run("DELETE FROM subscribers WHERE id = ?", sub_id)
+    audit(user, "delete_subscriber", sub_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/<path:_rest>", methods=["GET", "POST", "PUT", "DELETE"])

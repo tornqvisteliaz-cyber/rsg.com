@@ -14,19 +14,19 @@
         <p class="muted" id="email-line">Loading account…</p>
 
         <div class="grid grid-3" style="margin:36px 0">
-            <div class="card"><label>Orders</label><div class="stat-num" id="order-count">0</div></div>
-            <div class="card"><label>Account type</label><div class="stat-num" style="font-size:32px" id="role">Customer</div></div>
-            <div class="card"><label>License</label><div class="stat-num" style="font-size:32px">Personal</div></div>
+            <div class="card"><label class="muted">Orders</label><div class="stat-num" id="order-count">0</div></div>
+            <div class="card"><label class="muted">Account type</label><div class="stat-num" style="font-size:32px" id="role">Customer</div></div>
+            <div class="card"><label class="muted">Licence</label><div class="stat-num" style="font-size:32px">Personal</div></div>
         </div>
 
         <div class="split" style="align-items:start">
             <div>
-                <div class="card" style="padding:0;margin-bottom:24px">
+                <div class="box" style="padding:0;margin-bottom:24px">
                     <h3 style="padding:24px 24px 0">Order history</h3>
                     <div class="table-wrap"><table class="table"><thead><tr><th>Order</th><th>Product</th><th>Payment</th><th>Amount</th><th>Date</th></tr></thead><tbody id="orders"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
                 </div>
             </div>
-            <form class="card" id="settings-form">
+            <form class="box" id="settings-form">
                 <h3>Settings</h3>
                 <div class="field"><label for="s-name">Name</label><input id="s-name" required></div>
                 <div class="field"><label for="s-cur">Current password</label><input id="s-cur" type="password" placeholder="Only needed to change password" autocomplete="current-password"></div>

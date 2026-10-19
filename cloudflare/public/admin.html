@@ -8,323 +8,551 @@
     <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
     <link rel="stylesheet" href="/site.css">
     <style>
-        body { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
-        .side { background: #05070a; border-right: 1px solid var(--line); padding: 24px 16px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
-        .side .brand { padding: 0 8px 28px; }
-        .side button.tab { all: unset; display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; color: #c4cbd6; }
-        .side button.tab:hover { background: var(--panel); color: #fff; }
-        .side button.tab.active { background: var(--accent); color: #fff; }
-        .side .count { font-size: 11px; background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 999px; }
-        .side .who { margin-top: auto; padding: 14px; border-top: 1px solid var(--line); font-size: 13px; }
-        .main { padding: 36px 40px 80px; min-width: 0; }
-        .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
-        .top h1 { font-size: 30px; font-weight: 800; margin: 0; }
+        body { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; background: var(--bg-2); }
+        .side { background: var(--navy); color: #b8c1cc; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 22px 0; overflow-y: auto; }
+        .side .brand { padding: 0 22px 26px; }
+        .side .group { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6f7c8b; padding: 18px 22px 6px; }
+        .side .tab { all: unset; box-sizing: border-box; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 9px 22px; cursor: pointer; font-size: 14px; color: #b8c1cc; border-left: 3px solid transparent; }
+        .side .tab:hover { color: #fff; background: rgba(255,255,255,.04); }
+        .side .tab.active { color: #fff; background: var(--navy-2); border-left-color: var(--accent); }
+        .side .count { font-size: 12px; color: #8d98a6; }
+        .side .who { margin-top: auto; padding: 18px 22px 0; border-top: 1px solid var(--navy-line); font-size: 13px; }
+        .side .who a, .side .who button { all: unset; cursor: pointer; color: #b8c1cc; margin-right: 14px; }
+        .side .who a:hover, .side .who button:hover { color: #fff; text-decoration: underline; }
+        .main { min-width: 0; }
+        .bar { background: #fff; border-bottom: 1px solid var(--line); padding: 18px 36px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+        .bar h1 { font-size: 22px; margin: 0; }
+        .content { padding: 28px 36px 80px; }
         .pane { display: none; }
         .pane.active { display: block; }
-        .thumb { width: 72px; height: 50px; border-radius: 8px; object-fit: cover; background: #000; }
-        .row-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+        .panel { background: #fff; border: 1px solid var(--line); }
+        .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+        .panel-head h2 { font-size: 16px; margin: 0; }
+        .panel-body { padding: 20px; }
+        .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px; }
+        .stats div { background: #fff; padding: 18px 20px; }
+        .stats span { display: block; font-size: 13px; color: var(--muted); }
+        .stats strong { display: block; font-size: 26px; font-weight: 600; color: var(--ink); margin-top: 2px; }
+        .two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+        .compose { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+        .thumb { width: 64px; height: 42px; object-fit: cover; background: var(--bg-2); display: block; }
+        .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+        .table td, .table th { padding-left: 20px; }
+        .search { width: 260px; padding: 8px 12px; }
+        .notice { background: #fbf2dc; border-left: 3px solid var(--accent); padding: 14px 18px; margin-bottom: 20px; font-size: 14px; color: #5c4609; }
+        .checks label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-weight: 400; padding: 10px 0; border-bottom: 1px solid var(--line); margin: 0; cursor: pointer; }
+        .checks label span:first-child { display: flex; gap: 10px; align-items: center; }
+        .checks small { display: block; color: var(--muted); font-size: 13px; }
+        .total { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; font-weight: 600; color: var(--ink); }
+        .preview-mail { background: var(--bg-2); padding: 20px; }
+        .preview-mail .mail { background: #fff; max-width: 560px; margin: 0 auto; font-family: Arial, sans-serif; font-size: 15px; }
+        .preview-mail .mail-head { background: var(--navy); color: #fff; padding: 16px 22px; font-weight: bold; letter-spacing: 3px; font-size: 13px; }
+        .preview-mail .mail-body { padding: 22px; line-height: 1.6; }
+        .preview-mail .mail-foot { padding: 14px 22px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+        .preview-mail img { width: 100%; margin-bottom: 14px; }
+        /* drawer */
+        .drawer-bg { position: fixed; inset: 0; background: rgba(13,21,32,.45); z-index: 40; display: none; }
+        .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 100%); background: #fff; z-index: 41; transform: translateX(100%); transition: transform .22s ease; display: flex; flex-direction: column; }
+        .drawer.open { transform: none; }
+        .drawer.open + .drawer-bg, .drawer-bg.show { display: block; }
+        .drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+        .drawer-head h2 { font-size: 18px; margin: 0; }
+        .drawer-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .drawer-foot { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; gap: 10px; flex-wrap: wrap; }
+        .x { all: unset; cursor: pointer; font-size: 24px; line-height: 1; color: var(--muted); }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
         .form-grid .full { grid-column: 1 / -1; }
-        .preview { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 12px; background: #000; margin-bottom: 18px; }
-        .toast { position: fixed; right: 24px; bottom: 24px; background: var(--panel); border: 1px solid var(--line); padding: 14px 20px; border-radius: 12px; opacity: 0; transform: translateY(10px); transition: .25s; pointer-events: none; z-index: 99; }
+        .sub { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 8px 0 14px; padding-top: 18px; border-top: 1px solid var(--line); }
+        .drawer-body > div.sub:first-of-type { border-top: 0; padding-top: 0; }
+        .preview { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--bg-2); margin-bottom: 18px; }
+        .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+        /* modal + toast */
+        .modal-bg { position: fixed; inset: 0; background: rgba(13,21,32,.5); z-index: 60; display: none; align-items: center; justify-content: center; padding: 16px; }
+        .modal-bg.show { display: flex; }
+        .modal { background: #fff; max-width: 440px; width: 100%; padding: 26px; }
+        .modal h3 { margin-bottom: 8px; }
+        .modal .actions { margin-top: 22px; }
+        .toast { position: fixed; right: 24px; bottom: 24px; background: var(--navy); color: #fff; padding: 13px 18px; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; z-index: 99; font-size: 14px; border-left: 3px solid var(--accent); }
         .toast.show { opacity: 1; transform: none; }
-        .toast.error { border-color: var(--danger); color: var(--danger); }
-        .search { max-width: 280px; }
-        @media (max-width: 900px) {
+        .toast.error { border-left-color: var(--danger); }
+        .menu-btn { display: none; }
+        @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } .compose, .two { grid-template-columns: 1fr; } }
+        @media (max-width: 860px) {
             body { grid-template-columns: 1fr; }
-            .side { position: static; height: auto; flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 14px; }
-            .side .brand { padding: 0 8px 0 0; width: 100%; margin-bottom: 8px; }
-            .side .who { display: none; }
-            .main { padding: 24px 16px 60px; }
+            .side { position: fixed; left: 0; width: 260px; z-index: 50; transform: translateX(-100%); transition: transform .2s; }
+            .side.open { transform: none; }
+            .menu-btn { display: inline-flex; }
+            .bar, .content { padding-left: 16px; padding-right: 16px; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
             .form-grid { grid-template-columns: 1fr; }
+            .search { width: 100%; }
         }
     </style>
 </head>
 <body data-layout="off">
-<aside class="side">
+<aside class="side" id="side">
     <a class="brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="">Rotaidem</a>
     <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="products">Products <span class="count" id="c-products">0</span></button>
-    <button class="tab" data-tab="news">News <span class="count" id="c-posts">0</span></button>
-    <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders">0</span></button>
-    <button class="tab" data-tab="users">Users <span class="count" id="c-customers">0</span></button>
-    <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages">0</span></button>
-    <button class="tab" data-tab="activity">Activity</button>
-    <div class="who"><div id="who-name" style="font-weight:700">Admin</div><div class="muted" id="who-role"></div><div style="margin-top:10px;display:flex;gap:8px"><a class="btn btn-ghost btn-sm" href="/">Site</a><button class="btn btn-ghost btn-sm" onclick="rsgLogout()">Log out</button></div></div>
+    <div class="group">Catalogue</div>
+    <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
+    <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
+    <div class="group">Marketing</div>
+    <button class="tab" data-tab="email">Email a product</button>
+    <button class="tab" data-tab="subscribers">Subscribers <span class="count" id="c-subscribers"></span></button>
+    <div class="group">Customers</div>
+    <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders"></span></button>
+    <button class="tab" data-tab="users">Users <span class="count" id="c-users"></span></button>
+    <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
+    <div class="group">System</div>
+    <button class="tab" data-tab="activity">Activity log</button>
+    <div class="who"><div id="who-name" style="color:#fff;font-weight:500">…</div><div id="who-role" style="margin-bottom:10px"></div><a href="/">View site</a><button onclick="rsgLogout()">Log out</button></div>
 </aside>
 
 <main class="main">
-    <!-- Dashboard -->
-    <section class="pane active" id="pane-dashboard">
-        <div class="top"><h1 id="greeting">Dashboard</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
-        <div class="grid grid-4" style="margin-bottom:24px">
-            <div class="card"><label>Revenue</label><div class="stat-num" id="s-revenue">$0</div></div>
-            <div class="card"><label>Orders</label><div class="stat-num" id="s-orders">0</div></div>
-            <div class="card"><label>Customers</label><div class="stat-num" id="s-customers">0</div></div>
-            <div class="card"><label>Products</label><div class="stat-num" id="s-products">0</div></div>
+    <div class="bar"><div style="display:flex;gap:12px;align-items:center"><button class="btn btn-ghost btn-sm menu-btn" onclick="document.getElementById('side').classList.toggle('open')">Menu</button><h1 id="bar-title">Dashboard</h1></div><div id="bar-actions" class="actions"></div></div>
+    <div class="content">
+
+    <section class="pane active" id="pane-dashboard" data-title="Dashboard">
+        <div class="stats">
+            <div><span>Revenue</span><strong id="s-revenue">$0</strong></div>
+            <div><span>Orders</span><strong id="s-orders">0</strong></div>
+            <div><span>Customers</span><strong id="s-customers">0</strong></div>
+            <div><span>Subscribers</span><strong id="s-subscribers">0</strong></div>
+            <div><span>Products</span><strong id="s-products">0</strong></div>
         </div>
-        <div class="grid grid-2">
-            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest orders</h3><div class="table-wrap"><table class="table"><tbody id="dash-orders"></tbody></table></div></div>
-            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest messages</h3><div class="table-wrap"><table class="table"><tbody id="dash-messages"></tbody></table></div></div>
+        <div class="two">
+            <div class="panel"><div class="panel-head"><h2>Latest orders</h2><a class="more" href="#orders" data-go="orders">All orders</a></div><table class="table"><tbody id="dash-orders"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Latest messages</h2><a class="more" href="#messages" data-go="messages">Inbox</a></div><table class="table"><tbody id="dash-messages"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Recent emails</h2><a class="more" href="#email" data-go="email">Email a product</a></div><table class="table"><tbody id="dash-campaigns"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Recent activity</h2><a class="more" href="#activity" data-go="activity">Full log</a></div><table class="table"><tbody id="dash-audit"></tbody></table></div>
         </div>
     </section>
 
-    <!-- Products -->
-    <section class="pane" id="pane-products">
-        <div class="top"><h1>Products</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
-        <div class="grid" style="grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);align-items:start" id="products-layout">
-            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th></th><th>Product</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div></div>
-            <form class="card" id="product-form">
-                <h3 id="pf-title">New product</h3>
-                <img id="preview" class="preview" src="" alt="">
-                <input id="p-id" type="hidden">
-                <div class="form-grid">
-                    <div class="field full"><label>Name</label><input id="p-name" placeholder="HeavyPro 747-400" required></div>
-                    <div class="field full"><label>Tagline</label><input id="p-tagline" placeholder="The Queen of the Skies, study-level"></div>
-                    <div class="field"><label>Price</label><input id="p-price" placeholder="$69.99"></div>
-                    <div class="field"><label>Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
-                    <div class="field"><label>Simulator</label><input id="p-sim" placeholder="MSFS 2024"></div>
-                    <div class="field"><label>Version</label><input id="p-version" placeholder="1.0.0"></div>
-                    <div class="field full"><label>Cover image URL</label><input id="p-image" placeholder="https://…"></div>
-                    <div class="field full"><label>Gallery image URLs (one per line)</label><textarea id="p-images" rows="3"></textarea></div>
-                    <div class="field full"><label>Description</label><textarea id="p-desc" rows="5"></textarea></div>
-                    <div class="field full"><label>Feature list (one per line)</label><textarea id="p-features" rows="4" placeholder="Custom FMS&#10;Full hydraulic system"></textarea></div>
-                    <div class="field"><label>Buy link</label><input id="p-buy" placeholder="https://… or mailto:"></div>
-                    <div class="field"><label>Sort order</label><input id="p-sort" type="number" value="0"></div>
+    <section class="pane" id="pane-products" data-title="Products" data-action="product">
+        <div class="panel">
+            <div class="panel-head"><h2>All products</h2><input class="search" id="product-search" placeholder="Search products"></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th style="width:84px"></th><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-news" data-title="News posts">
+        <div class="two">
+            <form class="panel" id="post-form">
+                <div class="panel-head"><h2 id="nf-title">New post</h2></div>
+                <div class="panel-body">
+                    <input id="n-id" type="hidden">
+                    <div class="field"><label for="n-title">Title</label><input id="n-title" required></div>
+                    <div class="field"><label for="n-image">Image URL</label><input id="n-image" placeholder="https://"></div>
+                    <div class="field"><label for="n-content">Article</label><textarea id="n-content" rows="10" required></textarea></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
                 </div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Save product</button><button class="btn btn-ghost" type="button" onclick="openProduct()">Clear</button><a class="btn btn-ghost" id="p-open" target="_blank" style="display:none">View page</a></div>
             </form>
+            <div class="panel"><div class="panel-head"><h2>Published</h2></div><table class="table"><tbody id="posts-list"></tbody></table></div>
         </div>
     </section>
 
-    <!-- News -->
-    <section class="pane" id="pane-news">
-        <div class="top"><h1>News</h1></div>
-        <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start">
-            <form class="card" id="post-form">
-                <h3 id="nf-title">New post</h3>
-                <input id="n-id" type="hidden">
-                <div class="field"><label>Title</label><input id="n-title" required></div>
-                <div class="field"><label>Image URL</label><input id="n-image" placeholder="https://…"></div>
-                <div class="field"><label>Article</label><textarea id="n-content" rows="9" required></textarea></div>
-                <div style="display:flex;gap:10px"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
+    <section class="pane" id="pane-email" data-title="Email a product">
+        <div class="notice" id="email-setup" style="display:none">Email sending is not set up yet. Add <strong>RESEND_API_KEY</strong> (from resend.com) and <strong>MAIL_FROM</strong> (for example <code>Rotaidem &lt;news@rotaidem.com&gt;</code>) to the server's environment variables, then redeploy. You can still prepare a message and see who would receive it.</div>
+        <div class="compose">
+            <form class="panel" id="email-form">
+                <div class="panel-head"><h2>Compose</h2><span class="muted" style="font-size:13px" id="e-from"></span></div>
+                <div class="panel-body">
+                    <div class="field"><label for="e-product">Product to feature</label><select id="e-product"></select></div>
+                    <div class="field"><label for="e-subject">Subject</label><input id="e-subject" required placeholder="HeavyPro is now available"></div>
+                    <div class="field"><label for="e-message">Message</label><textarea id="e-message" rows="7" required placeholder="Write a short note. The product's picture, name, price and a button are added below it."></textarea></div>
+                    <div class="sub">Who receives it</div>
+                    <div class="checks">
+                        <label><span><input type="checkbox" value="accounts" checked><span>Everyone with an account<small>Customers, staff, all registered users</small></span></span><span class="muted" data-count="accounts">0</span></label>
+                        <label><span><input type="checkbox" value="subscribers" checked><span>Newsletter subscribers<small>Signed up on the website, no account needed</small></span></span><span class="muted" data-count="subscribers">0</span></label>
+                        <label><span><input type="checkbox" value="contacts" checked><span>People who contacted us<small>Addresses from the contact form</small></span></span><span class="muted" data-count="contacts">0</span></label>
+                        <label><span><input type="checkbox" value="buyers"><span>Buyers only<small>Accounts that have placed an order</small></span></span><span class="muted" data-count="buyers">0</span></label>
+                    </div>
+                    <div class="field" style="margin-top:16px"><label for="e-extra">Extra addresses</label><textarea id="e-extra" rows="3" placeholder="Paste any other email addresses, separated by commas or new lines"></textarea><div class="hint">Duplicates are removed and anyone who unsubscribed is skipped automatically.</div></div>
+                    <div class="total"><span>Recipients</span><span id="e-total">0</span></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-accent" type="submit" id="e-send">Send email</button><button class="btn btn-ghost" type="button" id="e-test">Send a test to me</button></div>
+                    <p class="msg" id="e-msg"></p>
+                </div>
             </form>
-            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><tbody id="posts-list"></tbody></table></div></div>
+            <div class="panel"><div class="panel-head"><h2>Preview</h2></div><div class="preview-mail"><div class="mail"><div class="mail-head">ROTAIDEM</div><div class="mail-body" id="mail-preview"></div><div class="mail-foot">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news. <u>Unsubscribe</u></div></div></div></div>
+        </div>
+        <div class="panel" style="margin-top:24px"><div class="panel-head"><h2>Sent emails</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Subject</th><th>Product</th><th>Audience</th><th>Sent</th><th>By</th></tr></thead><tbody id="campaigns-list"></tbody></table></div></div>
+    </section>
+
+    <section class="pane" id="pane-subscribers" data-title="Subscribers">
+        <div class="panel">
+            <div class="panel-head"><h2>Newsletter subscribers</h2><div class="actions"><input class="search" id="sub-search" placeholder="Search email"><button class="btn btn-ghost btn-sm" onclick="exportSubscribers()">Export CSV</button></div></div>
+            <form class="panel-body" id="sub-form" style="display:flex;gap:0;border-bottom:1px solid var(--line)"><input type="email" id="sub-email" placeholder="Add an address by hand" required><button class="btn">Add</button></form>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th>Signed up from</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody id="subs-list"></tbody></table></div>
         </div>
     </section>
 
-    <!-- Orders -->
-    <section class="pane" id="pane-orders">
-        <div class="top"><h1>Orders</h1></div>
-        <form class="card" id="order-form" style="margin-bottom:24px">
-            <h3>Add manual order</h3>
-            <div class="grid grid-4" style="gap:0 16px">
-                <div class="field"><label>Customer</label><select id="o-customer" required></select></div>
-                <div class="field"><label>Product</label><select id="o-product"></select></div>
-                <div class="field"><label>Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
-                <div class="field"><label>Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
+    <section class="pane" id="pane-orders" data-title="Orders">
+        <form class="panel" id="order-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Add a manual order</h2></div>
+            <div class="panel-body form-grid" style="grid-template-columns:2fr 2fr 1fr 1fr auto;align-items:end">
+                <div class="field"><label for="o-customer">Customer</label><select id="o-customer" required></select></div>
+                <div class="field"><label for="o-product">Product</label><select id="o-product"></select></div>
+                <div class="field"><label for="o-amount">Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
+                <div class="field"><label for="o-pay">Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
+                <div class="field"><button class="btn">Add</button></div>
             </div>
-            <button class="btn btn-sm">Add order</button>
         </form>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+        <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
     </section>
 
-    <!-- Users -->
-    <section class="pane" id="pane-users">
-        <div class="top"><h1>Users</h1><input class="search" id="user-search" placeholder="Search name or email"></div>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div></div>
+    <section class="pane" id="pane-users" data-title="Users">
+        <div class="panel">
+            <div class="panel-head"><h2>Registered users</h2><input class="search" id="user-search" placeholder="Search name or email"></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
+        </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
     </section>
 
-    <!-- Messages -->
-    <section class="pane" id="pane-messages">
-        <div class="top"><h1>Messages</h1></div>
+    <section class="pane" id="pane-messages" data-title="Messages">
         <div id="messages-list"></div>
     </section>
 
-    <!-- Activity -->
-    <section class="pane" id="pane-activity">
-        <div class="top"><h1>Activity</h1></div>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
+    <section class="pane" id="pane-activity" data-title="Activity log">
+        <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
     </section>
+    </div>
 </main>
+
+<form class="drawer" id="drawer">
+    <div class="drawer-head"><h2 id="pf-title">New product</h2><button type="button" class="x" onclick="closeDrawer()" aria-label="Close">×</button></div>
+    <div class="drawer-body">
+        <input id="p-id" type="hidden">
+        <div class="sub">Basics</div>
+        <div class="form-grid">
+            <div class="field full"><label for="p-name">Name</label><input id="p-name" placeholder="HeavyPro" required></div>
+            <div class="field full"><label for="p-tagline">Tagline</label><input id="p-tagline" placeholder="Airliner control feel for MSFS 2024"></div>
+            <div class="field"><label for="p-price">Price</label><input id="p-price" placeholder="$29.99"></div>
+            <div class="field"><label for="p-status">Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
+            <div class="field"><label for="p-sim">Simulator</label><input id="p-sim" placeholder="MSFS 2024"></div>
+            <div class="field"><label for="p-version">Version</label><input id="p-version" placeholder="1.0.0"></div>
+        </div>
+        <div class="sub">Images</div>
+        <img id="preview" class="preview" src="" alt="">
+        <div class="field"><label for="p-image">Cover image URL</label><input id="p-image" placeholder="https://"></div>
+        <div class="field"><label for="p-images">Gallery image URLs</label><textarea id="p-images" rows="3"></textarea><div class="hint">One link per line.</div></div>
+        <div class="sub">Page content</div>
+        <div class="field"><label for="p-desc">Description</label><textarea id="p-desc" rows="5"></textarea></div>
+        <div class="field"><label for="p-features">Features</label><textarea id="p-features" rows="4"></textarea><div class="hint">One feature per line.</div></div>
+        <div class="sub">Selling</div>
+        <div class="form-grid">
+            <div class="field"><label for="p-buy">Buy link</label><input id="p-buy" placeholder="https:// or mailto:"></div>
+            <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
+        </div>
+    </div>
+    <div class="drawer-foot"><button class="btn" type="submit">Save product</button><a class="btn btn-ghost" id="p-open" target="_blank" rel="noopener">View page</a><button class="btn btn-ghost" type="button" id="p-email">Email this product</button></div>
+</form>
+<div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
+
+<div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="toast" id="toast"></div>
 
 <script src="/auth.js"></script>
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
 const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || "") };
-const state = { products: [], users: [], role: "" };
+const state = { products: [], users: [], posts: [], subs: [], role: "", emailReady: false };
+const $ = id => document.getElementById(id);
+const val = id => $(id).value.trim();
+const lines = id => $(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
 
 async function api(path, opts = {}) {
     const res = await fetch(path, { headers: H, ...opts });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401 || res.status === 403) { if (path === "/api/admin/overview") { rsgLogout(); } }
+    if (res.status === 401 && path === "/api/admin/overview") rsgLogout();
     if (!res.ok) throw new Error(data.error || "Request failed");
     return data;
 }
-function toast(text, bad) { const t = document.getElementById("toast"); t.textContent = text; t.className = "toast show" + (bad ? " error" : ""); clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", 2600); }
-function money(n) { return "$" + Number(n || 0).toFixed(2); }
-function date(s) { return esc(String(s || "").slice(0, 16).replace("T", " ")); }
-function empty(cols, text) { return `<tr><td colspan="${cols}" class="muted">${text}</td></tr>`; }
-const val = id => document.getElementById(id).value.trim();
-const lines = id => document.getElementById(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
+const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data) });
+function toast(text, bad) { const t = $("toast"); t.textContent = text; t.className = "toast show" + (bad ? " error" : ""); clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", 3000); }
+function confirmBox(title, text, yes = "Confirm", danger = false) {
+    return new Promise(resolve => {
+        $("m-title").textContent = title; $("m-text").textContent = text;
+        $("m-yes").textContent = yes; $("m-yes").className = "btn" + (danger ? " btn-danger" : "");
+        $("modal").classList.add("show");
+        const done = v => { $("modal").classList.remove("show"); resolve(v); };
+        $("m-yes").onclick = () => done(true); $("m-no").onclick = () => done(false);
+    });
+}
+const money = n => "$" + Number(n || 0).toFixed(2);
+const date = s => esc(String(s || "").slice(0, 16).replace("T", " "));
+const empty = (cols, text) => `<tr><td colspan="${cols}" class="muted">${text}</td></tr>`;
 
+// navigation
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+document.addEventListener("click", e => { const a = e.target.closest("[data-go]"); if (a) { e.preventDefault(); showTab(a.dataset.go); } });
 function showTab(name) {
+    const pane = $("pane-" + name);
+    if (!pane) return;
     document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p === pane));
+    $("bar-title").textContent = pane.dataset.title;
+    $("bar-actions").innerHTML = pane.dataset.action === "product" || name === "dashboard" ? '<button class="btn btn-sm" onclick="openProduct()">New product</button>' : "";
+    $("side").classList.remove("open");
     history.replaceState(null, "", "#" + name);
 }
 
 async function loadOverview() {
     const o = await api("/api/admin/overview");
-    state.role = o.role;
-    document.getElementById("greeting").textContent = "Welcome back, " + o.name;
-    document.getElementById("who-name").textContent = o.name;
-    document.getElementById("who-role").textContent = o.role;
-    document.getElementById("s-revenue").textContent = money(o.revenue);
-    for (const k of ["orders", "customers", "products"]) document.getElementById("s-" + k).textContent = o[k];
-    for (const k of ["products", "posts", "orders", "customers", "messages"]) document.getElementById("c-" + k).textContent = o[k];
+    state.role = o.role; state.emailReady = !!o.email_ready;
+    $("who-name").textContent = o.name; $("who-role").textContent = o.role;
+    $("s-revenue").textContent = money(o.revenue);
+    for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
+    for (const k of ["products", "posts", "orders", "messages", "subscribers"]) $("c-" + k).textContent = o[k] || "";
+    $("email-setup").style.display = state.emailReady ? "none" : "";
 }
 
 // products
 async function loadProducts() {
     state.products = (await api("/api/products")).products || [];
-    document.getElementById("products-list").innerHTML = state.products.length ? state.products.map(p =>
-        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.price || "")}</div></td><td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
-        `<td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="openProduct('${esc(p.id)}')">Edit</button><button class="btn btn-danger btn-sm" onclick="deleteProduct('${esc(p.id)}')">Delete</button></div></td></tr>`
-    ).join("") : empty(4, "No products yet. Create your first HeavyPro product.");
-    document.getElementById("o-product").innerHTML = '<option value="">-</option>' + state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    renderProducts();
+    const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    $("o-product").innerHTML = '<option value="">None</option>' + opts;
+    const current = $("e-product").value;
+    $("e-product").innerHTML = '<option value="">No product, just a message</option>' + opts;
+    if (current) $("e-product").value = current;
+    renderPreview();
 }
-function openProduct(id, stay) {
-    if (!stay) showTab("products");
+function renderProducts() {
+    const q = val("product-search").toLowerCase();
+    const list = state.products.filter(p => !q || (p.name + " " + (p.tagline || "")).toLowerCase().includes(q));
+    $("products-list").innerHTML = list.length ? list.map(p =>
+        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.tagline || "")}</div></td><td>${esc(p.price || "")}</td>` +
+        `<td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-email="${esc(p.id)}">Email</button><button class="btn btn-ghost btn-sm" data-edit="${esc(p.id)}">Edit</button><button class="btn btn-danger btn-sm" data-del="${esc(p.id)}">Delete</button></div></td></tr>`
+    ).join("") : empty(5, state.products.length ? "No products match your search." : "No products yet. Click New product to add HeavyPro.");
+}
+$("product-search").oninput = renderProducts;
+$("products-list").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.edit) openProduct(b.dataset.edit);
+    if (b.dataset.del) deleteProduct(b.dataset.del);
+    if (b.dataset.email) emailProduct(b.dataset.email);
+};
+function openProduct(id) {
     const p = state.products.find(x => x.id === id) || {};
-    const set = (k, v) => document.getElementById(k).value = v == null ? "" : v;
+    const set = (k, v) => $(k).value = v == null ? "" : v;
     set("p-id", p.id); set("p-name", p.name); set("p-tagline", p.tagline); set("p-price", p.price);
     set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
     set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-sort", p.sort_order || 0);
-    document.getElementById("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
-    const open = document.getElementById("p-open");
-    open.style.display = p.id ? "" : "none";
-    open.href = "/addons/view?id=" + encodeURIComponent(p.id || "");
-    preview();
+    $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
+    $("p-open").style.display = p.id ? "" : "none";
+    $("p-email").style.display = p.id ? "" : "none";
+    $("p-open").href = "/addons/view?id=" + encodeURIComponent(p.id || "");
+    $("p-email").onclick = () => { closeDrawer(); emailProduct(p.id); };
+    previewImage();
+    $("drawer").classList.add("open"); $("drawer-bg").classList.add("show");
+    setTimeout(() => $("p-name").focus(), 50);
 }
-function preview() { document.getElementById("preview").src = safeImage(val("p-image")); }
-document.getElementById("p-image").oninput = preview;
-document.getElementById("product-form").onsubmit = async e => {
+function closeDrawer() { $("drawer").classList.remove("open"); $("drawer-bg").classList.remove("show"); }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+function previewImage() { const u = val("p-image"); $("preview").style.display = /^https?:\/\//.test(u) ? "" : "none"; $("preview").src = safeImage(u); }
+$("p-image").oninput = previewImage;
+$("drawer").onsubmit = async e => {
     e.preventDefault();
     const urls = [val("p-image"), ...lines("p-images")].filter(Boolean);
     if (urls.some(u => !/^https?:\/\//.test(u))) return toast("Image links must start with https://", true);
     try {
-        const r = await api("/api/save-product", { method: "POST", body: JSON.stringify({
+        const r = await post("/api/save-product", {
             id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
             simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: lines("p-images"),
-            description: document.getElementById("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), sort_order: Number(val("p-sort")) || 0
-        })});
+            description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), sort_order: Number(val("p-sort")) || 0
+        });
         toast("Saved " + val("p-name"));
-        await loadProducts(); openProduct(r.id); loadOverview();
+        await loadProducts(); loadOverview(); openProduct(r.id);
     } catch (err) { toast(err.message, true); }
 };
 async function deleteProduct(id) {
-    if (!confirm("Delete this product? This cannot be undone.")) return;
-    try { await api("/api/products/" + encodeURIComponent(id), { method: "DELETE" }); toast("Deleted"); loadProducts(); loadOverview(); openProduct(); }
+    const p = state.products.find(x => x.id === id);
+    if (!await confirmBox("Delete " + (p ? p.name : "product") + "?", "The product page will disappear from the website. This cannot be undone.", "Delete", true)) return;
+    try { await api("/api/products/" + encodeURIComponent(id), { method: "DELETE" }); toast("Product deleted"); loadProducts(); loadOverview(); }
     catch (err) { toast(err.message, true); }
 }
 
+// email a product
+function emailProduct(id) {
+    const p = state.products.find(x => x.id === id);
+    showTab("email");
+    $("e-product").value = id || "";
+    if (p && !val("e-subject")) $("e-subject").value = p.status === "published" ? `${p.name} is now available` : `News about ${p.name}`;
+    renderPreview();
+    $("e-message").focus();
+}
+const groups = () => [...document.querySelectorAll(".checks input:checked")].map(i => i.value);
+let audienceTimer;
+function refreshAudience() {
+    clearTimeout(audienceTimer);
+    audienceTimer = setTimeout(async () => {
+        try {
+            const r = await post("/api/admin/audience", { groups: groups(), extra: $("e-extra").value });
+            for (const [k, n] of Object.entries(r.counts)) document.querySelector(`[data-count="${k}"]`).textContent = n;
+            $("e-total").textContent = r.total;
+            $("e-send").textContent = r.total ? `Send to ${r.total} ${r.total === 1 ? "person" : "people"}` : "Send email";
+            $("e-from").textContent = "From: " + r.from;
+            state.emailReady = r.email_ready;
+            $("email-setup").style.display = r.email_ready ? "none" : "";
+        } catch (err) { toast(err.message, true); }
+    }, 250);
+}
+document.querySelectorAll(".checks input").forEach(i => i.onchange = refreshAudience);
+$("e-extra").oninput = refreshAudience;
+function renderPreview() {
+    const p = state.products.find(x => x.id === $("e-product").value);
+    const msg = esc($("e-message").value || "Your message appears here.").replace(/\n/g, "<br>");
+    let block = "";
+    if (p) block = (/^https:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : "") +
+        `<div style="font-size:20px;font-weight:bold;color:#0d1520">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#0d1520">${esc(p.price || "")}</div>`;
+    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${block}<span style="display:inline-block;background:#0d1520;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
+}
+["e-product", "e-message"].forEach(id => $(id).addEventListener("input", renderPreview));
+async function sendEmail(test) {
+    const msg = $("e-msg");
+    if (!val("e-subject") || !val("e-message")) { msg.className = "msg error"; msg.textContent = "Add a subject and a message first."; return; }
+    const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, groups: groups(), extra: $("e-extra").value };
+    if (test) {
+        const me = await api("/api/me").catch(() => null);
+        payload.test_email = me && me.user ? me.user.email : "";
+    } else {
+        const total = Number($("e-total").textContent);
+        if (!total) { msg.className = "msg error"; msg.textContent = "No one matches the chosen audience."; return; }
+        if (!await confirmBox(`Send to ${total} ${total === 1 ? "person" : "people"}?`, `"${val("e-subject")}" will be emailed now. This cannot be undone.`, "Send now")) return;
+    }
+    msg.className = "msg"; msg.textContent = test ? "Sending a test…" : "Sending…";
+    $("e-send").disabled = $("e-test").disabled = true;
+    try {
+        const r = await post("/api/admin/broadcast", payload);
+        msg.className = "msg ok";
+        msg.textContent = r.test ? `Test sent to ${payload.test_email}.` : `Sent to ${r.sent} ${r.sent === 1 ? "person" : "people"}${r.failed ? `, ${r.failed} failed (${r.error})` : ""}.`;
+        if (!r.test) { loadCampaigns(); loadAudit(); }
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+    $("e-send").disabled = $("e-test").disabled = false;
+}
+$("email-form").onsubmit = e => { e.preventDefault(); sendEmail(false); };
+$("e-test").onclick = () => sendEmail(true);
+async function loadCampaigns() {
+    const list = (await api("/api/admin/campaigns")).campaigns || [];
+    const name = id => (state.products.find(p => p.id === id) || {}).name || id || "-";
+    $("campaigns-list").innerHTML = list.length ? list.map(c => `<tr><td class="muted">${date(c.created_at)}</td><td>${esc(c.subject)}</td><td>${esc(name(c.product_id))}</td><td class="muted">${esc(c.audience)}</td><td>${esc(c.sent_count)}${c.failed_count ? ` <span style="color:var(--danger)">(${esc(c.failed_count)} failed)</span>` : ""}</td><td>${esc(c.admin_name || "-")}</td></tr>`).join("") : empty(6, "No emails sent yet.");
+    $("dash-campaigns").innerHTML = list.length ? list.slice(0, 5).map(c => `<tr><td>${esc(c.subject)}</td><td class="muted">${esc(c.sent_count)} sent</td></tr>`).join("") : empty(2, "No emails sent yet.");
+}
+
+// subscribers
+async function loadSubscribers() {
+    state.subs = (await api("/api/admin/subscribers")).subscribers || [];
+    renderSubscribers();
+}
+function renderSubscribers() {
+    const q = val("sub-search").toLowerCase();
+    const list = state.subs.filter(s => !q || s.email.includes(q));
+    $("subs-list").innerHTML = list.length ? list.map(s => `<tr><td>${esc(s.email)}</td><td class="muted">${esc(s.source || "-")}</td><td>${Number(s.unsubscribed) ? '<span class="badge">Unsubscribed</span>' : '<span class="badge published">Subscribed</span>'}</td><td class="muted">${date(s.created_at)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-sub="${s.id}">Remove</button></div></td></tr>`).join("") : empty(5, "No subscribers yet. Visitors can sign up in the website footer.");
+}
+$("sub-search").oninput = renderSubscribers;
+$("subs-list").onclick = async e => {
+    const b = e.target.closest("[data-sub]"); if (!b) return;
+    if (!await confirmBox("Remove this subscriber?", "They will no longer be counted as a newsletter subscriber.", "Remove", true)) return;
+    try { await api("/api/admin/subscribers/" + b.dataset.sub, { method: "DELETE" }); toast("Removed"); loadSubscribers(); loadOverview(); refreshAudience(); } catch (err) { toast(err.message, true); }
+};
+$("sub-form").onsubmit = async e => {
+    e.preventDefault();
+    try { await post("/api/subscribe", { email: val("sub-email"), source: "added by admin" }); toast("Subscriber added"); e.target.reset(); loadSubscribers(); loadOverview(); refreshAudience(); } catch (err) { toast(err.message, true); }
+};
+function exportSubscribers() {
+    const rows = [["email", "source", "status", "created_at"], ...state.subs.map(s => [s.email, s.source || "", Number(s.unsubscribed) ? "unsubscribed" : "subscribed", s.created_at || ""])];
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "rotaidem-subscribers.csv"; a.click();
+}
+
 // news
-let posts = [];
 async function loadPosts() {
-    posts = (await api("/api/newsletter")).posts || [];
-    document.getElementById("posts-list").innerHTML = posts.length ? posts.map(p =>
-        `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`
-    ).join("") : empty(2, "No posts yet.");
+    state.posts = (await api("/api/newsletter")).posts || [];
+    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
 }
 function editPost(id) {
-    const p = posts.find(x => x.id === id) || {};
-    document.getElementById("n-id").value = p.id || "";
-    document.getElementById("n-title").value = p.title || "";
-    document.getElementById("n-image").value = p.image_url || "";
-    document.getElementById("n-content").value = p.content || "";
-    document.getElementById("nf-title").textContent = p.id ? "Edit post" : "New post";
+    const p = state.posts.find(x => x.id === id) || {};
+    $("n-id").value = p.id || ""; $("n-title").value = p.title || ""; $("n-image").value = p.image_url || ""; $("n-content").value = p.content || "";
+    $("nf-title").textContent = p.id ? "Edit post" : "New post";
 }
-document.getElementById("post-form").onsubmit = async e => {
+$("post-form").onsubmit = async e => {
     e.preventDefault();
-    try {
-        await api("/api/newsletter", { method: "POST", body: JSON.stringify({ id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: document.getElementById("n-content").value }) });
-        toast("Published"); editPost(); loadPosts(); loadOverview();
-    } catch (err) { toast(err.message, true); }
+    try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value }); toast("Published"); editPost(); loadPosts(); loadOverview(); }
+    catch (err) { toast(err.message, true); }
 };
 async function deletePost(id) {
-    if (!confirm("Delete this post?")) return;
-    try { await api("/api/newsletter/" + id, { method: "DELETE" }); toast("Deleted"); loadPosts(); loadOverview(); } catch (err) { toast(err.message, true); }
+    if (!await confirmBox("Delete this post?", "It will be removed from the News page.", "Delete", true)) return;
+    try { await api("/api/newsletter/" + id, { method: "DELETE" }); toast("Post deleted"); loadPosts(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 
 // orders
 async function loadOrders() {
     const orders = (await api("/api/admin/orders")).orders || [];
-    const row = o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:12px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`;
-    document.getElementById("orders-list").innerHTML = orders.length ? orders.map(row).join("") : empty(6, "No orders yet.");
-    document.getElementById("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
+    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(6, "No orders yet.");
+    $("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
 }
-document.getElementById("order-form").onsubmit = async e => {
+$("order-form").onsubmit = async e => {
     e.preventDefault();
-    try {
-        await api("/api/admin/orders", { method: "POST", body: JSON.stringify({ customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay") }) });
-        toast("Order added"); e.target.reset(); loadOrders(); loadOverview();
-    } catch (err) { toast(err.message, true); }
+    try { await post("/api/admin/orders", { customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay") }); toast("Order added"); e.target.reset(); loadOrders(); loadOverview(); refreshAudience(); }
+    catch (err) { toast(err.message, true); }
 };
 
 // users
 async function loadUsers() {
     state.users = (await api("/api/admin/customers")).customers || [];
-    document.getElementById("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
+    $("c-users").textContent = state.users.length || "";
+    $("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
     renderUsers();
 }
 function renderUsers() {
     const q = val("user-search").toLowerCase();
     const list = state.users.filter(u => !q || (u.name + " " + u.email).toLowerCase().includes(q));
     const roles = ["Customer", "Support", "Admin", "Owner"];
-    document.getElementById("users-list").innerHTML = list.length ? list.map(u => {
+    $("users-list").innerHTML = list.length ? list.map(u => {
         const role = state.role === "Owner"
-            ? `<select style="width:auto;padding:6px 10px" onchange="setRole(${u.id}, this.value, this)">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
+            ? `<select style="width:auto;padding:6px 10px" data-role="${u.id}">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
             : esc(u.role);
         return `<tr><td><strong>${esc(u.name)}</strong></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
     }).join("") : empty(4, "No users found.");
 }
-document.getElementById("user-search").oninput = renderUsers;
-async function setRole(id, role, el) {
-    if (!confirm("Change this user's role to " + role + "?")) { renderUsers(); return; }
-    try { await api(`/api/admin/users/${id}/role`, { method: "POST", body: JSON.stringify({ role }) }); toast("Role updated"); loadUsers(); loadOverview(); }
+$("user-search").oninput = renderUsers;
+$("users-list").onchange = async e => {
+    const sel = e.target.closest("[data-role]"); if (!sel) return;
+    if (!await confirmBox("Change role to " + sel.value + "?", "The user will be signed out and get the new permissions next time they log in.", "Change role")) { renderUsers(); return; }
+    try { await post(`/api/admin/users/${sel.dataset.role}/role`, { role: sel.value }); toast("Role updated"); loadUsers(); loadOverview(); }
     catch (err) { toast(err.message, true); renderUsers(); }
-}
+};
 
 // messages
 async function loadMessages() {
     const msgs = (await api("/api/admin/messages")).messages || [];
-    document.getElementById("messages-list").innerHTML = msgs.length ? msgs.map(m =>
-        `<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><strong>${esc(m.name || "Anonymous")}</strong> <a class="muted" href="mailto:${esc(m.email)}">${esc(m.email)}</a></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
-        `<p style="white-space:pre-line;margin:14px 0">${esc(m.message)}</p><div style="display:flex;gap:8px"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div>`
-    ).join("") : '<div class="empty">Inbox zero.</div>';
-    document.getElementById("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
+    $("messages-list").innerHTML = msgs.length ? msgs.map(m =>
+        `<div class="panel" style="margin-bottom:16px"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
+        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p><div class="actions" style="justify-content:flex-start"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div></div>`
+    ).join("") : '<div class="empty">No messages. Everything is answered.</div>';
+    $("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
 }
 async function deleteMessage(id) {
-    if (!confirm("Delete this message?")) return;
-    try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
+    if (!await confirmBox("Delete this message?", "It will be removed from the inbox.", "Delete", true)) return;
+    try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Message deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    document.getElementById("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(l.action)}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
+    const label = a => ({ save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
+    $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
+    $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
 
 (async () => {
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
-    openProduct(undefined, true);
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit()].map(p => p.catch(err => toast(err.message, true))));
-    const start = location.hash.slice(1);
-    if (start && document.getElementById("pane-" + start)) showTab(start);
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers()].map(p => p.catch(err => toast(err.message, true))));
+    refreshAudience();
+    showTab(location.hash.slice(1) || "dashboard");
 })();
 </script>
 </body>

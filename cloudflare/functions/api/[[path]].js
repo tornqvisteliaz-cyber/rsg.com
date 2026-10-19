@@ -30,6 +30,13 @@ export async function onRequest(context) {
     if (method === "DELETE" && path.startsWith("/api/admin/messages/")) return adminDeleteMessage(request, env, path.split("/").pop());
     if (method === "GET" && path === "/api/admin/audit") return adminAudit(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
+    if (method === "POST" && path === "/api/subscribe") return subscribe(request, env);
+    if (method === "POST" && path === "/api/unsubscribe") return unsubscribe(request, env);
+    if (method === "POST" && path === "/api/admin/audience") return adminAudience(request, env);
+    if (method === "POST" && path === "/api/admin/broadcast") return adminBroadcast(request, env);
+    if (method === "GET" && path === "/api/admin/campaigns") return adminCampaigns(request, env);
+    if (method === "GET" && path === "/api/admin/subscribers") return adminSubscribers(request, env);
+    if (method === "DELETE" && path.startsWith("/api/admin/subscribers/")) return adminDeleteSubscriber(request, env, Number(path.split("/").pop()));
     return json({ error: "Not found" }, 404);
   } catch (err) {
     return json({ error: String(err && err.message || err) }, 500);
@@ -52,6 +59,8 @@ async function ensure(env) {
   }
   try { await env.DB.prepare("ALTER TABLE orders ADD COLUMN product_id TEXT").run(); } catch (err) {}
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS subscribers (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   // One-time wipe of the old catalog for the HeavyPro relaunch.
   const reset = await env.DB.prepare("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'").first();
   if (!reset) {
@@ -225,7 +234,8 @@ async function adminOverview(request, env) {
   const postCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first();
   const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
-  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, revenue: Number(revenue?.n || 0) });
+  const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
+  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!env.RESEND_API_KEY });
 }
 
 async function adminCustomers(request, env) {
@@ -286,6 +296,138 @@ async function adminSetRole(request, env, id) {
 
 async function audit(env, user, action, target) {
   await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address) VALUES (?, ?, ?, ?)").bind(user.id, action, String(target || "").slice(0, 200), "").run();
+}
+
+// ---------- email broadcasts ----------
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const AUDIENCES = ["accounts", "buyers", "subscribers", "contacts"];
+const AUDIENCE_SQL = {
+  accounts: "SELECT email FROM users",
+  buyers: "SELECT DISTINCT users.email AS email FROM orders JOIN users ON users.id = orders.customer_id",
+  subscribers: "SELECT email FROM subscribers WHERE unsubscribed = 0",
+  contacts: "SELECT DISTINCT email FROM messages",
+};
+const mailFrom = env => env.MAIL_FROM || "Rotaidem <onboarding@resend.dev>";
+const escHtml = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function unsubscribeToken(env, email) {
+  const secret = env.SECRET_KEY || env.ADMIN_PASSWORD || "rotaidem-dev-secret";
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(email.toLowerCase()));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
+
+async function subscribe(request, env) {
+  const body = await request.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email) || email.length > 200) return json({ error: "Please enter a valid email address" }, 400);
+  await env.DB.prepare("INSERT INTO subscribers (email, source) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET unsubscribed = 0").bind(email, String(body.source || "").slice(0, 100)).run();
+  return json({ ok: true });
+}
+
+async function unsubscribe(request, env) {
+  const body = await request.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  if (!email || (await unsubscribeToken(env, email)) !== String(body.token || "")) return json({ error: "This unsubscribe link is not valid" }, 400);
+  await env.DB.prepare("INSERT INTO subscribers (email, source, unsubscribed) VALUES (?, 'unsubscribe', 1) ON CONFLICT(email) DO UPDATE SET unsubscribed = 1").bind(email).run();
+  return json({ ok: true });
+}
+
+async function collectRecipients(env, groups, extra) {
+  let found = [];
+  for (const g of groups) if (AUDIENCE_SQL[g]) found = found.concat(((await env.DB.prepare(AUDIENCE_SQL[g]).all()).results || []).map(r => r.email));
+  found = found.concat(String(extra || "").split(/[\s,;]+/));
+  const blocked = new Set(((await env.DB.prepare("SELECT email FROM subscribers WHERE unsubscribed = 1").all()).results || []).map(r => r.email));
+  const seen = new Set();
+  for (let e of found) { e = String(e || "").trim().toLowerCase(); if (EMAIL_RE.test(e) && !blocked.has(e)) seen.add(e); }
+  return [...seen];
+}
+
+async function productEmailHtml(env, base, product, message, email) {
+  const link = product ? `${base}/addons/view?id=${encodeURIComponent(product.id)}` : base;
+  const unsub = `${base}/unsubscribe?email=${encodeURIComponent(email)}&token=${await unsubscribeToken(env, email)}`;
+  const text = String(message || "").split(/\r?\n/).map(escHtml).join("<br>");
+  let block = "";
+  if (product) {
+    const img = /^https:\/\//.test(product.image_url || "") ? `<img src="${escHtml(product.image_url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">` : "";
+    block = `${img}<h2 style="margin:0 0 6px;font-size:22px;color:#0d1520">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#0d1520">${escHtml(product.price || "")}</p>`;
+  }
+  return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#0d1520;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">${text}</td></tr>
+<tr><td style="padding:12px 28px 28px">${block}<a href="${escHtml(link)}" style="display:inline-block;background:#0d1520;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">${product ? "View " + escHtml(product.name) : "Visit rotaidem.com"}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
+<a href="${escHtml(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+</table></td></tr></table></body></html>`;
+}
+
+async function adminAudience(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const body = await request.json();
+  const counts = {};
+  for (const g of AUDIENCES) counts[g] = (await collectRecipients(env, [g], "")).length;
+  const groups = (body.groups || []).filter(g => AUDIENCES.includes(g));
+  return json({ counts, total: (await collectRecipients(env, groups, body.extra)).length, email_ready: !!env.RESEND_API_KEY, from: mailFrom(env) });
+}
+
+async function adminBroadcast(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
+  if (!env.RESEND_API_KEY) return json({ error: "Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the environment variables." }, 400);
+  const body = await request.json();
+  const subject = String(body.subject || "").trim();
+  const message = String(body.message || "").trim();
+  if (!subject || !message) return json({ error: "Subject and message are required" }, 400);
+  let product = null;
+  if (body.product_id) {
+    product = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(body.product_id).first();
+    if (!product) return json({ error: "That product no longer exists" }, 400);
+  }
+  const test = String(body.test_email || "").trim().toLowerCase();
+  if (test && !EMAIL_RE.test(test)) return json({ error: "Enter a valid test address" }, 400);
+  const groups = (body.groups || []).filter(g => AUDIENCES.includes(g));
+  const recipients = test ? [test] : await collectRecipients(env, groups, body.extra);
+  if (!recipients.length) return json({ error: "No recipients match the chosen audience" }, 400);
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  let sent = 0, failed = 0, lastError = "";
+  for (let i = 0; i < recipients.length; i += 100) {
+    const chunk = recipients.slice(i, i + 100);
+    const messages = [];
+    for (const r of chunk) messages.push({ from: mailFrom(env), to: [r], subject, html: await productEmailHtml(env, base, product, message, r) });
+    const res = await fetch("https://api.resend.com/emails/batch", { method: "POST", headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(messages) });
+    if (res.ok) sent += chunk.length; else { failed += chunk.length; lastError = (await res.text()).slice(0, 300); }
+  }
+  if (!test) {
+    await env.DB.prepare("INSERT INTO campaigns (subject, product_id, audience, sent_count, failed_count, admin_id) VALUES (?, ?, ?, ?, ?, ?)").bind(subject, product ? product.id : "", groups.join(",") + (body.extra ? " +extra" : ""), sent, failed, user.id).run();
+    await audit(env, user, "send_email", `${subject} (${sent} sent)`);
+  }
+  if (failed && !sent) return json({ error: "Sending failed: " + lastError }, 502);
+  return json({ ok: true, sent, failed, test: !!test, error: lastError });
+}
+
+async function adminCampaigns(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = await env.DB.prepare("SELECT campaigns.*, users.name AS admin_name FROM campaigns LEFT JOIN users ON users.id = campaigns.admin_id ORDER BY campaigns.id DESC LIMIT 50").all();
+  return json({ campaigns: rows.results || [] });
+}
+
+async function adminSubscribers(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = await env.DB.prepare("SELECT * FROM subscribers ORDER BY id DESC").all();
+  return json({ subscribers: rows.results || [] });
+}
+
+async function adminDeleteSubscriber(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can remove subscribers" }, 403);
+  await env.DB.prepare("DELETE FROM subscribers WHERE id = ?").bind(id).run();
+  await audit(env, user, "delete_subscriber", id);
+  return json({ ok: true });
 }
 
 function withImages(item) {
