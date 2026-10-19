@@ -1,8 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- net48 for HeavyPro (WPF on .NET Framework 4.8), net8.0 for the installer and the generator. -->
+    <TargetFrameworks>net8.0;net48</TargetFrameworks>
     <RootNamespace>Rotaidem.Licensing</RootNamespace>
     <Description>Licence keys (PREFIX-XXXX-XXXX-XXXX) and online activation against rotaidem.com, shared by HeavyPro, its installer and the licence generator.</Description>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
 
 </Project>

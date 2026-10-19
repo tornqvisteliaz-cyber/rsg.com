@@ -4,7 +4,7 @@ Licence keys look like `HPRO-7KQM-2XRT-9HCW`. This folder has two .NET 8 project
 
 | Project | What it is |
 | --- | --- |
-| `src/Rotaidem.Licensing` | Class library for HeavyPro, its installer and the generator: key format, machine id, online activation, local key storage. |
+| `src/Rotaidem.Licensing` | Class library for HeavyPro, its installer and the generator: key format, machine id, online activation, local key storage. Builds for `net48` (HeavyPro's WPF app) and `net8.0` (installer, generator). |
 | `src/Rotaidem.LicenseGenerator` | The licence generator program (`RotaidemLicenseGenerator.exe`). |
 | `tests/Rotaidem.Licensing.Tests` | Unit tests, plus live tests against a running website. |
 

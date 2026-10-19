@@ -1,4 +1,5 @@
-using System.Net.Http.Json;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -89,11 +90,12 @@ public sealed class LicenseClient
         if (normalized is null)
             return new LicenseResult(LicenseStatus.InvalidFormat, "That is not a valid licence key. Check for typing mistakes.");
 
-        var payload = new { key = normalized, machine_id = MachineId.Get(), machine_name = MachineId.DisplayName(), product = Product };
+        var payload = JsonSerializer.Serialize(new { key = normalized, machine_id = MachineId.Get(), machine_name = MachineId.DisplayName(), product = Product });
         HttpResponseMessage response;
         try
         {
-            response = await _http.PostAsJsonAsync($"{_baseUrl}/api/licenses/{action}", payload, ct).ConfigureAwait(false);
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            response = await _http.PostAsync($"{_baseUrl}/api/licenses/{action}", content, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
@@ -105,12 +107,10 @@ public sealed class LicenseClient
             Reply? reply = null;
             try
             {
-                reply = await response.Content.ReadFromJsonAsync<Reply>(cancellationToken: ct).ConfigureAwait(false);
+                var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                reply = JsonSerializer.Deserialize<Reply>(text);
             }
             catch (JsonException)
-            {
-            }
-            catch (NotSupportedException)
             {
             }
 

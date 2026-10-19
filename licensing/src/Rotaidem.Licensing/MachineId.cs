@@ -16,8 +16,9 @@ public static class MachineId
     public static string Get()
     {
         var raw = ReadWindowsMachineGuid() ?? $"{Environment.MachineName}|{Environment.UserName}|{Environment.OSVersion.Platform}";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(Salt + "|" + raw));
-        return Convert.ToHexString(hash, 0, 16).ToLowerInvariant();
+        using var sha = SHA256.Create();
+        var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(Salt + "|" + raw));
+        return BitConverter.ToString(hash, 0, 16).Replace("-", "").ToLowerInvariant();
     }
 
     /// <summary>A readable name shown in the admin panel next to the activation, e.g. "EliazPC".</summary>
@@ -25,8 +26,13 @@ public static class MachineId
 
     private static string? ReadWindowsMachineGuid()
     {
+#if NET5_0_OR_GREATER
         if (!OperatingSystem.IsWindows())
             return null;
+#else
+        if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+            return null;
+#endif
         try
         {
             using var key = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
