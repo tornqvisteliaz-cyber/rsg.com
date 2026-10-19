@@ -1,14 +1,14 @@
 name: Deploy preview to GitHub Pages
 
+# Publishes cloudflare/public to the gh-pages branch.
+# In Settings → Pages choose "Deploy from a branch" → gh-pages / (root).
 on:
   push:
     branches: [main, master, claude/lucid-tesla-liazv2]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
@@ -17,9 +17,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Build static preview
@@ -30,9 +27,12 @@ jobs:
           rm -f _site/_routes.json
           find _site -name '*.html' -o -name '*.js' | xargs sed -i -E "s#([\"'(=])/([a-zA-Z0-9_\#?-]|\")#\1${BASE}/\2#g"
           touch _site/.nojekyll
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Push to gh-pages
+        run: |
+          cd _site
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Deploy ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
