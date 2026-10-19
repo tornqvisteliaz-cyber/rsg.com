@@ -26,6 +26,10 @@ export async function onRequest(context) {
     if (method === "GET" && path === "/api/admin/customers") return adminCustomers(request, env);
     if (method === "GET" && path === "/api/admin/orders") return adminOrders(request, env);
     if (method === "POST" && path === "/api/admin/orders") return adminSaveOrder(request, env);
+    if (method === "GET" && path === "/api/admin/messages") return adminMessages(request, env);
+    if (method === "DELETE" && path.startsWith("/api/admin/messages/")) return adminDeleteMessage(request, env, path.split("/").pop());
+    if (method === "GET" && path === "/api/admin/audit") return adminAudit(request, env);
+    if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
     return json({ error: "Not found" }, 404);
   } catch (err) {
     return json({ error: String(err && err.message || err) }, 500);
@@ -43,29 +47,16 @@ async function ensure(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount NUMERIC DEFAULT 29.99, invoice_file TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
 
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM products").first();
-  if (!count || count.n === 0) {
-    await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, image_url, images, price, description, buy_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(
-      "seabee", "Republic RC-3 Seabee", "MSFS 2024", "0.1.0-dev", "rotaidem-seabee",
-      "https://i.postimg.cc/28WybSM2/metroliner.jpg",
-      JSON.stringify(["https://i.postimg.cc/28WybSM2/metroliner.jpg", "https://i.postimg.cc/rwKST91B/rsgsoftware.png"]),
-      "$29.99",
-      "Amphibious flying boat for Microsoft Flight Simulator 2024.",
-      "mailto:Collab@rsgsoftware.se", "in_development"
-    ).run();
+  for (const col of ["tagline TEXT", "features TEXT", "sort_order INTEGER DEFAULT 0"]) {
+    try { await env.DB.prepare("ALTER TABLE products ADD COLUMN " + col).run(); } catch (err) {}
   }
-  await env.DB.prepare("UPDATE products SET images = ? WHERE id = 'seabee' AND (images IS NULL OR images = '')").bind(
-    JSON.stringify(["https://i.postimg.cc/28WybSM2/metroliner.jpg", "https://i.postimg.cc/rwKST91B/rsgsoftware.png"])
-  ).run();
-
-  const postCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first();
-  if (!postCount || postCount.n === 0) {
-    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)").bind(
-      "Welcome to Rotaidem",
-      "Development is well underway for our upcoming Republic RC-3 Seabee for Microsoft Flight Simulator 2024.",
-      "https://i.postimg.cc/28WybSM2/metroliner.jpg",
-      new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-    ).run();
+  try { await env.DB.prepare("ALTER TABLE orders ADD COLUMN product_id TEXT").run(); } catch (err) {}
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
+  // One-time wipe of the old catalog for the HeavyPro relaunch.
+  const reset = await env.DB.prepare("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'").first();
+  if (!reset) {
+    await env.DB.prepare("DELETE FROM products").run();
+    await env.DB.prepare("INSERT INTO meta (key, value) VALUES ('catalog_reset_heavypro', ?)").bind(new Date().toISOString()).run();
   }
 }
 
@@ -146,7 +137,7 @@ async function customerOrders(request, env) {
 }
 
 async function products(request, env) {
-  const rows = await env.DB.prepare("SELECT * FROM products ORDER BY name").all();
+  const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   return json({ products: (rows.results || []).map(withImages) });
 }
 
@@ -163,9 +154,10 @@ async function saveProduct(request, env) {
   if (!name) return json({ error: "Name is required" }, 400);
   const id = slug(body.id || name);
   const images = JSON.stringify(listImages(body.images));
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status").bind(
-    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "$29.99", body.description || "", body.buy_url || "mailto:Collab@rsgsoftware.se", body.status || "in_development"
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order").bind(
+    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0
   ).run();
+  await audit(env, user, "save_product", id);
   return json({ ok: true, id, page: "/addons/view?id=" + id });
 }
 
@@ -173,6 +165,7 @@ async function deleteProduct(request, env, id) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   await env.DB.prepare("DELETE FROM products WHERE id = ?").bind(id).run();
+  await audit(env, user, "delete_product", id);
   return json({ ok: true });
 }
 
@@ -199,9 +192,14 @@ async function saveNewsletter(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const body = await request.json();
   if (!body.title || !body.content) return json({ error: "Title and content are required" }, 400);
-  await env.DB.prepare("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)").bind(
-    body.title, body.content, body.image_url || "", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-  ).run();
+  if (body.id) {
+    await env.DB.prepare("UPDATE posts SET title = ?, content = ?, image_url = ? WHERE id = ?").bind(body.title, body.content, body.image_url || "", Number(body.id)).run();
+  } else {
+    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)").bind(
+      body.title, body.content, body.image_url || "", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+    ).run();
+  }
+  await audit(env, user, "save_post", body.title);
   return json({ ok: true });
 }
 
@@ -225,7 +223,9 @@ async function adminOverview(request, env) {
   const custCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'").first();
   const orderCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM orders").first();
   const postCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first();
-  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0 });
+  const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
+  const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
+  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, revenue: Number(revenue?.n || 0) });
 }
 
 async function adminCustomers(request, env) {
@@ -246,12 +246,50 @@ async function adminSaveOrder(request, env) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const body = await request.json();
-  await env.DB.prepare("INSERT INTO orders (customer_id, status, payment_status, amount) VALUES (?, ?, ?, ?)").bind(Number(body.customer_id), body.status || "Completed", body.payment_status || "Paid", Number(body.amount) || 29.99).run();
+  if (!Number(body.customer_id)) return json({ error: "Customer and amount must be numbers" }, 400);
+  await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount) VALUES (?, ?, ?, ?, ?)").bind(Number(body.customer_id), body.product_id || "", body.status || "Completed", body.payment_status || "Paid", Number(body.amount) || 0).run();
+  await audit(env, user, "create_order", body.customer_id);
   return json({ ok: true });
 }
 
+async function adminMessages(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = await env.DB.prepare("SELECT * FROM messages ORDER BY id DESC").all();
+  return json({ messages: rows.results || [] });
+}
+
+async function adminDeleteMessage(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  await env.DB.prepare("DELETE FROM messages WHERE id = ?").bind(Number(id)).run();
+  return json({ ok: true });
+}
+
+async function adminAudit(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = await env.DB.prepare("SELECT audit_logs.*, users.name AS admin_name FROM audit_logs LEFT JOIN users ON audit_logs.admin_id = users.id ORDER BY audit_logs.id DESC LIMIT 100").all();
+  return json({ logs: rows.results || [] });
+}
+
+async function adminSetRole(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role !== "Owner") return json({ error: "Owner only" }, 403);
+  const body = await request.json();
+  if (!["Customer", "Support", "Admin", "Owner"].includes(body.role)) return json({ error: "Unknown role" }, 400);
+  if (id === user.id) return json({ error: "You cannot change your own role" }, 400);
+  await env.DB.prepare("UPDATE users SET role = ?, token = NULL WHERE id = ?").bind(body.role, id).run();
+  await audit(env, user, "set_role", id + ":" + body.role);
+  return json({ ok: true });
+}
+
+async function audit(env, user, action, target) {
+  await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address) VALUES (?, ?, ?, ?)").bind(user.id, action, String(target || "").slice(0, 200), "").run();
+}
+
 function withImages(item) {
-  return { ...item, images: listImages(item.images), page: "/addons/view?id=" + item.id };
+  return { ...item, images: listImages(item.images), features: listImages(item.features), page: "/addons/view?id=" + item.id };
 }
 function listImages(value) {
   if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);

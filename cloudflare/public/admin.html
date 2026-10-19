@@ -1,46 +1,331 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="icon" type="image/png" href="/favicon.png">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
     <title>Admin | Rotaidem</title>
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
     <link rel="stylesheet" href="/site.css">
-    <style>.preview { width: 100%; height: 180px; object-fit: cover; background: #eee; border-radius: 12px; } .addon-row { display: flex; gap: 12px; align-items: center; padding: 14px; border-bottom: 1px solid #eee; } .addon-row img { width: 88px; height: 64px; object-fit: cover; border-radius: 8px; background: #eee; }</style>
+    <style>
+        body { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
+        .side { background: #05070a; border-right: 1px solid var(--line); padding: 24px 16px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
+        .side .brand { padding: 0 8px 28px; }
+        .side button.tab { all: unset; display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; color: #c4cbd6; }
+        .side button.tab:hover { background: var(--panel); color: #fff; }
+        .side button.tab.active { background: var(--accent); color: #fff; }
+        .side .count { font-size: 11px; background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 999px; }
+        .side .who { margin-top: auto; padding: 14px; border-top: 1px solid var(--line); font-size: 13px; }
+        .main { padding: 36px 40px 80px; min-width: 0; }
+        .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+        .top h1 { font-size: 30px; font-weight: 800; margin: 0; }
+        .pane { display: none; }
+        .pane.active { display: block; }
+        .thumb { width: 72px; height: 50px; border-radius: 8px; object-fit: cover; background: #000; }
+        .row-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+        .form-grid .full { grid-column: 1 / -1; }
+        .preview { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 12px; background: #000; margin-bottom: 18px; }
+        .toast { position: fixed; right: 24px; bottom: 24px; background: var(--panel); border: 1px solid var(--line); padding: 14px 20px; border-radius: 12px; opacity: 0; transform: translateY(10px); transition: .25s; pointer-events: none; z-index: 99; }
+        .toast.show { opacity: 1; transform: none; }
+        .toast.error { border-color: var(--danger); color: var(--danger); }
+        .search { max-width: 280px; }
+        @media (max-width: 900px) {
+            body { grid-template-columns: 1fr; }
+            .side { position: static; height: auto; flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 14px; }
+            .side .brand { padding: 0 8px 0 0; width: 100%; margin-bottom: 8px; }
+            .side .who { display: none; }
+            .main { padding: 24px 16px 60px; }
+            .form-grid { grid-template-columns: 1fr; }
+        }
+    </style>
 </head>
-<body class="bg-light">
-<nav class="navbar rotaidem-nav"><div class="container"><a class="navbar-brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt=""> Rotaidem</a><ul class="navbar-nav"><li class="nav-item"><a class="nav-link" href="/">Home</a></li><li class="nav-item"><a class="nav-link" href="/addons/">Addons</a></li><li class="nav-item"><a class="nav-link" href="/admin">Admin</a></li></ul><span class="font-weight-bold" id="admin-badge">Admin</span><button class="btn btn-outline-dark btn-sm" onclick="rsgLogout()">Logout</button></div></nav>
-<header class="hero-band" style="background-image: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)), url('https://i.postimg.cc/28WybSM2/metroliner.jpg');"><div class="container pb-4"><span class="badge badge-light">Admin control</span><h1 class="display-4 font-weight-bold mt-2">Addons</h1><p class="mb-0">Add a page, extra pictures, or remove an addon.</p></div></header>
-<main class="container py-4">
-    <ul class="nav mb-4"><li class="nav-item"><a class="nav-link active font-weight-bold text-dark" data-toggle="pill" href="#tab-addons">Addons</a></li><li class="nav-item"><a class="nav-link font-weight-bold text-dark" data-toggle="pill" href="#tab-newsletter">Newsletter</a></li><li class="nav-item"><a class="nav-link font-weight-bold text-dark" data-toggle="pill" href="#tab-orders">Orders</a></li></ul>
-    <div class="tab-content">
-        <div class="tab-pane fade show active" id="tab-addons"><div class="row"><div class="col-lg-5 mb-4"><div class="fun-card"><h2 class="h5">Add or edit</h2><img id="preview" class="preview mb-3" src="https://i.postimg.cc/28WybSM2/metroliner.jpg" alt=""><form id="product-form" onsubmit="saveProduct(event)"><input id="p-id" type="hidden"><input id="p-name" class="form-control mb-2" placeholder="Addon name" required><input id="p-price" class="form-control mb-2" placeholder="Price" value="$29.99"><select id="p-status" class="form-control mb-2"><option value="in_development">In development</option><option value="published">Published</option><option value="coming_soon">Coming soon</option></select><input id="p-image" class="form-control mb-2" placeholder="Cover image URL, must start with https://" oninput="previewImage()"><textarea id="p-images" class="form-control mb-2" rows="4" placeholder="More image URLs, one https:// link per line"></textarea><textarea id="p-desc" class="form-control mb-2" rows="4" placeholder="Description"></textarea><input id="p-buy" class="form-control mb-3" placeholder="Buy link, empty uses Eliaz@rotaidem.com"><button class="btn btn-dark btn-block" type="submit">Save addon page</button><button class="btn btn-outline-dark btn-block" type="button" onclick="resetForm()">Clear</button><p id="p-status-msg" class="small mt-2"></p></form></div></div><div class="col-lg-7"><div class="fun-card p-0" id="products-list"><div class="p-3 text-muted">Loading addons...</div></div></div></div></div>
-        <div class="tab-pane fade" id="tab-newsletter"><div class="fun-card"><form onsubmit="savePost(event)"><input id="n-title" class="form-control mb-2" placeholder="Title" required><input id="n-image" class="form-control mb-2" placeholder="Image URL"><textarea id="n-content" class="form-control mb-2" rows="5" placeholder="Article" required></textarea><button class="btn btn-dark">Publish</button><p id="n-status-msg" class="small mt-2"></p></form><div id="posts-list" class="mt-3"></div></div></div>
-        <div class="tab-pane fade" id="tab-orders"><div class="fun-card mb-3 p-0"><table class="table mb-0"><tbody id="admin-orders-tbody"></tbody></table></div><div class="fun-card p-0"><table class="table mb-0"><tbody id="admin-customers-tbody"></tbody></table></div></div>
-    </div>
+<body data-layout="off">
+<aside class="side">
+    <a class="brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="">Rotaidem</a>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="products">Products <span class="count" id="c-products">0</span></button>
+    <button class="tab" data-tab="news">News <span class="count" id="c-posts">0</span></button>
+    <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders">0</span></button>
+    <button class="tab" data-tab="users">Users <span class="count" id="c-customers">0</span></button>
+    <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages">0</span></button>
+    <button class="tab" data-tab="activity">Activity</button>
+    <div class="who"><div id="who-name" style="font-weight:700">Admin</div><div class="muted" id="who-role"></div><div style="margin-top:10px;display:flex;gap:8px"><a class="btn btn-ghost btn-sm" href="/">Site</a><button class="btn btn-ghost btn-sm" onclick="rsgLogout()">Log out</button></div></div>
+</aside>
+
+<main class="main">
+    <!-- Dashboard -->
+    <section class="pane active" id="pane-dashboard">
+        <div class="top"><h1 id="greeting">Dashboard</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
+        <div class="grid grid-4" style="margin-bottom:24px">
+            <div class="card"><label>Revenue</label><div class="stat-num" id="s-revenue">$0</div></div>
+            <div class="card"><label>Orders</label><div class="stat-num" id="s-orders">0</div></div>
+            <div class="card"><label>Customers</label><div class="stat-num" id="s-customers">0</div></div>
+            <div class="card"><label>Products</label><div class="stat-num" id="s-products">0</div></div>
+        </div>
+        <div class="grid grid-2">
+            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest orders</h3><div class="table-wrap"><table class="table"><tbody id="dash-orders"></tbody></table></div></div>
+            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest messages</h3><div class="table-wrap"><table class="table"><tbody id="dash-messages"></tbody></table></div></div>
+        </div>
+    </section>
+
+    <!-- Products -->
+    <section class="pane" id="pane-products">
+        <div class="top"><h1>Products</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
+        <div class="grid" style="grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);align-items:start" id="products-layout">
+            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th></th><th>Product</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div></div>
+            <form class="card" id="product-form">
+                <h3 id="pf-title">New product</h3>
+                <img id="preview" class="preview" src="" alt="">
+                <input id="p-id" type="hidden">
+                <div class="form-grid">
+                    <div class="field full"><label>Name</label><input id="p-name" placeholder="HeavyPro 747-400" required></div>
+                    <div class="field full"><label>Tagline</label><input id="p-tagline" placeholder="The Queen of the Skies, study-level"></div>
+                    <div class="field"><label>Price</label><input id="p-price" placeholder="$69.99"></div>
+                    <div class="field"><label>Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
+                    <div class="field"><label>Simulator</label><input id="p-sim" placeholder="MSFS 2024"></div>
+                    <div class="field"><label>Version</label><input id="p-version" placeholder="1.0.0"></div>
+                    <div class="field full"><label>Cover image URL</label><input id="p-image" placeholder="https://…"></div>
+                    <div class="field full"><label>Gallery image URLs (one per line)</label><textarea id="p-images" rows="3"></textarea></div>
+                    <div class="field full"><label>Description</label><textarea id="p-desc" rows="5"></textarea></div>
+                    <div class="field full"><label>Feature list (one per line)</label><textarea id="p-features" rows="4" placeholder="Custom FMS&#10;Full hydraulic system"></textarea></div>
+                    <div class="field"><label>Buy link</label><input id="p-buy" placeholder="https://… or mailto:"></div>
+                    <div class="field"><label>Sort order</label><input id="p-sort" type="number" value="0"></div>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Save product</button><button class="btn btn-ghost" type="button" onclick="openProduct()">Clear</button><a class="btn btn-ghost" id="p-open" target="_blank" style="display:none">View page</a></div>
+            </form>
+        </div>
+    </section>
+
+    <!-- News -->
+    <section class="pane" id="pane-news">
+        <div class="top"><h1>News</h1></div>
+        <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start">
+            <form class="card" id="post-form">
+                <h3 id="nf-title">New post</h3>
+                <input id="n-id" type="hidden">
+                <div class="field"><label>Title</label><input id="n-title" required></div>
+                <div class="field"><label>Image URL</label><input id="n-image" placeholder="https://…"></div>
+                <div class="field"><label>Article</label><textarea id="n-content" rows="9" required></textarea></div>
+                <div style="display:flex;gap:10px"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
+            </form>
+            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><tbody id="posts-list"></tbody></table></div></div>
+        </div>
+    </section>
+
+    <!-- Orders -->
+    <section class="pane" id="pane-orders">
+        <div class="top"><h1>Orders</h1></div>
+        <form class="card" id="order-form" style="margin-bottom:24px">
+            <h3>Add manual order</h3>
+            <div class="grid grid-4" style="gap:0 16px">
+                <div class="field"><label>Customer</label><select id="o-customer" required></select></div>
+                <div class="field"><label>Product</label><select id="o-product"></select></div>
+                <div class="field"><label>Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
+                <div class="field"><label>Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
+            </div>
+            <button class="btn btn-sm">Add order</button>
+        </form>
+        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+    </section>
+
+    <!-- Users -->
+    <section class="pane" id="pane-users">
+        <div class="top"><h1>Users</h1><input class="search" id="user-search" placeholder="Search name or email"></div>
+        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div></div>
+        <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
+    </section>
+
+    <!-- Messages -->
+    <section class="pane" id="pane-messages">
+        <div class="top"><h1>Messages</h1></div>
+        <div id="messages-list"></div>
+    </section>
+
+    <!-- Activity -->
+    <section class="pane" id="pane-activity">
+        <div class="top"><h1>Activity</h1></div>
+        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
+    </section>
 </main>
+<div class="toast" id="toast"></div>
+
 <script src="/auth.js"></script>
-<script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
-<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>
 <script>
-const FALLBACK = "https://i.postimg.cc/28WybSM2/metroliner.jpg";
-let catalog = [];
-function authHeader() { return { "content-type": "application/json", "Authorization": "Bearer " + (localStorage.getItem("rsg_token") || "") }; }
-function safeImage(url) { return /^https?:\/\/.+\..+/.test(url || "") ? url : FALLBACK; }
-function checkAdmin() { if (localStorage.getItem("rsg_admin") !== "true") { location.href = "/login"; return false; } document.getElementById("admin-badge").textContent = localStorage.getItem("rsg_name") || "Admin"; return true; }
-function previewImage() { document.getElementById("preview").src = safeImage(document.getElementById("p-image").value); }
-function resetForm() { document.getElementById("product-form").reset(); document.getElementById("p-id").value = ""; previewImage(); }
-function editProduct(id) { const item = catalog.find(p => p.id === id); if (!item) return; document.getElementById("p-id").value = item.id; document.getElementById("p-name").value = item.name || ""; document.getElementById("p-price").value = item.price || ""; document.getElementById("p-status").value = item.status || "in_development"; document.getElementById("p-image").value = /^https?:\/\//.test(item.image_url || "") ? item.image_url : ""; document.getElementById("p-images").value = (item.images || []).filter(url => /^https?:\/\//.test(url)).join("\n"); document.getElementById("p-desc").value = item.description || ""; document.getElementById("p-buy").value = item.buy_url || ""; previewImage(); }
-async function loadProducts() { const list = document.getElementById("products-list"); const res = await fetch("/api/products", { headers: authHeader() }); const data = await res.json(); if (!res.ok) { list.innerHTML = '<div class="p-3 text-danger">' + (data.error || "Could not load addons") + "</div>"; return; } catalog = data.products || []; if (!catalog.length) { list.innerHTML = '<div class="p-3 text-muted">No addons yet.</div>'; return; } list.innerHTML = catalog.map(p => `<div class="addon-row"><img src="${safeImage(p.image_url)}" alt=""><div><strong>${p.name}</strong><div class="small text-muted">${p.price || ""} · ${p.status || ""}</div><a href="/addons/view?id=${p.id}">Open page</a></div><div class="ml-auto"><button class="btn btn-outline-dark btn-sm mr-2" onclick="editProduct('${p.id}')">Edit</button><button class="btn btn-outline-danger btn-sm" onclick="deleteProduct('${p.id}')">Remove</button></div></div>`).join(""); }
-async function saveProduct(e) { e.preventDefault(); const msg = document.getElementById("p-status-msg"); const image = document.getElementById("p-image").value.trim(); const images = document.getElementById("p-images").value.split(/\n+/).map(s => s.trim()).filter(Boolean); if (image && !/^https?:\/\//.test(image)) { msg.textContent = "Cover image must be a full https:// link."; return; } if (images.some(url => !/^https?:\/\//.test(url))) { msg.textContent = "Every extra image must be a full https:// link."; return; } msg.textContent = "Saving..."; const body = { id: document.getElementById("p-id").value, name: document.getElementById("p-name").value, price: document.getElementById("p-price").value, status: document.getElementById("p-status").value, image_url: image || FALLBACK, images, description: document.getElementById("p-desc").value, buy_url: document.getElementById("p-buy").value || "mailto:Eliaz@rotaidem.com" }; const res = await fetch("/api/save-product", { method: "POST", headers: authHeader(), body: JSON.stringify(body) }); const data = await res.json().catch(() => ({})); if (!res.ok) { msg.textContent = data.error || "Could not save."; return; } msg.textContent = "Saved. Page: /addons/view?id=" + data.id; resetForm(); loadProducts(); }
-async function deleteProduct(id) { if (!confirm("Remove this addon?")) return; const res = await fetch("/api/products/" + encodeURIComponent(id), { method: "DELETE", headers: authHeader() }); const data = await res.json().catch(() => ({})); if (!res.ok) { alert(data.error || "Could not remove addon"); return; } loadProducts(); }
-async function loadNewsletter() { const res = await fetch("/api/newsletter"); const data = await res.json(); document.getElementById("posts-list").innerHTML = (data.posts || []).map(p => `<div class="border-top py-2 d-flex justify-content-between"><span>${p.title}</span><button class="btn btn-outline-danger btn-sm" onclick="deletePost(${p.id})">Remove</button></div>`).join("") || "<p class='text-muted'>No articles.</p>"; }
-async function savePost(e) { e.preventDefault(); const res = await fetch("/api/newsletter", { method: "POST", headers: authHeader(), body: JSON.stringify({ title: document.getElementById("n-title").value, image_url: document.getElementById("n-image").value, content: document.getElementById("n-content").value }) }); document.getElementById("n-status-msg").textContent = res.ok ? "Published." : "Could not publish"; if (res.ok) e.target.reset(); loadNewsletter(); }
-async function deletePost(id) { await fetch("/api/newsletter/" + id, { method: "DELETE", headers: authHeader() }); loadNewsletter(); }
-async function loadOrders() { const res = await fetch("/api/admin/orders", { headers: authHeader() }); const data = await res.json(); document.getElementById("admin-orders-tbody").innerHTML = (data.orders || []).map(o => `<tr><td>#${o.id}</td><td>${o.customer_name || ""}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td>${o.status || ""}</td></tr>`).join("") || "<tr><td class='p-3 text-muted'>No orders.</td></tr>"; const people = await fetch("/api/admin/customers", { headers: authHeader() }); document.getElementById("admin-customers-tbody").innerHTML = ((await people.json()).customers || []).map(c => `<tr><td>${c.name}</td><td>${c.email}</td><td>${c.role}</td></tr>`).join(""); }
-document.addEventListener("DOMContentLoaded", () => { if (!checkAdmin()) return; loadProducts(); loadNewsletter(); loadOrders(); });
+if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
+const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || "") };
+const state = { products: [], users: [], role: "" };
+
+async function api(path, opts = {}) {
+    const res = await fetch(path, { headers: H, ...opts });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) { if (path === "/api/admin/overview") { rsgLogout(); } }
+    if (!res.ok) throw new Error(data.error || "Request failed");
+    return data;
+}
+function toast(text, bad) { const t = document.getElementById("toast"); t.textContent = text; t.className = "toast show" + (bad ? " error" : ""); clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", 2600); }
+function money(n) { return "$" + Number(n || 0).toFixed(2); }
+function date(s) { return esc(String(s || "").slice(0, 16).replace("T", " ")); }
+function empty(cols, text) { return `<tr><td colspan="${cols}" class="muted">${text}</td></tr>`; }
+const val = id => document.getElementById(id).value.trim();
+const lines = id => document.getElementById(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
+
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(name) {
+    document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+    history.replaceState(null, "", "#" + name);
+}
+
+async function loadOverview() {
+    const o = await api("/api/admin/overview");
+    state.role = o.role;
+    document.getElementById("greeting").textContent = "Welcome back, " + o.name;
+    document.getElementById("who-name").textContent = o.name;
+    document.getElementById("who-role").textContent = o.role;
+    document.getElementById("s-revenue").textContent = money(o.revenue);
+    for (const k of ["orders", "customers", "products"]) document.getElementById("s-" + k).textContent = o[k];
+    for (const k of ["products", "posts", "orders", "customers", "messages"]) document.getElementById("c-" + k).textContent = o[k];
+}
+
+// products
+async function loadProducts() {
+    state.products = (await api("/api/products")).products || [];
+    document.getElementById("products-list").innerHTML = state.products.length ? state.products.map(p =>
+        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.price || "")}</div></td><td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
+        `<td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="openProduct('${esc(p.id)}')">Edit</button><button class="btn btn-danger btn-sm" onclick="deleteProduct('${esc(p.id)}')">Delete</button></div></td></tr>`
+    ).join("") : empty(4, "No products yet. Create your first HeavyPro product.");
+    document.getElementById("o-product").innerHTML = '<option value="">-</option>' + state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+}
+function openProduct(id, stay) {
+    if (!stay) showTab("products");
+    const p = state.products.find(x => x.id === id) || {};
+    const set = (k, v) => document.getElementById(k).value = v == null ? "" : v;
+    set("p-id", p.id); set("p-name", p.name); set("p-tagline", p.tagline); set("p-price", p.price);
+    set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
+    set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
+    set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-sort", p.sort_order || 0);
+    document.getElementById("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
+    const open = document.getElementById("p-open");
+    open.style.display = p.id ? "" : "none";
+    open.href = "/addons/view?id=" + encodeURIComponent(p.id || "");
+    preview();
+}
+function preview() { document.getElementById("preview").src = safeImage(val("p-image")); }
+document.getElementById("p-image").oninput = preview;
+document.getElementById("product-form").onsubmit = async e => {
+    e.preventDefault();
+    const urls = [val("p-image"), ...lines("p-images")].filter(Boolean);
+    if (urls.some(u => !/^https?:\/\//.test(u))) return toast("Image links must start with https://", true);
+    try {
+        const r = await api("/api/save-product", { method: "POST", body: JSON.stringify({
+            id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
+            simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: lines("p-images"),
+            description: document.getElementById("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), sort_order: Number(val("p-sort")) || 0
+        })});
+        toast("Saved " + val("p-name"));
+        await loadProducts(); openProduct(r.id); loadOverview();
+    } catch (err) { toast(err.message, true); }
+};
+async function deleteProduct(id) {
+    if (!confirm("Delete this product? This cannot be undone.")) return;
+    try { await api("/api/products/" + encodeURIComponent(id), { method: "DELETE" }); toast("Deleted"); loadProducts(); loadOverview(); openProduct(); }
+    catch (err) { toast(err.message, true); }
+}
+
+// news
+let posts = [];
+async function loadPosts() {
+    posts = (await api("/api/newsletter")).posts || [];
+    document.getElementById("posts-list").innerHTML = posts.length ? posts.map(p =>
+        `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`
+    ).join("") : empty(2, "No posts yet.");
+}
+function editPost(id) {
+    const p = posts.find(x => x.id === id) || {};
+    document.getElementById("n-id").value = p.id || "";
+    document.getElementById("n-title").value = p.title || "";
+    document.getElementById("n-image").value = p.image_url || "";
+    document.getElementById("n-content").value = p.content || "";
+    document.getElementById("nf-title").textContent = p.id ? "Edit post" : "New post";
+}
+document.getElementById("post-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        await api("/api/newsletter", { method: "POST", body: JSON.stringify({ id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: document.getElementById("n-content").value }) });
+        toast("Published"); editPost(); loadPosts(); loadOverview();
+    } catch (err) { toast(err.message, true); }
+};
+async function deletePost(id) {
+    if (!confirm("Delete this post?")) return;
+    try { await api("/api/newsletter/" + id, { method: "DELETE" }); toast("Deleted"); loadPosts(); loadOverview(); } catch (err) { toast(err.message, true); }
+}
+
+// orders
+async function loadOrders() {
+    const orders = (await api("/api/admin/orders")).orders || [];
+    const row = o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:12px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`;
+    document.getElementById("orders-list").innerHTML = orders.length ? orders.map(row).join("") : empty(6, "No orders yet.");
+    document.getElementById("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
+}
+document.getElementById("order-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        await api("/api/admin/orders", { method: "POST", body: JSON.stringify({ customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay") }) });
+        toast("Order added"); e.target.reset(); loadOrders(); loadOverview();
+    } catch (err) { toast(err.message, true); }
+};
+
+// users
+async function loadUsers() {
+    state.users = (await api("/api/admin/customers")).customers || [];
+    document.getElementById("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
+    renderUsers();
+}
+function renderUsers() {
+    const q = val("user-search").toLowerCase();
+    const list = state.users.filter(u => !q || (u.name + " " + u.email).toLowerCase().includes(q));
+    const roles = ["Customer", "Support", "Admin", "Owner"];
+    document.getElementById("users-list").innerHTML = list.length ? list.map(u => {
+        const role = state.role === "Owner"
+            ? `<select style="width:auto;padding:6px 10px" onchange="setRole(${u.id}, this.value, this)">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
+            : esc(u.role);
+        return `<tr><td><strong>${esc(u.name)}</strong></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
+    }).join("") : empty(4, "No users found.");
+}
+document.getElementById("user-search").oninput = renderUsers;
+async function setRole(id, role, el) {
+    if (!confirm("Change this user's role to " + role + "?")) { renderUsers(); return; }
+    try { await api(`/api/admin/users/${id}/role`, { method: "POST", body: JSON.stringify({ role }) }); toast("Role updated"); loadUsers(); loadOverview(); }
+    catch (err) { toast(err.message, true); renderUsers(); }
+}
+
+// messages
+async function loadMessages() {
+    const msgs = (await api("/api/admin/messages")).messages || [];
+    document.getElementById("messages-list").innerHTML = msgs.length ? msgs.map(m =>
+        `<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><strong>${esc(m.name || "Anonymous")}</strong> <a class="muted" href="mailto:${esc(m.email)}">${esc(m.email)}</a></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
+        `<p style="white-space:pre-line;margin:14px 0">${esc(m.message)}</p><div style="display:flex;gap:8px"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div>`
+    ).join("") : '<div class="empty">Inbox zero.</div>';
+    document.getElementById("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
+}
+async function deleteMessage(id) {
+    if (!confirm("Delete this message?")) return;
+    try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
+}
+
+async function loadAudit() {
+    const logs = (await api("/api/admin/audit")).logs || [];
+    document.getElementById("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(l.action)}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
+}
+
+(async () => {
+    try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
+    openProduct(undefined, true);
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit()].map(p => p.catch(err => toast(err.message, true))));
+    const start = location.hash.slice(1);
+    if (start && document.getElementById("pane-" + start)) showTab(start);
+})();
 </script>
 </body>
 </html>

@@ -1,36 +1,38 @@
-# RSG Software website
+# Rotaidem website
 
-Website made for the developers of RSG Software. All rights to RSG Software, Eliaz T and Vanya.
+Home of HeavyPro for Microsoft Flight Simulator 2024. All rights to Rotaidem, Eliaz T and Vanya.
 
-## Production deployment
+The site lives in `cloudflare/public` (static pages) and has one API with two interchangeable backends:
 
-The application exposes the Flask WSGI object as `main:app`. Use a Python hosting service that supports Gunicorn, or build the included Dockerfile.
+- `server.py`: Flask, for Python hosts such as **Starto** (also Docker / Procfile).
+- `cloudflare/functions/api/[[path]].js`: Cloudflare Pages Functions with D1 (see `cloudflare/README.md`).
 
-Required environment settings:
+## Deploy on Starto
 
-- `APP_ENV=production`
-- `SECRET_KEY`: a unique, randomly generated value kept in the hosting provider's secret store
-- `DATABASE_URL`: a persistent PostgreSQL database URL (the SQLite default is for local development only)
-- `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL`: credentials for the first Owner account
+1. Create a Python app from this repository.
+2. Start command (also in `Procfile`):
 
-The app listens on the provider's `PORT` (default `8000`). `/health` returns a small health response for platform checks. Do not place the database file or customer uploads on an ephemeral container filesystem; attach persistent storage or use a persistent external service for uploads.
+   ```sh
+   gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 main:app
+   ```
 
-The initial Owner is created from the environment settings when the app starts. Keep `ADMIN_RESET_PASSWORD=false`; set it to `true` for one restart only when deliberately resetting that account's password, then switch it off.
+3. Environment variables:
+   - `ADMIN_EMAIL`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`: the first login with these creates the Owner account.
+   - `DATABASE_URL`: PostgreSQL URL (recommended). Without it the app uses SQLite at `DATA_DIR/rotaidem.db`.
+   - `DATA_DIR`: only for SQLite; point it at a persistent volume, never the ephemeral container disk.
+4. Health check path: `/health`.
 
-### Cloudflare
+The schema is created automatically on start. On first start the old product catalog is cleared once so the HeavyPro catalog starts empty; add products from **/admin → Products**.
 
-Cloudflare readiness does not depend on having a domain yet. When a domain is available and the hosting origin is reachable, add the provider-recommended DNS record and enable Cloudflare proxying for it. Configure Cloudflare's SSL/TLS mode to **Full (strict)** when the hosting origin has a valid TLS certificate. The provider-specific DNS target can only be filled in after the app is deployed.
+## Admin panel
 
-The application marks session cookies as Secure in production and sends private, no-store cache headers for login, account, admin, verification, and API routes. In Cloudflare, keep dynamic/authenticated routes bypassed from cache; do not use a broad "Cache Everything" rule for the application.
+`/admin` (staff only): dashboard with revenue and counts, products (cover, gallery, features, status, sort order), news posts with editing, manual orders, users with role changes (Owner only), contact-form inbox and an activity log.
 
-Forwarded client IP and HTTPS headers are ignored by default. Set `PROXY_FIX_X_FOR` and `PROXY_FIX_X_PROTO` only after confirming the exact number of trusted proxy hops in your Starto and Cloudflare route, and that those proxies overwrite the forwarded headers. Keep the origin restricted to trusted ingress where the provider supports it. This avoids accepting spoofed client IP or scheme headers.
-
-### Start command
-
-For a Python service, use:
+## Local development
 
 ```sh
-gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 main:app
+pip install -r requirements.txt
+ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=test1234 python server.py
 ```
 
-The included `Procfile` provides the same start command. The included `Dockerfile` defaults to port 8000 and honors `PORT` when the container platform sets it.
+The older Jinja app in `website/` is no longer the entry point; `main.py` now serves `server.py`.
