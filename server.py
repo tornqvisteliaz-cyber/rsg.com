@@ -35,8 +35,8 @@ USE_PG = DATABASE_URL.startswith("postgresql://")
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "instance"))
 STAFF = ("Owner", "Admin", "Support")
 SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-MAIL_FROM = os.environ.get("MAIL_FROM", "Rotaidem <onboarding@resend.dev>")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <onboarding@resend.dev>"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 ROLES = ("Customer", "Support", "Admin", "Owner")
@@ -602,18 +602,46 @@ def product_email_html(product, message, email):
 </table></td></tr></table></body></html>"""
 
 
+def explain_resend_error(status, raw):
+    """Turn a Resend error response into an instruction the admin can act on."""
+    try:
+        message = str(json.loads(raw).get("message", ""))
+    except (ValueError, AttributeError):
+        message = ""
+    text = (message or raw).lower()
+    if "own email address" in text or ("verify a domain" in text and "resend.dev" in MAIL_FROM):
+        return ("Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address "
+                "you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com "
+                "at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <news@rotaidem.com>.")
+    if "domain is not verified" in text or "not verified" in text:
+        return (f"The sender domain in MAIL_FROM ({MAIL_FROM}) is not verified in Resend yet. Finish the DNS setup at "
+                "resend.com/domains, or remove MAIL_FROM to use Resend's test sender.")
+    if status in (401, 403) and ("api key" in text or "unauthorized" in text or "restricted" in text):
+        return ("Resend rejected the API key. Check RESEND_API_KEY in Render (it starts with re_ and must have "
+                "sending access), save, and let the service redeploy.")
+    if "error code: 1010" in text or "<html" in text:
+        return "Resend's firewall blocked the request. Try again in a minute; if it keeps happening, contact Resend support."
+    if "from" in text and ("invalid" in text or "format" in text):
+        return f"MAIL_FROM is not a valid sender ({MAIL_FROM}). Use the format: Rotaidem <news@rotaidem.com>"
+    return f"Resend said ({status}): {message or raw[:200]}"
+
+
 def send_batch(messages):
     """Send up to 100 emails through Resend's batch API. Returns (sent, error)."""
     req = urllib.request.Request("https://api.resend.com/emails/batch", data=json.dumps(messages).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"})
+                                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json",
+                                          "Accept": "application/json", "User-Agent": "Rotaidem-Website/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp.read()
         return len(messages), ""
     except urllib.error.HTTPError as exc:
-        return 0, exc.read().decode(errors="replace")[:300]
+        raw = exc.read().decode(errors="replace")
+        print(f"Resend error {exc.code}: {raw[:500]}", file=sys.stderr, flush=True)
+        return 0, explain_resend_error(exc.code, raw)
     except OSError as exc:
-        return 0, str(exc)
+        print(f"Resend connection error: {exc}", file=sys.stderr, flush=True)
+        return 0, f"Could not reach Resend: {exc}"
 
 
 @app.post("/api/admin/audience")
@@ -668,7 +696,7 @@ def admin_broadcast():
                  subject, product["id"] if product else "", ",".join(b.get("groups", [])) + (" +extra" if b.get("extra") else ""), sent, failed, user["id"])
         audit(user, "send_email", f"{subject} ({sent} sent)")
     if failed and not sent:
-        return err("Sending failed: " + last_error, 502)
+        return err(last_error, 502)
     return jsonify({"ok": True, "sent": sent, "failed": failed, "test": bool(test), "error": last_error})
 
 

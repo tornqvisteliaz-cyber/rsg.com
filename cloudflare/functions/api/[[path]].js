@@ -235,7 +235,7 @@ async function adminOverview(request, env) {
   const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
-  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!env.RESEND_API_KEY });
+  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -307,7 +307,24 @@ const AUDIENCE_SQL = {
   subscribers: "SELECT email FROM subscribers WHERE unsubscribed = 0",
   contacts: "SELECT DISTINCT email FROM messages",
 };
-const mailFrom = env => env.MAIL_FROM || "Rotaidem <onboarding@resend.dev>";
+const mailFrom = env => String(env.MAIL_FROM || "").trim() || "Rotaidem <onboarding@resend.dev>";
+const resendKey = env => String(env.RESEND_API_KEY || "").trim();
+
+function explainResendError(env, status, raw) {
+  let message = "";
+  try { message = String(JSON.parse(raw).message || ""); } catch (err) {}
+  const text = (message || raw).toLowerCase();
+  const from = mailFrom(env);
+  if (text.includes("own email address") || (text.includes("verify a domain") && from.includes("resend.dev")))
+    return "Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <news@rotaidem.com>.";
+  if (text.includes("not verified"))
+    return `The sender domain in MAIL_FROM (${from}) is not verified in Resend yet. Finish the DNS setup at resend.com/domains, or remove MAIL_FROM to use Resend's test sender.`;
+  if ((status === 401 || status === 403) && /api key|unauthorized|restricted/.test(text))
+    return "Resend rejected the API key. Check RESEND_API_KEY (it starts with re_ and must have sending access), save, and redeploy.";
+  if (text.includes("from") && /invalid|format/.test(text))
+    return `MAIL_FROM is not a valid sender (${from}). Use the format: Rotaidem <news@rotaidem.com>`;
+  return `Resend said (${status}): ${message || raw.slice(0, 200)}`;
+}
 const escHtml = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function unsubscribeToken(env, email) {
@@ -370,13 +387,13 @@ async function adminAudience(request, env) {
   const counts = {};
   for (const g of AUDIENCES) counts[g] = (await collectRecipients(env, [g], "")).length;
   const groups = (body.groups || []).filter(g => AUDIENCES.includes(g));
-  return json({ counts, total: (await collectRecipients(env, groups, body.extra)).length, email_ready: !!env.RESEND_API_KEY, from: mailFrom(env) });
+  return json({ counts, total: (await collectRecipients(env, groups, body.extra)).length, email_ready: !!resendKey(env), from: mailFrom(env) });
 }
 
 async function adminBroadcast(request, env) {
   const user = await currentUser(request, env);
   if (!user || !["Owner", "Admin"].includes(user.role)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
-  if (!env.RESEND_API_KEY) return json({ error: "Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the environment variables." }, 400);
+  if (!resendKey(env)) return json({ error: "Email is not set up. Add RESEND_API_KEY (and MAIL_FROM) to the environment variables." }, 400);
   const body = await request.json();
   const subject = String(body.subject || "").trim();
   const message = String(body.message || "").trim();
@@ -397,14 +414,14 @@ async function adminBroadcast(request, env) {
     const chunk = recipients.slice(i, i + 100);
     const messages = [];
     for (const r of chunk) messages.push({ from: mailFrom(env), to: [r], subject, html: await productEmailHtml(env, base, product, message, r) });
-    const res = await fetch("https://api.resend.com/emails/batch", { method: "POST", headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(messages) });
-    if (res.ok) sent += chunk.length; else { failed += chunk.length; lastError = (await res.text()).slice(0, 300); }
+    const res = await fetch("https://api.resend.com/emails/batch", { method: "POST", headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(messages) });
+    if (res.ok) sent += chunk.length; else { failed += chunk.length; lastError = explainResendError(env, res.status, await res.text()); }
   }
   if (!test) {
     await env.DB.prepare("INSERT INTO campaigns (subject, product_id, audience, sent_count, failed_count, admin_id) VALUES (?, ?, ?, ?, ?, ?)").bind(subject, product ? product.id : "", groups.join(",") + (body.extra ? " +extra" : ""), sent, failed, user.id).run();
     await audit(env, user, "send_email", `${subject} (${sent} sent)`);
   }
-  if (failed && !sent) return json({ error: "Sending failed: " + lastError }, 502);
+  if (failed && !sent) return json({ error: lastError }, 502);
   return json({ ok: true, sent, failed, test: !!test, error: lastError });
 }
 

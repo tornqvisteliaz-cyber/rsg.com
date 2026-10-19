@@ -169,7 +169,10 @@
                     </div>
                     <div class="field" style="margin-top:16px"><label for="e-extra">Extra addresses</label><textarea id="e-extra" rows="3" placeholder="Paste any other email addresses, separated by commas or new lines"></textarea><div class="hint">Duplicates are removed and anyone who unsubscribed is skipped automatically.</div></div>
                     <div class="total"><span>Recipients</span><span id="e-total">0</span></div>
-                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-accent" type="submit" id="e-send">Send email</button><button class="btn btn-ghost" type="button" id="e-test">Send a test to me</button></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-accent" type="submit" id="e-send">Send email</button></div>
+                    <div class="sub" style="margin-top:22px">Send a test first</div>
+                    <div style="display:flex;gap:0"><input type="email" id="e-test-to" placeholder="Your email address" aria-label="Test address"><button class="btn btn-ghost" type="button" id="e-test" style="white-space:nowrap">Send test</button></div>
+                    <div class="hint" id="e-test-hint"></div>
                     <p class="msg" id="e-msg"></p>
                 </div>
             </form>
@@ -394,6 +397,9 @@ function refreshAudience() {
             $("e-total").textContent = r.total;
             $("e-send").textContent = r.total ? `Send to ${r.total} ${r.total === 1 ? "person" : "people"}` : "Send email";
             $("e-from").textContent = "From: " + r.from;
+            $("e-test-hint").textContent = /resend\.dev/.test(r.from)
+                ? "Resend's test sender is in use, so tests only arrive at the address you signed up to Resend with. Verify rotaidem.com in Resend and set MAIL_FROM to email anyone."
+                : "";
             state.emailReady = r.email_ready;
             $("email-setup").style.display = r.email_ready ? "none" : "";
         } catch (err) { toast(err.message, true); }
@@ -415,8 +421,8 @@ async function sendEmail(test) {
     if (!val("e-subject") || !val("e-message")) { msg.className = "msg error"; msg.textContent = "Add a subject and a message first."; return; }
     const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, groups: groups(), extra: $("e-extra").value };
     if (test) {
-        const me = await api("/api/me").catch(() => null);
-        payload.test_email = me && me.user ? me.user.email : "";
+        payload.test_email = val("e-test-to");
+        if (!payload.test_email) { msg.className = "msg error"; msg.textContent = "Enter the address to send the test to."; return; }
     } else {
         const total = Number($("e-total").textContent);
         if (!total) { msg.className = "msg error"; msg.textContent = "No one matches the chosen audience."; return; }
@@ -550,6 +556,7 @@ async function loadAudit() {
 
 (async () => {
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
+    api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
     await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
