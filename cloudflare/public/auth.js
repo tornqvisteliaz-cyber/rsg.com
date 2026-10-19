@@ -7,13 +7,23 @@ const MENU = [
     ["News", "/newsletter", null],
     ["Company", "/about", [["/about", "About us", "Who we are"], ["/work-at-rsg", "Careers", "Work with us"], ["/contact", "Contact", "Get in touch"]]],
 ];
+// Path prefix when the site is served from a sub-folder (GitHub Pages preview sets <meta name="site-base">).
+const BASE = ((document.querySelector('meta[name="site-base"]') || {}).content || "").replace(/\/$/, "");
+function withBase(path) { return BASE && path.startsWith("/") && !path.startsWith(BASE + "/") ? BASE + path : path; }
+document.addEventListener("click", e => {
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!BASE || !a) return;
+    const href = a.getAttribute("href");
+    if (href.startsWith("/") && !href.startsWith("//") && !href.startsWith(BASE + "/")) { e.preventDefault(); location.href = withBase(href); }
+});
+
 function esc(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function renderLayout() {
     const body = document.body;
-    const here = location.pathname.replace(/\.html$/, "").replace(/\/index$/, "/");
+    const here = (BASE && location.pathname.startsWith(BASE) ? location.pathname.slice(BASE.length) || "/" : location.pathname).replace(/\.html$/, "").replace(/\/index$/, "/");
     const isHere = href => { const k = href.replace(/\/$/, ""); return k ? (here === k || here === k + "/" || here.startsWith(k + "/")) : here === "/"; };
     const menu = MENU.map(([label, href, items]) => {
         const active = isHere(href) || (items || []).some(i => isHere(i[0]));
@@ -60,7 +70,7 @@ function rsgLogout() {
     localStorage.removeItem("rsg_token");
     localStorage.removeItem("rsg_name");
     localStorage.removeItem("rsg_admin");
-    location.href = "/";
+    location.href = withBase("/");
 }
 
 function saveSession(data) {

@@ -26,7 +26,9 @@ jobs:
           BASE="/${GITHUB_REPOSITORY#*/}"
           cp -r cloudflare/public _site
           rm -f _site/_routes.json
-          find _site -name '*.html' -o -name '*.js' | xargs sed -i -E "s#([\"'(=])/([a-zA-Z0-9_\#?-]|\")#\1${BASE}/\2#g"
+          # Rewrite HTML only; auth.js reads <meta name="site-base"> and prefixes links at runtime.
+          find _site -name '*.html' | xargs sed -i -E "s#([\"'(=])/([a-zA-Z0-9_\#?-]|\")#\1${BASE}/\2#g"
+          find _site -name '*.html' | xargs sed -i "s#<head>#<head><meta name=\"site-base\" content=\"${BASE}\">#"
           touch _site/.nojekyll
       - name: Push to gh-pages
         run: |
