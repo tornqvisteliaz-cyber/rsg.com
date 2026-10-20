@@ -80,8 +80,9 @@ function saveSession(data) {
     localStorage.setItem("rsg_admin", data.is_admin ? "true" : "false");
 }
 
-const FALLBACK_IMAGE = "https://i.postimg.cc/28WybSM2/metroliner.jpg";
-function safeImage(url) { return /^https?:\/\/.+\..+/.test(url || "") ? url : FALLBACK_IMAGE; }
+let FALLBACK_IMAGE = "/img/approach.jpg";
+// Full https links, uploaded images (/media/12.jpg) and the built-in artwork (/img/...).
+function safeImage(url) { return /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/.test(url || "") ? withBase(url) : withBase(FALLBACK_IMAGE); }
 const STATUS_LABEL = { published: "Available", coming_soon: "Coming soon", in_development: "In development" };
 
 function productCard(p) {
@@ -103,7 +104,31 @@ document.addEventListener("submit", async e => {
     if (res && res.ok) form.reset();
 });
 
+// Site settings from the admin panel: images per slot and the announcement banner.
+function applySiteSettings(site) {
+    const images = site.images || {};
+    if (images.product) FALLBACK_IMAGE = images.product;
+    document.querySelectorAll("[data-image]").forEach(el => {
+        const url = images[el.dataset.image];
+        if (!url) return;
+        if (el.tagName === "IMG") el.src = safeImage(url);
+        else el.style.backgroundImage = `url('${safeImage(url).replace(/'/g, "%27")}')`;
+    });
+    const banner = site.announcement || {};
+    let dismissed = "";
+    try { dismissed = sessionStorage.getItem("rsg_banner_closed") || ""; } catch (err) {}
+    if (banner.enabled && banner.text && dismissed !== banner.text && document.body.dataset.layout !== "off") {
+        const bar = document.createElement("div");
+        bar.className = "announce";
+        const text = banner.link ? `<a href="${esc(banner.link)}">${esc(banner.text)}</a>` : esc(banner.text);
+        bar.innerHTML = `<div class="wrap"><span>${text}</span><button type="button" aria-label="Close">×</button></div>`;
+        bar.querySelector("button").onclick = () => { bar.remove(); try { sessionStorage.setItem("rsg_banner_closed", banner.text); } catch (err) {} };
+        document.body.prepend(bar);
+    }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
+    fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => { if (site) applySiteSettings(site); }).catch(() => {});
 });

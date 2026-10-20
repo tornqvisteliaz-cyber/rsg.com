@@ -48,6 +48,14 @@ export async function onRequest(context) {
     if (method === "GET" && path === "/api/admin/campaigns") return adminCampaigns(request, env);
     if (method === "GET" && path === "/api/admin/subscribers") return adminSubscribers(request, env);
     if (method === "DELETE" && path.startsWith("/api/admin/subscribers/")) return adminDeleteSubscriber(request, env, Number(path.split("/").pop()));
+    if (method === "GET" && path === "/api/site") return json(await siteSettings(env));
+    if (method === "GET" && path === "/api/admin/settings") return adminSettings(request, env);
+    if (method === "POST" && path === "/api/admin/settings") return adminSaveSettings(request, env);
+    if (method === "GET" && path === "/api/admin/media") return adminMedia(request, env);
+    if (method === "POST" && path === "/api/admin/media") return adminUploadMedia(request, env);
+    if (method === "DELETE" && /^\/api\/admin\/media\/\d+$/.test(path)) return adminDeleteMedia(request, env, Number(path.split("/").pop()));
+    if (method === "GET" && /^\/api\/admin\/users\/\d+$/.test(path)) return adminUserDetail(request, env, Number(path.split("/").pop()));
+    if (method === "DELETE" && /^\/api\/admin\/users\/\d+$/.test(path)) return adminDeleteUser(request, env, Number(path.split("/").pop()));
     return json({ error: "Not found" }, 404);
   } catch (err) {
     return json({ error: String(err && err.message || err) }, 500);
@@ -73,6 +81,7 @@ async function ensure(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS subscribers (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS media (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT, mime TEXT, data TEXT, size INTEGER DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   // One-time wipe of the old catalog for the HeavyPro relaunch.
   const reset = await env.DB.prepare("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'").first();
@@ -249,7 +258,7 @@ async function adminOverview(request, env) {
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
   const licCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'").first();
-  return json({ name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -327,6 +336,121 @@ async function adminSetRole(request, env, id) {
 
 async function audit(env, user, action, target) {
   await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address) VALUES (?, ?, ?, ?)").bind(user.id, action, String(target || "").slice(0, 200), "").run();
+}
+
+// ---------- site settings & media (same rules as server.py) ----------
+// Image slots on the public pages. Defaults are the artwork in cloudflare/public/img.
+const IMAGE_SLOTS = { hero: "/img/hero.jpg", feature: "/img/approach.jpg", heavypro: "/img/clouds.jpg", header: "/img/night.jpg", login: "/img/clouds.jpg", about: "/img/approach.jpg", product: "/img/approach.jpg" };
+const MEDIA_TYPES = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+const isManager = user => user && ["Owner", "Admin"].includes(user.role);
+const mediaUrl = row => `/media/${row.id}.${MEDIA_TYPES[row.mime] || "jpg"}`;
+
+async function getSetting(env, key, fallback) {
+  const row = await env.DB.prepare("SELECT value FROM meta WHERE key = ?").bind(key).first();
+  try { return row ? JSON.parse(row.value) : fallback; } catch (err) { return fallback; }
+}
+async function setSetting(env, key, value) {
+  await env.DB.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(key, JSON.stringify(value)).run();
+}
+async function siteSettings(env) {
+  const saved = (await getSetting(env, "site.images", {})) || {};
+  const images = { ...IMAGE_SLOTS };
+  for (const [k, v] of Object.entries(saved)) if (k in IMAGE_SLOTS && v) images[k] = v;
+  const banner = (await getSetting(env, "site.announcement", {})) || {};
+  return { images, defaults: IMAGE_SLOTS, announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
+}
+function validImageUrl(url) {
+  url = String(url || "").trim();
+  return /^https:\/\//.test(url) || url.startsWith("/img/") || /^\/media\/\d+\.(jpg|png|webp|gif)$/.test(url) ? url : "";
+}
+
+async function adminSettings(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  return json(await siteSettings(env));
+}
+
+async function adminSaveSettings(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change site settings" }, 403);
+  const body = await request.json();
+  if ("images" in body) {
+    const images = {};
+    for (const [slot, url] of Object.entries(body.images || {})) {
+      if (!(slot in IMAGE_SLOTS) || !url) continue;
+      const clean = validImageUrl(url);
+      if (!clean) return json({ error: `The ${slot} image must be an https:// link or an uploaded image` }, 400);
+      if (clean !== IMAGE_SLOTS[slot]) images[slot] = clean;
+    }
+    await setSetting(env, "site.images", images);
+  }
+  if ("announcement" in body) {
+    const a = body.announcement || {};
+    const link = String(a.link || "").trim();
+    if (link && !(link.startsWith("https://") || link.startsWith("/"))) return json({ error: "The banner link must start with https:// or /" }, 400);
+    await setSetting(env, "site.announcement", { enabled: !!a.enabled, text: String(a.text || "").slice(0, 200), link: link.slice(0, 300) });
+  }
+  await audit(env, user, "save_settings", ["images", "announcement"].filter(k => k in body).join(", "));
+  return json({ ok: true, ...(await siteSettings(env)) });
+}
+
+async function adminMedia(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const rows = (await env.DB.prepare("SELECT id, filename, mime, size, width, height, created_at FROM media ORDER BY id DESC").all()).results || [];
+  return json({ media: rows.map(r => ({ ...r, url: mediaUrl(r) })) });
+}
+
+async function adminUploadMedia(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can upload images" }, 403);
+  const body = await request.json();
+  const mime = String(body.mime || "");
+  if (!MEDIA_TYPES[mime]) return json({ error: "Upload a JPG, PNG, WebP or GIF image" }, 400);
+  let data = String(body.data || "");
+  if (data.startsWith("data:") && data.includes(",")) data = data.slice(data.indexOf(",") + 1);
+  let size;
+  try { size = atob(data).length; } catch (err) { return json({ error: "The image data could not be read" }, 400); }
+  // D1 stores at most about 2 MB per value, and base64 adds a third.
+  if (!size || size > 1400 * 1024) return json({ error: "Images must be smaller than 1.4 MB on this host" }, 400);
+  const name = String(body.filename || "image").replace(/[^\w.\- ]/g, "").slice(0, 120) || "image";
+  const row = await env.DB.prepare("INSERT INTO media (filename, mime, data, size, width, height) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+    .bind(name, mime, data, size, clampInt(body.width, 0, 0, 20000), clampInt(body.height, 0, 0, 20000)).first();
+  await audit(env, user, "upload_media", name);
+  return json({ ok: true, id: row.id, url: mediaUrl({ id: row.id, mime }) });
+}
+
+async function adminDeleteMedia(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can delete images" }, 403);
+  const row = await env.DB.prepare("SELECT filename FROM media WHERE id = ?").bind(id).first();
+  await env.DB.prepare("DELETE FROM media WHERE id = ?").bind(id).run();
+  await audit(env, user, "delete_media", row ? row.filename : id);
+  return json({ ok: true });
+}
+
+async function adminUserDetail(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const u = await env.DB.prepare("SELECT id, name, email, role, created_at FROM users WHERE id = ?").bind(id).first();
+  if (!u) return json({ error: "User not found" }, 404);
+  u.orders = (await env.DB.prepare("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC").bind(id).all()).results || [];
+  u.licenses = (await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC")
+    .bind(id, String(u.email || "").toLowerCase()).all()).results || [];
+  return json({ user: u });
+}
+
+async function adminDeleteUser(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role !== "Owner") return json({ error: "Only the Owner can delete users" }, 403);
+  if (id === user.id) return json({ error: "You cannot delete your own account" }, 400);
+  const target = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(id).first();
+  if (!target) return json({ error: "User not found" }, 404);
+  // Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
+  await env.DB.prepare("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+  await audit(env, user, "delete_user", target.email);
+  return json({ ok: true });
 }
 
 // ---------- licences (same rules as server.py and licensing/src/Rotaidem.Licensing/LicenseKey.cs) ----------
@@ -653,7 +777,8 @@ async function productEmailHtml(env, base, product, message, email) {
   const text = String(message || "").split(/\r?\n/).map(escHtml).join("<br>");
   let block = "";
   if (product) {
-    const img = /^https:\/\//.test(product.image_url || "") ? `<img src="${escHtml(product.image_url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">` : "";
+    const src = /^\/(media|img)\//.test(product.image_url || "") ? base + product.image_url : product.image_url || "";
+    const img = /^https:\/\//.test(src) ? `<img src="${escHtml(src)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">` : "";
     block = `${img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#141517">${escHtml(product.price || "")}</p>`;
   }
   return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">

@@ -76,6 +76,26 @@
         .toast.show { opacity: 1; transform: none; }
         .toast.error { border-left-color: var(--danger); }
         .menu-btn { display: none; }
+        .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+        .img-tile { position: relative; aspect-ratio: 16/10; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+        .img-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .img-tile .rm { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: 0; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; font-size: 15px; line-height: 1; }
+        .img-tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; font-size: 11px; background: rgba(0,0,0,.6); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .img-tile.pick { cursor: pointer; }
+        .img-tile.pick:hover { outline: 2px solid var(--accent); }
+        .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+        .slot img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: var(--bg); border: 1px solid var(--line); }
+        .slot h3 { font-size: 15px; margin: 10px 0 2px; }
+        .slot p { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+        .dropzone { border: 1px dashed var(--field-line); padding: 26px; text-align: center; color: var(--muted); }
+        .dropzone.over { border-color: var(--accent); color: var(--ink); }
+        .bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: 0 20px 6px; }
+        .bars div { flex: 1; background: var(--accent); opacity: .75; min-height: 2px; }
+        .bars div:hover { opacity: 1; }
+        .bars-legend { display: flex; justify-content: space-between; padding: 0 20px 16px; font-size: 12px; color: var(--muted); }
+        .card-preview { max-width: 300px; margin-bottom: 6px; pointer-events: none; }
+        .linkish { all: unset; cursor: pointer; color: var(--ink); font-weight: 600; }
+        .linkish:hover { text-decoration: underline; }
         .key { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 14px; letter-spacing: .04em; color: var(--ink); white-space: nowrap; }
         .keys-out { background: var(--bg); border: 1px solid var(--line); padding: 14px 16px; margin-top: 16px; display: none; }
         .keys-out pre { margin: 0 0 12px; font: 15px/1.8 ui-monospace, Consolas, monospace; color: var(--ink); white-space: pre-wrap; }
@@ -100,6 +120,9 @@
     <div class="group">Catalogue</div>
     <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
+    <div class="group">Website</div>
+    <button class="tab" data-tab="site">Site images &amp; banner</button>
+    <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
     <div class="group">Marketing</div>
     <button class="tab" data-tab="email">Email a product</button>
     <button class="tab" data-tab="subscribers">Subscribers <span class="count" id="c-subscribers"></span></button>
@@ -125,6 +148,7 @@
             <div><span>Subscribers</span><strong id="s-subscribers">0</strong></div>
             <div><span>Products</span><strong id="s-products">0</strong></div>
         </div>
+        <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Orders, last 30 days</h2><span class="muted" style="font-size:13px" id="chart-total"></span></div><div class="bars" id="chart"></div><div class="bars-legend"><span id="chart-start"></span><span>Today</span></div></div>
         <div class="two">
             <div class="panel"><div class="panel-head"><h2>Latest orders</h2><a class="more" href="#orders" data-go="orders">All orders</a></div><table class="table"><tbody id="dash-orders"></tbody></table></div>
             <div class="panel"><div class="panel-head"><h2>Latest messages</h2><a class="more" href="#messages" data-go="messages">Inbox</a></div><table class="table"><tbody id="dash-messages"></tbody></table></div>
@@ -137,6 +161,33 @@
         <div class="panel">
             <div class="panel-head"><h2>All products</h2><input class="search" id="product-search" placeholder="Search products"></div>
             <div class="table-wrap"><table class="table"><thead><tr><th style="width:84px"></th><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-site" data-title="Site images & banner">
+        <form class="panel" id="banner-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Announcement banner</h2><span class="muted" style="font-size:13px">A thin bar above the menu on every page</span></div>
+            <div class="panel-body form-grid">
+                <div class="field full"><label for="b-text">Text</label><input id="b-text" maxlength="200" placeholder="HeavyPro 1.0 is out now"></div>
+                <div class="field"><label for="b-link">Link (optional)</label><input id="b-link" placeholder="/heavypro or https://"></div>
+                <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:28px 0 0"><input type="checkbox" id="b-on"> Show the banner</label>
+                <div class="full"><button class="btn">Save banner</button></div>
+            </div>
+        </form>
+        <div class="panel">
+            <div class="panel-head"><h2>Site images</h2><span class="muted" style="font-size:13px">Upload your own screenshots or photos for each place on the site</span></div>
+            <div class="panel-body"><div class="slots" id="slots"></div></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-media" data-title="Media library">
+        <div class="panel">
+            <div class="panel-head"><h2>Images</h2><button class="btn btn-sm" type="button" onclick="$('media-file').click()">Upload images</button></div>
+            <div class="panel-body">
+                <div class="dropzone" id="dropzone">Drop images here, or use Upload images. Large pictures are resized to 2400 px wide before uploading.</div>
+                <input type="file" id="media-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+                <div class="img-grid" id="media-grid" style="margin-top:18px"></div>
+            </div>
         </div>
     </section>
 
@@ -206,12 +257,12 @@
                 <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="o-license" checked> Create a licence key for this order and email it to the customer</label>
             </div>
         </form>
-        <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><h2>All orders</h2><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
     </section>
 
     <section class="pane" id="pane-users" data-title="Users">
         <div class="panel">
-            <div class="panel-head"><h2>Registered users</h2><input class="search" id="user-search" placeholder="Search name or email"></div>
+            <div class="panel-head"><h2>Registered users</h2><div class="actions"><input class="search" id="user-search" placeholder="Search name or email"><button class="btn btn-ghost btn-sm" type="button" onclick="exportUsers()">Export CSV</button></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
         </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
@@ -247,7 +298,7 @@
             </div>
         </div>
         <div class="panel">
-            <div class="panel-head"><h2>All licences</h2><input class="search" id="lic-search" placeholder="Search key, email or note"></div>
+            <div class="panel-head"><h2>All licences</h2><div class="actions"><input class="search" id="lic-search" placeholder="Search key, email or note"><button class="btn btn-ghost btn-sm" type="button" onclick="exportLicenses()">Export CSV</button></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
         </div>
         <datalist id="user-emails"></datalist>
@@ -267,9 +318,10 @@
     <div class="drawer-head"><h2 id="pf-title">New product</h2><button type="button" class="x" onclick="closeDrawer()" aria-label="Close">×</button></div>
     <div class="drawer-body">
         <input id="p-id" type="hidden">
+        <div class="card-preview" id="p-card"></div>
         <div class="sub">Basics</div>
         <div class="form-grid">
-            <div class="field full"><label for="p-name">Name</label><input id="p-name" placeholder="HeavyPro" required></div>
+            <div class="field full"><label for="p-name">Name</label><input id="p-name" placeholder="HeavyPro" required><div class="hint" id="p-slug"></div></div>
             <div class="field full"><label for="p-tagline">Tagline</label><input id="p-tagline" placeholder="Airliner control feel for MSFS 2024"></div>
             <div class="field"><label for="p-price">Price</label><input id="p-price" placeholder="$29.99"></div>
             <div class="field"><label for="p-status">Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
@@ -280,8 +332,13 @@
         <div class="field"><label for="p-download">Installer download link</label><input id="p-download" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
         <div class="sub">Images</div>
         <img id="preview" class="preview" src="" alt="">
-        <div class="field"><label for="p-image">Cover image URL</label><input id="p-image" placeholder="https://"></div>
-        <div class="field"><label for="p-images">Gallery image URLs</label><textarea id="p-images" rows="3"></textarea><div class="hint">One link per line.</div></div>
+        <div class="field"><label for="p-image">Cover image</label>
+            <div style="display:flex;gap:0"><input id="p-image" placeholder="Upload, pick from the library, or paste an https:// link"><button class="btn btn-ghost" type="button" id="p-cover-up">Upload</button><button class="btn btn-ghost" type="button" id="p-cover-lib">Library</button></div></div>
+        <div class="field"><label>Gallery</label>
+            <div class="img-grid" id="p-gallery"></div>
+            <div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="btn btn-ghost btn-sm" type="button" id="p-gal-up">Upload images</button><button class="btn btn-ghost btn-sm" type="button" id="p-gal-lib">Add from library</button><button class="btn btn-ghost btn-sm" type="button" id="p-gal-link">Add a link</button></div>
+            <textarea id="p-images" rows="3" hidden></textarea>
+            <div class="hint">Shown as screenshots on the product page. The first is used if there is no cover image.</div></div>
         <div class="sub">Page content</div>
         <div class="field"><label for="p-desc">Description</label><textarea id="p-desc" rows="5"></textarea></div>
         <div class="field"><label for="p-features">Features</label><textarea id="p-features" rows="4"></textarea><div class="hint">One feature per line.</div></div>
@@ -291,7 +348,7 @@
             <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
         </div>
     </div>
-    <div class="drawer-foot"><button class="btn" type="submit">Save product</button><a class="btn btn-ghost" id="p-open" target="_blank" rel="noopener">View page</a><button class="btn btn-ghost" type="button" id="p-email">Email this product</button></div>
+    <div class="drawer-foot"><button class="btn" type="submit">Save product</button><a class="btn btn-ghost" id="p-open" target="_blank" rel="noopener">View page</a><button class="btn btn-ghost" type="button" id="p-dup">Duplicate</button><button class="btn btn-ghost" type="button" id="p-email">Email this product</button></div>
 </form>
 <div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
 
@@ -299,6 +356,14 @@
     <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field"><label for="ld-product">Product</label><select id="ld-product"></select></div><div class="field"><label for="ld-note">Note</label><input id="ld-note"></div></div>
     <div class="sub">Activated computers</div><table class="table"><tbody id="ld-machines"></tbody></table>
     <div class="actions" style="margin-top:20px;justify-content:space-between"><button class="btn btn-danger" type="button" id="ld-status"></button><span class="actions"><button class="btn btn-ghost" type="button" id="ld-email-btn">Email key to customer</button><button class="btn" type="button" id="ld-save">Save</button></span></div></div></div>
+<div class="modal-bg" id="pick-modal"><div class="modal wide" style="max-width:820px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h3 style="margin:0">Choose an image</h3><button class="x" type="button" id="pick-close" aria-label="Close">×</button></div>
+    <div class="actions" style="justify-content:flex-start;margin-bottom:14px"><button class="btn btn-sm" type="button" id="pick-upload">Upload new</button></div>
+    <div class="img-grid" id="pick-grid" style="max-height:60vh;overflow:auto"></div></div></div>
+<div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
+    <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
+    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+<input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="toast" id="toast"></div>
 
@@ -306,7 +371,77 @@
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
 const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || "") };
-const state = { products: [], users: [], posts: [], subs: [], role: "", emailReady: false };
+const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
+const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
+const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function downloadCsv(name, rows) {
+    const csv = rows.map(r => r.map(v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = name; a.click();
+}
+
+// Resize large pictures in the browser, then upload. Returns the new image URLs.
+async function uploadImages(files) {
+    const urls = [];
+    for (const file of [...files]) {
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) { toast(file.name + " is not a JPG, PNG, WebP or GIF", true); continue; }
+        toast("Uploading " + file.name + "…");
+        try {
+            const { data, mime, width, height } = await shrinkImage(file);
+            const r = await post("/api/admin/media", { filename: file.name, mime, data, width, height });
+            urls.push(r.url);
+        } catch (err) { toast(file.name + ": " + err.message, true); }
+    }
+    if (urls.length) { toast(`Uploaded ${urls.length} image${urls.length === 1 ? "" : "s"}`); loadMedia(); }
+    return urls;
+}
+function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const scale = Math.min(1, 2400 / img.naturalWidth);
+            const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+            const reader = new FileReader();
+            if (file.type === "image/gif" || (scale === 1 && file.size < 1.5 * 1024 * 1024)) {
+                reader.onload = () => resolve({ data: reader.result, mime: file.type, width: w, height: h });
+                reader.onerror = () => reject(new Error("could not read the file"));
+                reader.readAsDataURL(file);
+                return;
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = w; canvas.height = h;
+            canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+            const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+            resolve({ data: canvas.toDataURL(mime, .86), mime, width: w, height: h });
+        };
+        img.onerror = () => reject(new Error("could not open the image"));
+        img.src = URL.createObjectURL(file);
+    });
+}
+function chooseFiles(multiple) {
+    return new Promise(resolve => {
+        const input = $("pick-file");
+        input.multiple = multiple; input.value = "";
+        input.onchange = () => resolve(input.files);
+        input.click();
+    });
+}
+// Opens the library; resolves with the chosen URL, or null.
+function pickImage() {
+    return new Promise(resolve => {
+        const done = url => { $("pick-modal").classList.remove("show"); resolve(url); };
+        const render = () => {
+            $("pick-grid").innerHTML = state.media.length ? state.media.map(m => `<div class="img-tile pick" data-url="${esc(m.url)}"><img src="${esc(m.url)}" alt="" loading="lazy"><span class="cap">${esc(m.filename)}</span></div>`).join("")
+                : '<p class="muted">No uploaded images yet. Use Upload new.</p>';
+        };
+        render();
+        $("pick-grid").onclick = e => { const t = e.target.closest("[data-url]"); if (t) done(t.dataset.url); };
+        $("pick-close").onclick = () => done(null);
+        $("pick-upload").onclick = async () => { const urls = await uploadImages(await chooseFiles(false)); if (urls.length) done(urls[0]); };
+        $("pick-modal").classList.add("show");
+    });
+}
 const $ = id => document.getElementById(id);
 const val = id => $(id).value.trim();
 const lines = id => $(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
@@ -349,7 +484,7 @@ function showTab(name) {
 
 async function loadOverview() {
     const o = await api("/api/admin/overview");
-    state.role = o.role; state.emailReady = !!o.email_ready;
+    state.role = o.role; state.me = o.id; state.emailReady = !!o.email_ready;
     $("who-name").textContent = o.name; $("who-role").textContent = o.role;
     $("s-revenue").textContent = money(o.revenue);
     for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
@@ -389,6 +524,42 @@ $("products-list").onclick = e => {
     if (b.dataset.del) deleteProduct(b.dataset.del);
     if (b.dataset.email) emailProduct(b.dataset.email);
 };
+function productDraft() {
+    return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
+        simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
+        description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0 };
+}
+function refreshProductPreview() {
+    const d = productDraft();
+    $("p-card").innerHTML = productCard({ ...d, id: d.id || slugify(d.name) || "new", name: d.name || "Product name", image_url: d.image_url || d.images[0] || "" });
+    $("p-slug").innerHTML = d.id
+        ? `Product id: <strong>${esc(d.id)}</strong> (fixed; licences and the app use it)`
+        : (d.name ? `Product id will be <strong>${esc(slugify(d.name))}</strong>. HeavyPro checks for <strong>heavypro</strong>.` : "");
+}
+function renderGallery() {
+    $("p-images").value = state.gallery.join("\n");
+    $("p-gallery").innerHTML = state.gallery.length ? state.gallery.map((u, i) => `<div class="img-tile"><img src="${esc(safeImage(u))}" alt=""><button class="rm" type="button" data-rm="${i}" title="Remove">×</button></div>`).join("")
+        : '<p class="muted" style="font-size:14px;margin:0">No gallery images yet.</p>';
+    refreshProductPreview();
+}
+$("p-gallery").onclick = e => { const b = e.target.closest("[data-rm]"); if (b) { state.gallery.splice(Number(b.dataset.rm), 1); renderGallery(); } };
+function addToGallery(...urls) { for (const u of urls) if (!state.gallery.includes(u)) state.gallery.push(u); renderGallery(); }
+$("p-gal-up").onclick = async () => { addToGallery(...await uploadImages(await chooseFiles(true))); };
+$("p-gal-lib").onclick = async () => { const u = await pickImage(); if (u) addToGallery(u); };
+$("p-gal-link").onclick = () => { const u = (prompt("Image link (https://)") || "").trim(); if (!u) return; if (!IMAGE_RE.test(u)) return toast("The link must start with https://", true); addToGallery(u); };
+$("p-cover-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) { $("p-image").value = u; previewImage(); } };
+$("p-cover-lib").onclick = async () => { const u = await pickImage(); if (u) { $("p-image").value = u; previewImage(); } };
+$("drawer").addEventListener("input", refreshProductPreview);
+$("p-dup").onclick = () => {
+    const d = productDraft();
+    openProduct();
+    const set = (k, v) => $(k).value = v == null ? "" : v;
+    set("p-name", d.name + " copy"); set("p-tagline", d.tagline); set("p-price", d.price); set("p-status", "in_development"); set("p-sim", d.simulator);
+    set("p-version", d.version); set("p-image", d.image_url); set("p-desc", d.description); set("p-features", d.features.join("\n")); set("p-buy", d.buy_url);
+    set("p-download", d.download_url); set("p-sort", d.sort_order);
+    state.gallery = d.images; renderGallery(); previewImage();
+    toast("Copy ready. Change the name and save.");
+};
 function openProduct(id) {
     const p = state.products.find(x => x.id === id) || {};
     const set = (k, v) => $(k).value = v == null ? "" : v;
@@ -400,27 +571,38 @@ function openProduct(id) {
     $("p-open").style.display = p.id ? "" : "none";
     $("p-email").style.display = p.id ? "" : "none";
     $("p-open").href = "/addons/view?id=" + encodeURIComponent(p.id || "");
-    $("p-email").onclick = () => { closeDrawer(); emailProduct(p.id); };
+    $("p-email").onclick = () => { closeDrawer(true); emailProduct(p.id); };
+    $("p-dup").style.display = p.id ? "" : "none";
+    state.gallery = (p.images || []).slice();
+    renderGallery();
     previewImage();
+    state.productSnapshot = JSON.stringify(productDraft());
     $("drawer").classList.add("open"); $("drawer-bg").classList.add("show");
     setTimeout(() => $("p-name").focus(), 50);
 }
-function closeDrawer() { $("drawer").classList.remove("open"); $("drawer-bg").classList.remove("show"); }
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
-function previewImage() { const u = val("p-image"); $("preview").style.display = /^https?:\/\//.test(u) ? "" : "none"; $("preview").src = safeImage(u); }
+async function closeDrawer(force) {
+    if (!$("drawer").classList.contains("open")) return;
+    if (!force && JSON.stringify(productDraft()) !== state.productSnapshot &&
+        !await confirmBox("Discard your changes?", "This product has unsaved changes.", "Discard", true)) return;
+    $("drawer").classList.remove("open"); $("drawer-bg").classList.remove("show");
+}
+document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if ($("pick-modal").classList.contains("show")) $("pick-close").click();
+    else if (!$("modal").classList.contains("show")) closeDrawer();
+});
+function previewImage() { const u = val("p-image"); $("preview").style.display = IMAGE_RE.test(u) ? "" : "none"; $("preview").src = safeImage(u); refreshProductPreview(); }
 $("p-image").oninput = previewImage;
 $("drawer").onsubmit = async e => {
     e.preventDefault();
     if (val("p-download") && !/^https:\/\//.test(val("p-download"))) return toast("The download link must start with https://", true);
-    const urls = [val("p-image"), ...lines("p-images")].filter(Boolean);
-    if (urls.some(u => !/^https?:\/\//.test(u))) return toast("Image links must start with https://", true);
+    const draft = productDraft();
+    if ([draft.image_url, ...draft.images].filter(Boolean).some(u => !IMAGE_RE.test(u))) return toast("Image links must start with https:// or be uploaded images", true);
+    if (!draft.id && state.products.some(x => x.id === slugify(draft.name)))
+        if (!await confirmBox("Replace " + draft.name + "?", "A product with this name already exists. Saving will overwrite it.", "Overwrite", true)) return;
     try {
-        const r = await post("/api/save-product", {
-            id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
-            simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: lines("p-images"),
-            description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0
-        });
-        toast("Saved " + val("p-name"));
+        const r = await post("/api/save-product", draft);
+        toast("Saved " + draft.name);
         await loadProducts(); loadOverview(); openProduct(r.id);
     } catch (err) { toast(err.message, true); }
 };
@@ -551,7 +733,8 @@ async function deletePost(id) {
 
 // orders
 async function loadOrders() {
-    const orders = (await api("/api/admin/orders")).orders || [];
+    const orders = state.orders = (await api("/api/admin/orders")).orders || [];
+    renderChart();
     $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(6, "No orders yet.");
     $("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
 }
@@ -563,6 +746,19 @@ $("order-form").onsubmit = async e => {
     }
     catch (err) { toast(err.message, true); }
 };
+
+function renderChart() {
+    const days = [...Array(30)].map((_, i) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 29 + i); return d; });
+    const counts = days.map(d => state.orders.filter(o => { const t = new Date(String(o.created_at || "").replace(" ", "T") + (String(o.created_at || "").includes("Z") ? "" : "Z")); return t >= d && t < new Date(d.getTime() + 864e5); }));
+    const max = Math.max(1, ...counts.map(c => c.length));
+    $("chart").innerHTML = counts.map((c, i) => `<div style="height:${(c.length / max) * 100}%" title="${days[i].toLocaleDateString()}: ${c.length} order${c.length === 1 ? "" : "s"}, ${money(c.reduce((s, o) => s + Number(o.amount || 0), 0))}"></div>`).join("");
+    const total = counts.flat();
+    $("chart-total").textContent = `${total.length} order${total.length === 1 ? "" : "s"} · ${money(total.reduce((s, o) => s + Number(o.amount || 0), 0))}`;
+    $("chart-start").textContent = days[0].toLocaleDateString();
+}
+function exportOrders() { downloadCsv("rotaidem-orders.csv", [["id", "customer", "email", "product", "amount", "payment", "date"], ...state.orders.map(o => [o.id, o.customer_name, o.customer_email, o.product_id, o.amount, o.payment_status, o.created_at])]); }
+function exportUsers() { downloadCsv("rotaidem-users.csv", [["id", "name", "email", "role", "joined"], ...state.users.map(u => [u.id, u.name, u.email, u.role, u.created_at])]); }
+function exportLicenses() { downloadCsv("rotaidem-licences.csv", [["key", "product", "email", "status", "computers_used", "computers_max", "note", "created"], ...(state.licenses || []).map(l => [l.license_key, l.product_id, l.email, l.status, l.activations, l.max_activations, l.note, l.created_at])]); }
 
 // users
 async function loadUsers() {
@@ -580,10 +776,29 @@ function renderUsers() {
         const role = state.role === "Owner"
             ? `<select style="width:auto;padding:6px 10px" data-role="${u.id}">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
             : esc(u.role);
-        return `<tr><td><strong>${esc(u.name)}</strong></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
+        return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
     }).join("") : empty(4, "No users found.");
 }
 $("user-search").oninput = renderUsers;
+$("users-list").onclick = e => { const b = e.target.closest("[data-user]"); if (b) openUser(Number(b.dataset.user)); };
+async function openUser(id) {
+    try {
+        const u = (await api("/api/admin/users/" + id)).user;
+        $("um-name").textContent = u.name;
+        $("um-meta").textContent = `${u.email} · ${u.role} · joined ${String(u.created_at || "").slice(0, 10)}`;
+        $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
+        $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
+        $("um-mail").href = "mailto:" + u.email;
+        $("um-license").onclick = () => { $("user-modal").classList.remove("show"); showTab("licenses"); $("l-email").value = u.email; $("l-count").value = 1; $("l-email").focus(); };
+        $("um-delete").style.display = state.role === "Owner" && u.id !== state.me ? "" : "none";
+        $("um-delete").onclick = async () => {
+            $("user-modal").classList.remove("show");
+            if (!await confirmBox("Delete " + u.name + "?", "The account is removed. Their orders and licence keys are kept.", "Delete user", true)) return;
+            try { await api("/api/admin/users/" + id, { method: "DELETE" }); toast("User deleted"); loadUsers(); loadOverview(); } catch (err) { toast(err.message, true); }
+        };
+        $("user-modal").classList.add("show");
+    } catch (err) { toast(err.message, true); }
+}
 $("users-list").onchange = async e => {
     const sel = e.target.closest("[data-role]"); if (!sel) return;
     if (!await confirmBox("Change role to " + sel.value + "?", "The user will be signed out and get the new permissions next time they log in.", "Change role")) { renderUsers(); return; }
@@ -687,9 +902,72 @@ async function openLicense(id) {
     } catch (err) { toast(err.message, true); }
 }
 
+// website: banner and image slots
+const SLOT_INFO = {
+    hero: ["Home page, top", "Big picture behind Welcome to Rotaidem"],
+    feature: ["Home page, HeavyPro section", "Picture next to A joystick is not a yoke"],
+    heavypro: ["HeavyPro page, top", "Banner on the HeavyPro page"],
+    header: ["Page headers", "Band behind the title on inner pages"],
+    login: ["Log in and sign up", "Side panel next to the form"],
+    about: ["About page", "Picture on the About page"],
+    product: ["Products without a picture", "Used when a product has no cover image"],
+};
+async function loadSite() {
+    state.site = await api("/api/admin/settings");
+    const a = state.site.announcement || {};
+    $("b-text").value = a.text || ""; $("b-link").value = a.link || ""; $("b-on").checked = !!a.enabled;
+    renderSlots();
+}
+function renderSlots() {
+    const imgs = state.site.images, defs = state.site.defaults;
+    $("slots").innerHTML = Object.keys(SLOT_INFO).map(k => `<div class="slot"><img src="${esc(safeImage(imgs[k]))}" alt=""><h3>${SLOT_INFO[k][0]}</h3><p>${SLOT_INFO[k][1]}${imgs[k] === defs[k] ? " · default" : ""}</p>
+        <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" data-slot-up="${k}">Upload</button><button class="btn btn-ghost btn-sm" data-slot-lib="${k}">Library</button><button class="btn btn-ghost btn-sm" data-slot-link="${k}">Link</button>${imgs[k] !== defs[k] ? `<button class="btn btn-ghost btn-sm" data-slot-reset="${k}">Reset</button>` : ""}</div></div>`).join("");
+}
+async function saveSlot(slot, url) {
+    try {
+        const images = { ...state.site.images, [slot]: url };
+        state.site = await post("/api/admin/settings", { images });
+        renderSlots(); toast("Image updated on the website"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+}
+$("slots").onclick = async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.slotUp) { const [u] = await uploadImages(await chooseFiles(false)); if (u) saveSlot(b.dataset.slotUp, u); }
+    if (b.dataset.slotLib) { const u = await pickImage(); if (u) saveSlot(b.dataset.slotLib, u); }
+    if (b.dataset.slotLink) { const u = (prompt("Image link (https://)") || "").trim(); if (u) saveSlot(b.dataset.slotLink, u); }
+    if (b.dataset.slotReset) saveSlot(b.dataset.slotReset, state.site.defaults[b.dataset.slotReset]);
+};
+$("banner-form").onsubmit = async e => {
+    e.preventDefault();
+    try { state.site = await post("/api/admin/settings", { announcement: { text: val("b-text"), link: val("b-link"), enabled: $("b-on").checked } }); toast($("b-on").checked ? "Banner is live" : "Banner saved (hidden)"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+
+// media library
+async function loadMedia() {
+    state.media = (await api("/api/admin/media")).media || [];
+    $("c-media").textContent = state.media.length || "";
+    const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+    $("media-grid").innerHTML = state.media.length ? state.media.map(m => `<div><div class="img-tile"><img src="${esc(m.url)}" alt="" loading="lazy"><button class="rm" type="button" data-media-del="${m.id}" title="Delete">×</button></div>
+        <div style="font-size:12px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.filename)}</div><div class="muted" style="font-size:12px">${m.width ? m.width + "×" + m.height + " · " : ""}${kb(m.size)} · <button class="linkish" style="font-weight:400" data-media-copy="${esc(m.url)}">Copy link</button></div></div>`).join("")
+        : '<p class="muted" style="margin:0">No images yet.</p>';
+}
+$("media-file").onchange = async () => { await uploadImages($("media-file").files); $("media-file").value = ""; };
+const dz = $("dropzone");
+dz.ondragover = e => { e.preventDefault(); dz.classList.add("over"); };
+dz.ondragleave = () => dz.classList.remove("over");
+dz.ondrop = async e => { e.preventDefault(); dz.classList.remove("over"); await uploadImages(e.dataTransfer.files); };
+$("media-grid").onclick = async e => {
+    const c = e.target.closest("[data-media-copy]");
+    if (c) { navigator.clipboard.writeText(location.origin + c.dataset.mediaCopy).then(() => toast("Link copied")); return; }
+    const d = e.target.closest("[data-media-del]"); if (!d) return;
+    if (!await confirmBox("Delete this image?", "Pages or products that use it will show the default picture instead.", "Delete", true)) return;
+    try { await api("/api/admin/media/" + d.dataset.mediaDel, { method: "DELETE" }); toast("Image deleted"); loadMedia(); } catch (err) { toast(err.message, true); }
+};
+
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    const label = a => ({ email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
+    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
     $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
     $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
@@ -697,7 +975,7 @@ async function loadAudit() {
 (async () => {
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

@@ -47,7 +47,7 @@ KEY_RE = re.compile(r"^([A-Z0-9]{2,8})-([A-Z2-9]{4})-([A-Z2-9]{4})-([A-Z2-9]{4})
 ROLES = ("Customer", "Support", "Admin", "Owner")
 
 app = Flask(__name__, static_folder=None)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # image uploads are resized in the browser first
 
 
 # ---------- database ----------
@@ -127,6 +127,7 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT {now})",
         f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT {now})",
         f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT {now}, last_seen TEXT DEFAULT {now}, UNIQUE (license_id, machine_id))",
+        f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data TEXT, size INTEGER, width INTEGER, height INTEGER, created_at TEXT DEFAULT {now})",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT {now})",
     ):
         d.run(sql)
@@ -467,7 +468,7 @@ def admin_overview():
         return err("Admin only", 403)
     n = lambda sql: (db().first(sql) or {}).get("n") or 0
     revenue = db().first("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'")
-    return jsonify({"name": user["name"], "role": user["role"],
+    return jsonify({"id": user["id"], "name": user["name"], "role": user["role"],
                     "products": n("SELECT COUNT(*) AS n FROM products"),
                     "customers": n("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'"),
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
@@ -880,6 +881,179 @@ def account_licenses():
     return jsonify({"licenses": rows})
 
 
+# ---------- site settings & media ----------
+
+# Image slots on the public pages. Defaults are the artwork in cloudflare/public/img.
+IMAGE_SLOTS = {
+    "hero": "/img/hero.jpg",          # home page welcome
+    "feature": "/img/approach.jpg",   # home page "A joystick is not a yoke"
+    "heavypro": "/img/clouds.jpg",    # HeavyPro page hero
+    "header": "/img/night.jpg",       # header band on inner pages
+    "login": "/img/clouds.jpg",       # log in / sign up side panel
+    "about": "/img/approach.jpg",     # About page picture
+    "product": "/img/approach.jpg",   # products without their own image
+}
+MEDIA_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+
+
+def get_setting(key, default):
+    row = db().first("SELECT value FROM meta WHERE key = ?", key)
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (ValueError, TypeError):
+        return default
+
+
+def set_setting(key, value):
+    raw = json.dumps(value)
+    if db().first("SELECT key FROM meta WHERE key = ?", key):
+        db().run("UPDATE meta SET value = ? WHERE key = ?", raw, key)
+    else:
+        db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, raw)
+
+
+def site_settings():
+    images = dict(IMAGE_SLOTS)
+    images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
+    banner = get_setting("site.announcement", {}) or {}
+    return {"images": images, "defaults": IMAGE_SLOTS,
+            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
+
+
+def valid_image_url(url):
+    url = str(url or "").strip()
+    return url if (url.startswith("https://") or url.startswith("/img/") or re.match(r"^/media/\d+\.(jpg|png|webp|gif)$", url)) else ""
+
+
+@app.get("/api/site")
+def public_site():
+    return jsonify(site_settings())
+
+
+@app.get("/api/admin/settings")
+def admin_settings():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify(site_settings())
+
+
+@app.post("/api/admin/settings")
+def admin_save_settings():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change site settings", 403)
+    b = body()
+    if "images" in b:
+        images = {}
+        for slot, url in (b.get("images") or {}).items():
+            if slot in IMAGE_SLOTS and url:
+                clean = valid_image_url(url)
+                if not clean:
+                    return err(f"The {slot} image must be an https:// link or an uploaded image", 400)
+                if clean != IMAGE_SLOTS[slot]:
+                    images[slot] = clean
+        set_setting("site.images", images)
+    if "announcement" in b:
+        a = b.get("announcement") or {}
+        link = str(a.get("link") or "").strip()
+        if link and not (link.startswith("https://") or link.startswith("/")):
+            return err("The banner link must start with https:// or /", 400)
+        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement") if k in b))
+    return jsonify({"ok": True, **site_settings()})
+
+
+@app.get("/api/admin/media")
+def admin_media():
+    if not staff_user():
+        return err("Admin only", 403)
+    rows = db().all("SELECT id, filename, mime, size, width, height, created_at FROM media ORDER BY id DESC")
+    for r in rows:
+        r["url"] = f"/media/{r['id']}.{MEDIA_TYPES.get(r['mime'], 'jpg')}"
+    return jsonify({"media": rows})
+
+
+@app.post("/api/admin/media")
+def admin_upload_media():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can upload images", 403)
+    b = body()
+    mime = str(b.get("mime") or "")
+    if mime not in MEDIA_TYPES:
+        return err("Upload a JPG, PNG, WebP or GIF image", 400)
+    data = str(b.get("data") or "")
+    if "," in data and data.startswith("data:"):
+        data = data.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        return err("The image data could not be read", 400)
+    if not raw or len(raw) > 5 * 1024 * 1024:
+        return err("Images must be smaller than 5 MB", 400)
+    name = re.sub(r"[^\w.\- ]", "", str(b.get("filename") or "image"))[:120] or "image"
+    db().run("INSERT INTO media (filename, mime, data, size, width, height) VALUES (?, ?, ?, ?, ?, ?)",
+             name, mime, base64.b64encode(raw).decode(), len(raw), clamp_int(b.get("width"), 0, 0, 20000), clamp_int(b.get("height"), 0, 0, 20000))
+    row = db().first("SELECT MAX(id) AS id FROM media")
+    audit(user, "upload_media", name)
+    return jsonify({"ok": True, "id": row["id"], "url": f"/media/{row['id']}.{MEDIA_TYPES[mime]}"})
+
+
+@app.delete("/api/admin/media/<int:media_id>")
+def admin_delete_media(media_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete images", 403)
+    row = db().first("SELECT filename FROM media WHERE id = ?", media_id)
+    db().run("DELETE FROM media WHERE id = ?", media_id)
+    audit(user, "delete_media", row["filename"] if row else media_id)
+    return jsonify({"ok": True})
+
+
+@app.get("/media/<int:media_id>.<ext>")
+def media_file(media_id, ext):
+    row = db().first("SELECT mime, data FROM media WHERE id = ?", media_id)
+    if not row or MEDIA_TYPES.get(row["mime"]) != ext:
+        abort(404)
+    resp = app.response_class(base64.b64decode(row["data"]), mimetype=row["mime"])
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------- users ----------
+
+@app.get("/api/admin/users/<int:user_id>")
+def admin_user_detail(user_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    u = db().first("SELECT id, name, email, role, created_at FROM users WHERE id = ?", user_id)
+    if not u:
+        return err("User not found", 404)
+    u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
+    u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                             "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
+    return jsonify({"user": u})
+
+
+@app.delete("/api/admin/users/<int:user_id>")
+def admin_delete_user(user_id):
+    user = staff_user()
+    if not user or user["role"] != "Owner":
+        return err("Only the Owner can delete users", 403)
+    if user_id == user["id"]:
+        return err("You cannot delete your own account", 400)
+    target = db().first("SELECT email FROM users WHERE id = ?", user_id)
+    if not target:
+        return err("User not found", 404)
+    # Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
+    db().run("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?", user_id)
+    db().run("DELETE FROM users WHERE id = ?", user_id)
+    audit(user, "delete_user", target["email"])
+    return jsonify({"ok": True})
+
+
 # ---------- email broadcasts ----------
 
 def manager_user():
@@ -923,6 +1097,8 @@ def product_email_html(product, message, email):
     block = ""
     if product:
         image = product.get("image_url") or ""
+        if image.startswith("/media/") or image.startswith("/img/"):
+            image = base + image  # uploaded images need a full address inside an email
         img = f'<img src="{escape(image)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">' if image.startswith("https://") else ""
         block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
                  f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'

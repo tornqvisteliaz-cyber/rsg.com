@@ -75,6 +75,12 @@ p { margin: 0 0 1em; }
 .nav-toggle { display: none; margin-left: auto; background: none; border: 0; padding: 8px; cursor: pointer; }
 .nav-toggle span { display: block; width: 22px; height: 2px; background: #fff; margin: 5px 0; }
 
+.announce { background: var(--ink); color: var(--bg); font-size: 14px; }
+.announce .wrap { display: flex; justify-content: center; align-items: center; gap: 16px; min-height: 40px; position: relative; }
+.announce a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.announce button { position: absolute; right: 24px; background: none; border: 0; color: inherit; font-size: 20px; cursor: pointer; opacity: .7; }
+.announce button:hover { opacity: 1; }
+
 /* buttons */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 22px; border: 1px solid var(--ink); background: var(--ink); color: var(--bg); font: 500 15px/1 "IBM Plex Sans", sans-serif; text-decoration: none; cursor: pointer; border-radius: 0; transition: background .15s, color .15s, border-color .15s; }
 .btn:hover { background: #fff; border-color: #fff; }

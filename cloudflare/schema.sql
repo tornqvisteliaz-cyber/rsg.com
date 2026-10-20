@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS subscribers (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Images uploaded in Admin -> Media library, served at /media/<id>.<ext>
+CREATE TABLE IF NOT EXISTS media (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT,
+  mime TEXT,
+  data TEXT,
+  size INTEGER DEFAULT 0,
+  width INTEGER DEFAULT 0,
+  height INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS campaigns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   subject TEXT,
