@@ -72,6 +72,18 @@ public class LicenseKeyTests
     }
 
     [Fact]
+    public void Reads_files_written_by_the_earlier_version()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "rotaidem-test-" + Guid.NewGuid());
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "license.json"), "{\"Key\":\"HPRO-YWX8-C8H5-8F94\",\"LastValidatedUtc\":\"2026-10-19T19:00:00+00:00\"}");
+        var saved = new LicenseStore("heavypro", dir).Load();
+        Assert.Equal("HPRO-YWX8-C8H5-8F94", saved?.Key);
+        Assert.Equal(new DateTimeOffset(2026, 10, 19, 19, 0, 0, TimeSpan.Zero), saved?.LastValidatedUtc);
+        Directory.Delete(dir, true);
+    }
+
+    [Fact]
     public void Machine_id_is_stable_and_anonymous()
     {
         var id = MachineId.Get();

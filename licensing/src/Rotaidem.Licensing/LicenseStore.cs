@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Globalization;
 
 namespace Rotaidem.Licensing;
 
@@ -24,10 +24,13 @@ public sealed class LicenseStore
         {
             if (!File.Exists(FilePath))
                 return null;
-            var saved = JsonSerializer.Deserialize<SavedLicense>(File.ReadAllText(FilePath));
-            return saved is not null && LicenseKey.IsWellFormed(saved.Key) ? saved : null;
+            var saved = Json.Deserialize<SavedLicenseFile>(File.ReadAllText(FilePath));
+            if (saved is null || !LicenseKey.IsWellFormed(saved.Key) ||
+                !DateTimeOffset.TryParse(saved.LastValidatedUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var when))
+                return null;
+            return new SavedLicense(LicenseKey.Normalize(saved.Key)!, when);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return null;
         }
@@ -37,7 +40,11 @@ public sealed class LicenseStore
     {
         var normalized = LicenseKey.Normalize(key) ?? throw new ArgumentException("Not a valid licence key.", nameof(key));
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(new SavedLicense(normalized, lastValidatedUtc)));
+        File.WriteAllText(FilePath, Json.Serialize(new SavedLicenseFile
+        {
+            Key = normalized,
+            LastValidatedUtc = lastValidatedUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+        }));
     }
 
     public void Clear()

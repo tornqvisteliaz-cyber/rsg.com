@@ -1,7 +1,5 @@
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace Rotaidem.Licensing;
 
@@ -109,7 +107,7 @@ public sealed class LicenseClient
         if (normalized is null)
             return new LicenseResult(LicenseStatus.InvalidFormat, "That is not a valid licence key. Check for typing mistakes.");
 
-        var payload = JsonSerializer.Serialize(new { key = normalized, machine_id = MachineId.Get(), machine_name = MachineId.DisplayName(), product = Product });
+        var payload = Json.Serialize(new LicenseRequest { Key = normalized, MachineId = MachineId.Get(), MachineName = MachineId.DisplayName(), Product = Product });
         HttpResponseMessage? response = null;
         var problem = "";
         for (var attempt = 1; attempt <= Math.Max(1, attempts) && response is null; attempt++)
@@ -149,15 +147,7 @@ public sealed class LicenseClient
 
         using (response)
         {
-            Reply? reply = null;
-            try
-            {
-                var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                reply = JsonSerializer.Deserialize<Reply>(text);
-            }
-            catch (JsonException)
-            {
-            }
+            var reply = Json.Deserialize<LicenseReply>(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
 
             if (reply is null)
                 return new LicenseResult(LicenseStatus.ServerError,
@@ -186,14 +176,5 @@ public sealed class LicenseClient
         while (ex.InnerException is not null)
             ex = ex.InnerException;
         return ex.Message.TrimEnd('.');
-    }
-
-    private sealed class Reply
-    {
-        [JsonPropertyName("valid")] public bool Valid { get; set; }
-        [JsonPropertyName("reason")] public string? Reason { get; set; }
-        [JsonPropertyName("error")] public string? Error { get; set; }
-        [JsonPropertyName("activations_used")] public int ActivationsUsed { get; set; }
-        [JsonPropertyName("max_activations")] public int MaxActivations { get; set; }
     }
 }
