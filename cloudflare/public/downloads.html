@@ -13,10 +13,21 @@
 <section class="section"><div class="wrap">
     <div class="box" style="padding:0"><div class="table-wrap"><table class="table">
         <thead><tr><th>Product</th><th>Version</th><th>Platform</th><th></th></tr></thead>
-        <tbody><tr><td><strong>HeavyPro</strong></td><td class="muted">Not yet released</td><td>Windows 11</td><td style="text-align:right"><a class="btn btn-ghost btn-sm" href="/roadmap">See roadmap</a></td></tr></tbody>
+        <tbody id="downloads"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
     </table></div></div>
-    <p class="muted" style="margin-top:20px">Downloads are linked to your account after purchase. <a href="/login">Log in</a> to see your products.</p>
+    <p class="muted" style="margin-top:20px">You need a licence key to activate the installer. Your keys are in the email you received and under <a href="/account">My account</a>. Need help? See the <a href="/installation">installation guide</a>.</p>
 </div></section>
 <script src="/auth.js"></script>
+<script>
+const fallback = '<tr><td><strong>HeavyPro</strong></td><td class="muted">Not yet released</td><td>Windows 11</td><td style="text-align:right"><a class="btn btn-ghost btn-sm" href="/roadmap">See roadmap</a></td></tr>';
+fetch("/api/products").then(r => r.json()).then(d => {
+    const items = d.products || [];
+    document.getElementById("downloads").innerHTML = items.length ? items.map(p => {
+        const ready = /^https:\/\//.test(p.download_url || "");
+        const action = ready ? `<a class="btn btn-sm" href="${esc(p.download_url)}" rel="noopener">Download</a>` : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
+        return `<tr><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right">${action}</td></tr>`;
+    }).join("") : fallback;
+}).catch(() => { document.getElementById("downloads").innerHTML = fallback; });
+</script>
 </body>
 </html>

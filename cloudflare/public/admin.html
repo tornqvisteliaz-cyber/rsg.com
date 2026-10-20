@@ -285,6 +285,7 @@
         <div class="field"><label for="p-features">Features</label><textarea id="p-features" rows="4"></textarea><div class="hint">One feature per line.</div></div>
         <div class="sub">Selling</div>
         <div class="form-grid">
+            <div class="field full"><label for="p-download">Installer download link</label><input id="p-download" placeholder="https://github.com/…/releases/download/v1.0.0/HeavyProSetup.exe"><div class="hint">Shown on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
             <div class="field"><label for="p-buy">Buy link</label><input id="p-buy" placeholder="https:// or mailto:"></div>
             <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
         </div>
@@ -393,7 +394,7 @@ function openProduct(id) {
     set("p-id", p.id); set("p-name", p.name); set("p-tagline", p.tagline); set("p-price", p.price);
     set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
-    set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-sort", p.sort_order || 0);
+    set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
     $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
     $("p-open").style.display = p.id ? "" : "none";
     $("p-email").style.display = p.id ? "" : "none";
@@ -409,13 +410,14 @@ function previewImage() { const u = val("p-image"); $("preview").style.display =
 $("p-image").oninput = previewImage;
 $("drawer").onsubmit = async e => {
     e.preventDefault();
+    if (val("p-download") && !/^https:\/\//.test(val("p-download"))) return toast("The download link must start with https://", true);
     const urls = [val("p-image"), ...lines("p-images")].filter(Boolean);
     if (urls.some(u => !/^https?:\/\//.test(u))) return toast("Image links must start with https://", true);
     try {
         const r = await post("/api/save-product", {
             id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
             simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: lines("p-images"),
-            description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), sort_order: Number(val("p-sort")) || 0
+            description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0
         });
         toast("Saved " + val("p-name"));
         await loadProducts(); loadOverview(); openProduct(r.id);
