@@ -75,3 +75,58 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE,
+  source TEXT,
+  unsubscribed INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Images uploaded in Admin -> Media library, served at /media/<id>.<ext>
+CREATE TABLE IF NOT EXISTS media (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT,
+  mime TEXT,
+  data TEXT,
+  size INTEGER DEFAULT 0,
+  width INTEGER DEFAULT 0,
+  height INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject TEXT,
+  product_id TEXT,
+  audience TEXT,
+  sent_count INTEGER DEFAULT 0,
+  failed_count INTEGER DEFAULT 0,
+  admin_id INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS licenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_key TEXT UNIQUE,
+  product_id TEXT,
+  email TEXT,
+  customer_id INTEGER,
+  order_id INTEGER,
+  status TEXT DEFAULT 'active',
+  max_activations INTEGER DEFAULT 2,
+  note TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS license_activations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_id INTEGER,
+  machine_id TEXT,
+  machine_name TEXT,
+  first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (license_id, machine_id)
+);

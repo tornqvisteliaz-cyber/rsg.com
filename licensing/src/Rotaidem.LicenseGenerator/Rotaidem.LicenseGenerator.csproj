@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Rotaidem.LicenseGenerator</RootNamespace>
+    <AssemblyName>RotaidemLicenseGenerator</AssemblyName>
+    <Description>Creates HPRO-XXXX-XXXX-XXXX licence keys and registers them on rotaidem.com.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Rotaidem.Licensing\Rotaidem.Licensing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="generator.example.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

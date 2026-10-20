@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Unsubscribe | Rotaidem</title>
+    <meta name="description" content="Stop receiving emails from Rotaidem.">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<section class="section"><div class="wrap" style="max-width:560px">
+    <h1>Unsubscribe</h1>
+    <p class="lead" id="u-text">Confirm that you no longer want product emails from Rotaidem.</p>
+    <p id="u-email" style="font-weight:600"></p>
+    <button class="btn" id="u-btn">Unsubscribe</button>
+    <p class="msg" id="u-msg"></p>
+</div></section>
+<script src="/auth.js"></script>
+<script>
+const q = new URLSearchParams(location.search);
+document.getElementById("u-email").textContent = q.get("email") || "";
+document.getElementById("u-btn").onclick = async () => {
+    const msg = document.getElementById("u-msg");
+    const res = await fetch("/api/unsubscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: q.get("email"), token: q.get("token") }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) { document.getElementById("u-btn").remove(); document.getElementById("u-text").textContent = "You have been unsubscribed. You will not receive product emails from us again."; msg.textContent = ""; }
+    else { msg.className = "msg error"; msg.textContent = data.error || "This link is not valid. Email us and we will remove you by hand."; }
+};
+</script>
+</body>
+</html>

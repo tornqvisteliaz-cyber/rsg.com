@@ -1,11 +1,12 @@
-"""Rotaidem site for Python hosts such as Starto.
+"""Rotaidem site for Python hosts.
 
 Serves the static site in cloudflare/public and the same /api routes as
 cloudflare/functions/api/[[path]].js, so one codebase runs on Cloudflare
-Pages or on any host that runs `gunicorn server:app`.
+Pages, on hosts that run `gunicorn main:app` (Render, Docker), or as a CGI
+script on shared web hosting such as STRATO (see strato/).
 
-Database: PostgreSQL when DATABASE_URL is set, otherwise SQLite at
-DATA_DIR/rotaidem.db (put DATA_DIR on persistent storage).
+Database: PostgreSQL when DATABASE_URL is set, MySQL/MariaDB when MYSQL_HOST
+is set, otherwise SQLite at DATA_DIR/rotaidem.db (put DATA_DIR on persistent storage).
 """
 import base64
 import hashlib
@@ -15,8 +16,14 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, request, send_from_directory
@@ -26,22 +33,63 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
 USE_PG = DATABASE_URL.startswith("postgresql://")
+USE_MYSQL = not USE_PG and bool(os.environ.get("MYSQL_HOST"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "instance"))
 STAFF = ("Owner", "Admin", "Support")
+SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
+LICENSE_API_KEY = os.environ.get("LICENSE_API_KEY", "").strip()
+# License keys: PREFIX-XXXX-XXXX-XXXX. 11 random characters plus 1 check character from a 32-letter
+# alphabet without look-alikes (no I, O, 0, 1). Must match licensing/src/Rotaidem.Licensing/LicenseKey.cs.
+KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+KEY_RE = re.compile(r"^([A-Z0-9]{2,8})-([A-Z2-9]{4})-([A-Z2-9]{4})-([A-Z2-9]{4})$")
 ROLES = ("Customer", "Support", "Admin", "Owner")
 
 app = Flask(__name__, static_folder=None)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # image uploads are resized in the browser first
 
 
 # ---------- database ----------
+
+def pg_options():
+    # External (public) database URLs need TLS; internal hosts and localhost may not support it.
+    opts = {"connect_timeout": 10}
+    if "sslmode=" not in DATABASE_URL:
+        host = re.sub(r"^postgresql://([^@]*@)?", "", DATABASE_URL).split("/")[0].split(":")[0]
+        if host not in ("localhost", "127.0.0.1") and "." in host:
+            opts["sslmode"] = "require"
+    return opts
+
 
 class DB:
     def __init__(self):
         if USE_PG:
             import psycopg
             from psycopg.rows import dict_row
-            self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
+            # Retry briefly: managed databases can drop the first connection while waking up.
+            for attempt in range(5):
+                try:
+                    self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True, **pg_options())
+                    break
+                except psycopg.OperationalError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(2 ** attempt)
+        elif USE_MYSQL:
+            import pymysql
+            options = dict(host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT") or 3306),
+                           user=os.environ.get("MYSQL_USER", ""), password=os.environ.get("MYSQL_PASSWORD", ""),
+                           database=os.environ.get("MYSQL_DATABASE", ""), charset="utf8mb4",
+                           cursorclass=pymysql.cursors.DictCursor, autocommit=True, connect_timeout=10)
+            try:
+                # TLS whenever the server offers it. It also lets MySQL 8 logins work without the
+                # 'cryptography' package, which shared hosting may not have.
+                self.conn = pymysql.connect(ssl={"check_hostname": False}, **options)
+            except Exception:  # noqa: BLE001 - e.g. an old TLS setup on the server: try without
+                self.conn = pymysql.connect(**options)
         else:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(DATA_DIR / "rotaidem.db")
@@ -49,19 +97,36 @@ class DB:
             self.conn.isolation_level = None
 
     def run(self, sql, *args):
+        if USE_MYSQL:
+            cur = self.conn.cursor()
+            cur.execute(mysql_sql(sql), args or None)
+            return cur
         if USE_PG:
             sql = sql.replace("?", "%s")
         return self.conn.execute(sql, args)
 
     def first(self, sql, *args):
         row = self.run(sql, *args).fetchone()
-        return dict(row) if row else None
+        return plain_row(row) if row else None
 
     def all(self, sql, *args):
-        return [dict(r) for r in self.run(sql, *args).fetchall()]
+        return [plain_row(r) for r in self.run(sql, *args).fetchall()]
 
     def close(self):
         self.conn.close()
+
+
+def mysql_sql(sql):
+    """The queries are written for SQLite/PostgreSQL; adjust the few spots MySQL spells differently."""
+    sql = sql.replace("?", "%s")
+    sql = re.sub(r"ON CONFLICT\s*\(\w+\)\s*DO UPDATE SET", "ON DUPLICATE KEY UPDATE", sql)
+    sql = re.sub(r"\bexcluded\.(\w+)", r"VALUES(\1)", sql)
+    return re.sub(r"(?<![\w.`'])key(?![\w`'])", "`key`", sql)  # meta.key is a reserved word in MySQL
+
+
+def plain_row(row):
+    # MySQL returns DATETIME columns as datetime objects; the site expects "YYYY-MM-DD HH:MM:SS" text.
+    return {k: (v.strftime("%Y-%m-%d %H:%M:%S") if isinstance(v, datetime) else v) for k, v in dict(row).items()}
 
 
 def db():
@@ -77,21 +142,43 @@ def close_db(_exc):
         conn.close()
 
 
+# Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
+# matters on CGI hosting where every request starts a fresh process.
+SCHEMA_VERSION = "2026-10-20"
+
+
 def ensure_schema():
     d = DB()
-    pk = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    now = "CURRENT_TIMESTAMP"
+    try:
+        row = d.first("SELECT value FROM meta WHERE key = 'schema_version'")
+        if row and row["value"] == SCHEMA_VERSION:
+            d.close()
+            return
+    except Exception:  # noqa: BLE001 - first run: the meta table does not exist yet
+        pass
+    if USE_MYSQL:
+        # MySQL needs a length on keys, a real DATETIME for defaults, LONGTEXT for images and 2 decimals for money.
+        pk, ts, ident, big, money = "INT AUTO_INCREMENT PRIMARY KEY", "DATETIME DEFAULT CURRENT_TIMESTAMP", "VARCHAR(191)", "LONGTEXT", "DECIMAL(10,2)"
+        tail = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    else:
+        pk = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        ts, ident, big, money, tail = "TEXT DEFAULT CURRENT_TIMESTAMP", "TEXT", "TEXT", "NUMERIC", ""
     for sql in (
-        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email TEXT UNIQUE, password_hash TEXT, role TEXT DEFAULT 'Customer', token TEXT, created_at TEXT DEFAULT {now})",
-        "CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT, simulator TEXT, version TEXT, folder_name TEXT, download_url TEXT, image_url TEXT, price TEXT, description TEXT, buy_url TEXT, status TEXT, images TEXT, tagline TEXT, features TEXT, sort_order INTEGER DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS liveries (id TEXT PRIMARY KEY, name TEXT, aircraft TEXT, folder_name TEXT, download_url TEXT, image_url TEXT)",
+        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email {ident} UNIQUE, password_hash TEXT, role TEXT DEFAULT 'Customer', token TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS products (id {ident} PRIMARY KEY, name TEXT, simulator TEXT, version TEXT, folder_name TEXT, download_url TEXT, image_url TEXT, price TEXT, description TEXT, buy_url TEXT, status TEXT, images TEXT, tagline TEXT, features TEXT, sort_order INTEGER DEFAULT 0)",
+        f"CREATE TABLE IF NOT EXISTS liveries (id {ident} PRIMARY KEY, name TEXT, aircraft TEXT, folder_name TEXT, download_url TEXT, image_url TEXT)",
         f"CREATE TABLE IF NOT EXISTS posts (id {pk}, title TEXT, content TEXT, image_url TEXT, date TEXT)",
-        f"CREATE TABLE IF NOT EXISTS messages (id {pk}, name TEXT, email TEXT, message TEXT, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount NUMERIC DEFAULT 0, invoice_file TEXT, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT {now})",
-        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+        f"CREATE TABLE IF NOT EXISTS messages (id {pk}, name TEXT, email TEXT, message TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount {money} DEFAULT 0, invoice_file TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS meta (key {ident} PRIMARY KEY, value TEXT)",
+        f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email {ident} UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key {ident} UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id {ident}, machine_name TEXT, first_seen {ts}, last_seen {ts}, UNIQUE (license_id, machine_id))",
+        f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
     ):
-        d.run(sql)
+        d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
                           ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT")):
         try:
@@ -102,6 +189,8 @@ def ensure_schema():
     if not d.first("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'"):
         d.run("DELETE FROM products")
         d.run("INSERT INTO meta (key, value) VALUES ('catalog_reset_heavypro', ?)", today())
+    d.run("DELETE FROM meta WHERE key = 'schema_version'")
+    d.run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", SCHEMA_VERSION)
     d.close()
 
 
@@ -122,7 +211,9 @@ def err(message, status):
 
 
 def bearer():
-    return request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    # X-Rotaidem-Token is a copy for web servers that drop the Authorization header before CGI scripts.
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    return token or request.headers.get("X-Rotaidem-Token", "").strip()
 
 
 def current_user():
@@ -389,6 +480,37 @@ def contact():
     return jsonify({"ok": True})
 
 
+@app.post("/api/subscribe")
+def subscribe():
+    b = body()
+    email = str(b.get("email", "")).strip().lower()
+    if not EMAIL_RE.match(email) or len(email) > 200:
+        return err("Please enter a valid email address", 400)
+    existing = db().first("SELECT id FROM subscribers WHERE email = ?", email)
+    if existing:
+        db().run("UPDATE subscribers SET unsubscribed = 0 WHERE id = ?", existing["id"])
+    else:
+        db().run("INSERT INTO subscribers (email, source) VALUES (?, ?)", email, str(b.get("source", ""))[:100])
+    return jsonify({"ok": True})
+
+
+def unsubscribe_token(email):
+    return hmac.new(SECRET_KEY.encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
+
+
+@app.post("/api/unsubscribe")
+def unsubscribe():
+    b = body()
+    email = str(b.get("email", "")).strip().lower()
+    if not email or not hmac.compare_digest(unsubscribe_token(email), str(b.get("token", ""))):
+        return err("This unsubscribe link is not valid", 400)
+    if db().first("SELECT id FROM subscribers WHERE email = ?", email):
+        db().run("UPDATE subscribers SET unsubscribed = 1 WHERE email = ?", email)
+    else:
+        db().run("INSERT INTO subscribers (email, source, unsubscribed) VALUES (?, 'unsubscribe', 1)", email)
+    return jsonify({"ok": True})
+
+
 # ---------- admin ----------
 
 @app.get("/api/admin/overview")
@@ -398,12 +520,15 @@ def admin_overview():
         return err("Admin only", 403)
     n = lambda sql: (db().first(sql) or {}).get("n") or 0
     revenue = db().first("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'")
-    return jsonify({"name": user["name"], "role": user["role"],
+    return jsonify({"id": user["id"], "name": user["name"], "role": user["role"],
                     "products": n("SELECT COUNT(*) AS n FROM products"),
                     "customers": n("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'"),
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
                     "messages": n("SELECT COUNT(*) AS n FROM messages"),
+                    "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
+                    "licenses": n("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'"),
+                    "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
 
@@ -452,7 +577,23 @@ def admin_save_order():
     db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount) VALUES (?, ?, ?, ?, ?)",
              customer_id, b.get("product_id") or "", b.get("status") or "Completed", b.get("payment_status") or "Paid", amount)
     audit(user, "create_order", customer_id)
-    return jsonify({"ok": True})
+    key = ""
+    if b.get("create_license") and b.get("product_id"):
+        customer = db().first("SELECT id, email FROM users WHERE id = ?", customer_id)
+        order = db().first("SELECT MAX(id) AS id FROM orders WHERE customer_id = ?", customer_id)
+        while not key:
+            candidate = generate_key(str(b.get("license_prefix") or "HPRO"))
+            if insert_license(candidate, b["product_id"], customer["email"] if customer else "", customer_id, order["id"] if order else None,
+                              2, "Created with order", user["name"]):
+                key = candidate
+        audit(user, "create_licenses", f"{key} for order")
+        email = customer["email"] if customer else ""
+        if b.get("send_email", True) and email:
+            error = email_license_keys(email, [key], b["product_id"])
+            if not error:
+                audit(user, "email_licenses", email)
+            return jsonify({"ok": True, "license_key": key, **email_reply(email, error)})
+    return jsonify({"ok": True, "license_key": key})
 
 
 @app.get("/api/admin/messages")
@@ -478,6 +619,699 @@ def admin_audit():
     return jsonify({"logs": db().all(
         "SELECT audit_logs.*, users.name AS admin_name FROM audit_logs LEFT JOIN users ON audit_logs.admin_id = users.id "
         "ORDER BY audit_logs.id DESC LIMIT 100")})
+
+
+# ---------- licences ----------
+
+def key_checksum(prefix, body11):
+    total = sum(ord(ch) for ch in prefix)
+    for i, ch in enumerate(body11):
+        total += (2 * i + 1) * KEY_ALPHABET.index(ch)
+    return KEY_ALPHABET[total % 32]
+
+
+def generate_key(prefix="HPRO"):
+    body = "".join(secrets.choice(KEY_ALPHABET) for _ in range(11))
+    full = body + key_checksum(prefix, body)
+    return f"{prefix}-{full[0:4]}-{full[4:8]}-{full[8:12]}"
+
+
+def normalize_key(value):
+    """Upper-case, strip spaces, and return the key if its format and check character are right, else ''."""
+    key = re.sub(r"\s+", "", str(value or "")).upper()
+    m = KEY_RE.match(key)
+    if not m:
+        return ""
+    chars = m.group(2) + m.group(3) + m.group(4)
+    if any(ch not in KEY_ALPHABET for ch in chars) or key_checksum(m.group(1), chars[:11]) != chars[11]:
+        return ""
+    return key
+
+
+def same_product(requested, stored):
+    """Products match if their ids agree ignoring case and punctuation, or one id is the other plus
+    extra words ("heavypro" matches "heavy-pro" and "heavypro-for-msfs-2024", not "heavypro2"),
+    so a catalogue entry with a longer name does not lock customers out."""
+    def prefixes(value):
+        words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+        return {"".join(words[:i]) for i in range(1, len(words) + 1)}, "".join(words)
+    a_all, a = prefixes(requested)
+    b_all, b = prefixes(stored)
+    return bool(a) and bool(b) and (a in b_all or b in a_all)
+
+
+def license_tool_user():
+    """Staff session (Owner/Admin) or the LICENSE_API_KEY used by the generator program."""
+    supplied = request.headers.get("X-License-Api-Key", "")
+    if LICENSE_API_KEY and len(LICENSE_API_KEY) >= 16 and supplied and hmac.compare_digest(supplied, LICENSE_API_KEY):
+        return {"id": None, "name": "License generator", "role": "Tool"}
+    return manager_user()
+
+
+def insert_license(key, product_id, email="", customer_id=None, order_id=None, max_activations=2, note="", created_by=""):
+    if db().first("SELECT id FROM licenses WHERE license_key = ?", key):
+        return False
+    db().run("INSERT INTO licenses (license_key, product_id, email, customer_id, order_id, max_activations, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             key, product_id, (email or "").strip().lower(), customer_id, order_id, max_activations, note, created_by)
+    return True
+
+
+def clamp_int(value, default, low, high):
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def license_email_html(keys, product_name, max_activations):
+    base = site_url()
+    rows = "".join(f'<tr><td style="padding:14px 18px;background:#f4f4f5;border:1px solid #e4e4e7;font:bold 20px/1.2 Consolas,Menlo,monospace;letter-spacing:2px;color:#111315;text-align:center">{escape(k)}</td></tr><tr><td style="height:8px"></td></tr>' for k in keys)
+    plural = len(keys) > 1
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Your {escape(product_name)} licence key{"s" if plural else ""}</h1>
+<p style="margin:0 0 20px">Thank you for choosing {escape(product_name)}. Here {"are your keys" if plural else "is your key"}:</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows}</table></td></tr>
+<tr><td style="padding:12px 28px 8px;font-size:15px;line-height:1.6">
+<h2 style="margin:0 0 8px;font-size:17px;color:#111315">How to activate</h2>
+<ol style="margin:0 0 16px;padding-left:20px">
+<li>Download the installer from <a href="{escape(base)}/downloads" style="color:#111315">{escape(base.split("://")[-1])}/downloads</a>.</li>
+<li>Run it and enter your key when asked.</li>
+<li>Each key works on {max_activations} computer{"s" if max_activations != 1 else ""}. To move to a new PC, deactivate it in {escape(product_name)} first.</li>
+</ol></td></tr>
+<tr><td style="padding:4px 28px 28px"><a href="{escape(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">View my keys</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Keep this email somewhere safe. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def email_license_keys(email, keys, product_id):
+    """Email licence keys to a customer. Returns an error message, or '' when sent."""
+    if not keys or not email:
+        return ""
+    if not RESEND_API_KEY:
+        return "Email is not set up (RESEND_API_KEY is missing), so the key was not emailed."
+    product = db().first("SELECT name FROM products WHERE id = ?", product_id)
+    name = product["name"] if product else ("HeavyPro" if product_id == "heavypro" else product_id)
+    lic = db().first("SELECT max_activations FROM licenses WHERE license_key = ?", keys[0])
+    subject = f"Your {name} licence key" + ("s" if len(keys) > 1 else "")
+    sent, error = send_batch([{"from": MAIL_FROM, "to": [email], "subject": subject,
+                               "html": license_email_html(keys, name, lic["max_activations"] if lic else 2)}])
+    return "" if sent else error
+
+
+def email_reply(email, error):
+    return {"emailed": [email] if email and not error else [], "email_error": error}
+
+
+@app.post("/api/licenses/import")
+def licenses_import():
+    """Used by the License Generator program to register keys it created."""
+    user = license_tool_user()
+    if not user:
+        return err("Not allowed. Check the generator's API key.", 403)
+    items = body().get("licenses") or []
+    if not isinstance(items, list) or len(items) > 1000:
+        return err("Send a list of at most 1000 licences", 400)
+    created, skipped, invalid = [], [], []
+    by_email = {}
+    for item in items:
+        key = normalize_key(item.get("key"))
+        if not key:
+            invalid.append(str(item.get("key", ""))[:40])
+            continue
+        email = str(item.get("email") or "").strip().lower()
+        customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+        ok = insert_license(key, str(item.get("product_id") or "heavypro")[:60], email, customer["id"] if customer else None, None,
+                            clamp_int(item.get("max_activations"), 2, 1, 100), str(item.get("note") or "")[:200], user["name"])
+        (created if ok else skipped).append(key)
+        if ok and email and EMAIL_RE.match(email):
+            by_email.setdefault((email, str(item.get("product_id") or "heavypro")[:60]), []).append(key)
+    if created:
+        audit(user, "import_licenses", f"{len(created)} keys")
+    emailed, errors = [], []
+    if body().get("send_email"):
+        for (email, product_id), keys in by_email.items():
+            error = email_license_keys(email, keys, product_id)
+            (errors.append(f"{email}: {error}") if error else emailed.append(email))
+        if emailed:
+            audit(user, "email_licenses", ", ".join(emailed))
+    return jsonify({"ok": True, "created": created, "skipped": skipped, "invalid": invalid, "emailed": emailed, "email_error": "; ".join(errors)})
+
+
+@app.post("/api/admin/licenses/generate")
+def admin_generate_licenses():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can create licences", 403)
+    b = body()
+    count = clamp_int(b.get("count"), 1, 1, 500)
+    prefix = re.sub(r"[^A-Z0-9]", "", str(b.get("prefix") or "HPRO").upper())[:8] or "HPRO"
+    email = str(b.get("email") or "").strip().lower()
+    if email and not EMAIL_RE.match(email):
+        return err("Enter a valid email address or leave it empty", 400)
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    keys = []
+    while len(keys) < count:
+        key = generate_key(prefix)
+        if insert_license(key, str(b.get("product_id") or "heavypro")[:60], email, customer["id"] if customer else None, None,
+                          clamp_int(b.get("max_activations"), 2, 1, 100), str(b.get("note") or "")[:200], user["name"]):
+            keys.append(key)
+    audit(user, "create_licenses", f"{count} x {prefix}" + (f" for {email}" if email else ""))
+    error = email_license_keys(email, keys, str(b.get("product_id") or "heavypro")[:60]) if email and b.get("send_email", True) else ""
+    if email and b.get("send_email", True) and not error:
+        audit(user, "email_licenses", email)
+    return jsonify({"ok": True, "keys": keys, **email_reply(email if b.get("send_email", True) else "", error)})
+
+
+@app.get("/api/admin/licenses")
+def admin_licenses():
+    if not staff_user():
+        return err("Admin only", 403)
+    rows = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                    "FROM licenses ORDER BY licenses.id DESC LIMIT 2000")
+    return jsonify({"licenses": rows})
+
+
+@app.get("/api/admin/licenses/<int:license_id>")
+def admin_license_detail(license_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    lic["machines"] = db().all("SELECT * FROM license_activations WHERE license_id = ? ORDER BY id", license_id)
+    return jsonify({"license": lic})
+
+
+@app.post("/api/admin/licenses/<int:license_id>")
+def admin_update_license(license_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    b = body()
+    status = b.get("status", lic["status"])
+    if status not in ("active", "revoked"):
+        return err("Status must be active or revoked", 400)
+    email = str(b.get("email", lic["email"]) or "").strip().lower()
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    product_id = str(b.get("product_id") or lic["product_id"] or "heavypro").strip()[:60]
+    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ?, product_id = ? WHERE id = ?",
+             status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
+             str(b.get("note", lic["note"]) or "")[:200], product_id, license_id)
+    audit(user, "update_license", f"{lic['license_key']} ({status})")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/licenses/<int:license_id>/email")
+def admin_email_license(license_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can email licences", 403)
+    lic = db().first("SELECT * FROM licenses WHERE id = ?", license_id)
+    if not lic:
+        return err("Licence not found", 404)
+    email = str(body().get("email") or lic["email"] or "").strip().lower()
+    if not EMAIL_RE.match(email):
+        return err("This licence has no valid customer email. Add one first.", 400)
+    error = email_license_keys(email, [lic["license_key"]], lic["product_id"])
+    if error:
+        return err(error, 502)
+    audit(user, "email_licenses", f"{lic['license_key']} to {email}")
+    return jsonify({"ok": True, "emailed": [email]})
+
+
+@app.delete("/api/admin/licenses/<int:license_id>/activations/<int:activation_id>")
+def admin_reset_activation(license_id, activation_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    db().run("DELETE FROM license_activations WHERE id = ? AND license_id = ?", activation_id, license_id)
+    audit(user, "reset_activation", license_id)
+    return jsonify({"ok": True})
+
+
+def license_for_request():
+    """Shared checks for the public activation endpoints. Returns (licence, machine_id, error_response)."""
+    b = body()
+    key = normalize_key(b.get("key"))
+    if not key:
+        return None, "", (jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
+    lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
+    if not lic:
+        return None, "", (jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
+    if lic["status"] != "active":
+        return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
+    product = str(b.get("product") or "").strip()
+    if product and not same_product(product, lic["product_id"]):
+        return None, "", (jsonify({"valid": False, "reason": "wrong_product", "error": "This licence key is for another product."}), 403)
+    machine = str(b.get("machine_id") or "").strip()[:128]
+    if not machine:
+        return None, "", (jsonify({"valid": False, "reason": "missing_machine", "error": "machine_id is required."}), 400)
+    return lic, machine, None
+
+
+def license_reply(lic, used):
+    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used,
+                    "max_activations": lic["max_activations"], "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+
+
+@app.post("/api/licenses/activate")
+def license_activate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    name = str(body().get("machine_name") or "")[:100]
+    existing = db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
+    if existing:
+        db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP, machine_name = ? WHERE id = ?", name, existing["id"])
+    elif used >= lic["max_activations"]:
+        return jsonify({"valid": False, "reason": "activation_limit", "activations_used": used, "max_activations": lic["max_activations"],
+                        "error": f"This key is already active on {used} computer(s). Deactivate one first or contact support."}), 403
+    else:
+        db().run("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)", lic["id"], machine, name)
+        used += 1
+    return license_reply(lic, used)
+
+
+@app.post("/api/licenses/validate")
+def license_validate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    existing = db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    if not existing:
+        return jsonify({"valid": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403
+    db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", existing["id"])
+    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
+    return license_reply(lic, used)
+
+
+@app.post("/api/licenses/deactivate")
+def license_deactivate():
+    lic, machine, error = license_for_request()
+    if error:
+        return error
+    db().run("DELETE FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/account/licenses")
+def account_licenses():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    rows = db().all("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+                    "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                    "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
+    return jsonify({"licenses": rows})
+
+
+# ---------- site settings & media ----------
+
+# Image slots on the public pages. Defaults are the artwork in cloudflare/public/img.
+IMAGE_SLOTS = {
+    "hero": "/img/hero.jpg",          # home page welcome
+    "feature": "/img/approach.jpg",   # home page "A joystick is not a yoke"
+    "heavypro": "/img/clouds.jpg",    # HeavyPro page hero
+    "header": "/img/night.jpg",       # header band on inner pages
+    "login": "/img/clouds.jpg",       # log in / sign up side panel
+    "about": "/img/approach.jpg",     # About page picture
+    "product": "/img/approach.jpg",   # products without their own image
+}
+MEDIA_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+
+
+def get_setting(key, default):
+    row = db().first("SELECT value FROM meta WHERE key = ?", key)
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (ValueError, TypeError):
+        return default
+
+
+def set_setting(key, value):
+    raw = json.dumps(value)
+    if db().first("SELECT key FROM meta WHERE key = ?", key):
+        db().run("UPDATE meta SET value = ? WHERE key = ?", raw, key)
+    else:
+        db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, raw)
+
+
+def site_settings():
+    images = dict(IMAGE_SLOTS)
+    images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
+    banner = get_setting("site.announcement", {}) or {}
+    return {"images": images, "defaults": IMAGE_SLOTS,
+            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
+
+
+def valid_image_url(url):
+    url = str(url or "").strip()
+    return url if (url.startswith("https://") or url.startswith("/img/") or re.match(r"^/media/\d+\.(jpg|png|webp|gif)$", url)) else ""
+
+
+@app.get("/api/site")
+def public_site():
+    return jsonify(site_settings())
+
+
+@app.get("/api/admin/settings")
+def admin_settings():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify(site_settings())
+
+
+@app.post("/api/admin/settings")
+def admin_save_settings():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change site settings", 403)
+    b = body()
+    if "images" in b:
+        images = {}
+        for slot, url in (b.get("images") or {}).items():
+            if slot in IMAGE_SLOTS and url:
+                clean = valid_image_url(url)
+                if not clean:
+                    return err(f"The {slot} image must be an https:// link or an uploaded image", 400)
+                if clean != IMAGE_SLOTS[slot]:
+                    images[slot] = clean
+        set_setting("site.images", images)
+    if "announcement" in b:
+        a = b.get("announcement") or {}
+        link = str(a.get("link") or "").strip()
+        if link and not (link.startswith("https://") or link.startswith("/")):
+            return err("The banner link must start with https:// or /", 400)
+        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement") if k in b))
+    return jsonify({"ok": True, **site_settings()})
+
+
+@app.get("/api/admin/media")
+def admin_media():
+    if not staff_user():
+        return err("Admin only", 403)
+    rows = db().all("SELECT id, filename, mime, size, width, height, created_at FROM media ORDER BY id DESC")
+    for r in rows:
+        r["url"] = f"/media/{r['id']}.{MEDIA_TYPES.get(r['mime'], 'jpg')}"
+    return jsonify({"media": rows})
+
+
+@app.post("/api/admin/media")
+def admin_upload_media():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can upload images", 403)
+    b = body()
+    mime = str(b.get("mime") or "")
+    if mime not in MEDIA_TYPES:
+        return err("Upload a JPG, PNG, WebP or GIF image", 400)
+    data = str(b.get("data") or "")
+    if "," in data and data.startswith("data:"):
+        data = data.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        return err("The image data could not be read", 400)
+    if not raw or len(raw) > 5 * 1024 * 1024:
+        return err("Images must be smaller than 5 MB", 400)
+    name = re.sub(r"[^\w.\- ]", "", str(b.get("filename") or "image"))[:120] or "image"
+    db().run("INSERT INTO media (filename, mime, data, size, width, height) VALUES (?, ?, ?, ?, ?, ?)",
+             name, mime, base64.b64encode(raw).decode(), len(raw), clamp_int(b.get("width"), 0, 0, 20000), clamp_int(b.get("height"), 0, 0, 20000))
+    row = db().first("SELECT MAX(id) AS id FROM media")
+    audit(user, "upload_media", name)
+    return jsonify({"ok": True, "id": row["id"], "url": f"/media/{row['id']}.{MEDIA_TYPES[mime]}"})
+
+
+@app.delete("/api/admin/media/<int:media_id>")
+def admin_delete_media(media_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete images", 403)
+    row = db().first("SELECT filename FROM media WHERE id = ?", media_id)
+    db().run("DELETE FROM media WHERE id = ?", media_id)
+    audit(user, "delete_media", row["filename"] if row else media_id)
+    return jsonify({"ok": True})
+
+
+@app.get("/media/<int:media_id>.<ext>")
+def media_file(media_id, ext):
+    row = db().first("SELECT mime, data FROM media WHERE id = ?", media_id)
+    if not row or MEDIA_TYPES.get(row["mime"]) != ext:
+        abort(404)
+    resp = app.response_class(base64.b64decode(row["data"]), mimetype=row["mime"])
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------- backup ----------
+
+BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
+                 "licenses", "license_activations", "media", "campaigns")
+
+
+def table_columns(d, table):
+    return [c[0] for c in d.run(f"SELECT * FROM {table} LIMIT 0").description]
+
+
+@app.get("/api/admin/backup")
+def admin_backup():
+    """Everything in the database as one JSON file: for safekeeping, or to move to another host
+    (strato/setup.py import loads it)."""
+    user = staff_user()
+    if not user or user["role"] != "Owner":
+        return err("Only the Owner can download a backup", 403)
+    audit(user, "download_backup", "")
+    tables = {t: db().all(f"SELECT * FROM {t} ORDER BY 1") for t in BACKUP_TABLES}
+    resp = app.response_class(json.dumps({"format": "rotaidem-backup-1", "created_at": datetime.now(timezone.utc).isoformat(),
+                                          "tables": tables}, default=str), mimetype="application/json")
+    resp.headers["Content-Disposition"] = f'attachment; filename="rotaidem-backup-{datetime.now():%Y%m%d-%H%M}.json"'
+    return resp
+
+
+# ---------- users ----------
+
+@app.get("/api/admin/users/<int:user_id>")
+def admin_user_detail(user_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    u = db().first("SELECT id, name, email, role, created_at FROM users WHERE id = ?", user_id)
+    if not u:
+        return err("User not found", 404)
+    u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
+    u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                             "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
+    return jsonify({"user": u})
+
+
+@app.delete("/api/admin/users/<int:user_id>")
+def admin_delete_user(user_id):
+    user = staff_user()
+    if not user or user["role"] != "Owner":
+        return err("Only the Owner can delete users", 403)
+    if user_id == user["id"]:
+        return err("You cannot delete your own account", 400)
+    target = db().first("SELECT email FROM users WHERE id = ?", user_id)
+    if not target:
+        return err("User not found", 404)
+    # Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
+    db().run("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?", user_id)
+    db().run("DELETE FROM users WHERE id = ?", user_id)
+    audit(user, "delete_user", target["email"])
+    return jsonify({"ok": True})
+
+
+# ---------- email broadcasts ----------
+
+def manager_user():
+    """Owner or Admin: allowed to email people."""
+    user = current_user()
+    return user if user and user["role"] in ("Owner", "Admin") else None
+
+
+def collect_recipients(groups, extra):
+    """Unique, valid addresses from the chosen groups plus pasted extras, minus anyone who unsubscribed."""
+    found = []
+    queries = {
+        "accounts": "SELECT email FROM users",
+        "buyers": "SELECT DISTINCT users.email FROM orders JOIN users ON users.id = orders.customer_id",
+        "subscribers": "SELECT email FROM subscribers WHERE unsubscribed = 0",
+        "contacts": "SELECT DISTINCT email FROM messages",
+    }
+    for group in groups:
+        if group in queries:
+            found += [r["email"] for r in db().all(queries[group])]
+    found += re.split(r"[\s,;]+", extra or "")
+    blocked = {r["email"] for r in db().all("SELECT email FROM subscribers WHERE unsubscribed = 1")}
+    seen, result = set(), []
+    for email in found:
+        email = str(email or "").strip().lower()
+        if EMAIL_RE.match(email) and email not in seen and email not in blocked:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def site_url():
+    return (os.environ.get("SITE_URL") or request.host_url).rstrip("/")
+
+
+def product_email_html(product, message, email):
+    base = site_url()
+    link = f"{base}/addons/view?id={product['id']}" if product else base
+    unsub = f"{base}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
+    text = "<br>".join(escape(line) for line in (message or "").splitlines())
+    block = ""
+    if product:
+        image = product.get("image_url") or ""
+        if image.startswith("/media/") or image.startswith("/img/"):
+            image = base + image  # uploaded images need a full address inside an email
+        img = f'<img src="{escape(image)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">' if image.startswith("https://") else ""
+        block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
+                 f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
+                 f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>
+<tr><td style="padding:12px 28px 28px">{block}<a href="{escape(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
+<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def explain_resend_error(status, raw):
+    """Turn a Resend error response into an instruction the admin can act on."""
+    try:
+        message = str(json.loads(raw).get("message", ""))
+    except (ValueError, AttributeError):
+        message = ""
+    text = (message or raw).lower()
+    if "own email address" in text or ("verify a domain" in text and "resend.dev" in MAIL_FROM):
+        return ("Resend is still in test mode. With the onboarding@resend.dev sender it only delivers to the address "
+                "you signed up to Resend with, so send the test to that address. To email anyone else, verify rotaidem.com "
+                "at resend.com/domains and set MAIL_FROM, e.g. Rotaidem <no-reply@rotaidem.com>.")
+    if "domain is not verified" in text or "not verified" in text:
+        return (f"The sender domain in MAIL_FROM ({MAIL_FROM}) is not verified in Resend yet. Finish the DNS setup at "
+                "resend.com/domains, or remove MAIL_FROM to use Resend's test sender.")
+    if status in (401, 403) and ("api key" in text or "unauthorized" in text or "restricted" in text):
+        return ("Resend rejected the API key. Check RESEND_API_KEY in Render (it starts with re_ and must have "
+                "sending access), save, and let the service redeploy.")
+    if "error code: 1010" in text or "<html" in text:
+        return "Resend's firewall blocked the request. Try again in a minute; if it keeps happening, contact Resend support."
+    if "from" in text and ("invalid" in text or "format" in text):
+        return f"MAIL_FROM is not a valid sender ({MAIL_FROM}). Use the format: Rotaidem <no-reply@rotaidem.com>"
+    return f"Resend said ({status}): {message or raw[:200]}"
+
+
+def send_batch(messages):
+    """Send up to 100 emails through Resend's batch API. Returns (sent, error)."""
+    req = urllib.request.Request("https://api.resend.com/emails/batch", data=json.dumps(messages).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json",
+                                          "Accept": "application/json", "User-Agent": "Rotaidem-Website/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        return len(messages), ""
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        print(f"Resend error {exc.code}: {raw[:500]}", file=sys.stderr, flush=True)
+        return 0, explain_resend_error(exc.code, raw)
+    except OSError as exc:
+        print(f"Resend connection error: {exc}", file=sys.stderr, flush=True)
+        return 0, f"Could not reach Resend: {exc}"
+
+
+@app.post("/api/admin/audience")
+def admin_audience():
+    if not staff_user():
+        return err("Admin only", 403)
+    b = body()
+    groups = [g for g in b.get("groups", []) if g in AUDIENCES]
+    counts = {g: len(collect_recipients([g], "")) for g in AUDIENCES}
+    return jsonify({"counts": counts, "total": len(collect_recipients(groups, b.get("extra", ""))),
+                    "email_ready": bool(RESEND_API_KEY), "from": MAIL_FROM})
+
+
+@app.post("/api/admin/broadcast")
+def admin_broadcast():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    if not RESEND_API_KEY:
+        return err("Email is not set up. Add RESEND_API_KEY to the server environment and redeploy.", 400)
+    b = body()
+    subject = str(b.get("subject", "")).strip()
+    message = str(b.get("message", "")).strip()
+    if not subject or not message:
+        return err("Subject and message are required", 400)
+    product = None
+    if b.get("product_id"):
+        product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"])
+        if not product:
+            return err("That product no longer exists", 400)
+    test = str(b.get("test_email", "")).strip().lower()
+    if test:
+        if not EMAIL_RE.match(test):
+            return err("Enter a valid test address", 400)
+        recipients = [test]
+    else:
+        groups = [g for g in b.get("groups", []) if g in AUDIENCES]
+        recipients = collect_recipients(groups, b.get("extra", ""))
+    if not recipients:
+        return err("No recipients match the chosen audience", 400)
+    sent, failed, last_error = 0, 0, ""
+    for i in range(0, len(recipients), 100):
+        chunk = recipients[i:i + 100]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r)} for r in chunk]
+        ok, error = send_batch(messages)
+        sent += ok
+        if error:
+            failed += len(chunk)
+            last_error = error
+    if not test:
+        db().run("INSERT INTO campaigns (subject, product_id, audience, sent_count, failed_count, admin_id) VALUES (?, ?, ?, ?, ?, ?)",
+                 subject, product["id"] if product else "", ",".join(b.get("groups", [])) + (" +extra" if b.get("extra") else ""), sent, failed, user["id"])
+        audit(user, "send_email", f"{subject} ({sent} sent)")
+    if failed and not sent:
+        return err(last_error, 502)
+    return jsonify({"ok": True, "sent": sent, "failed": failed, "test": bool(test), "error": last_error})
+
+
+@app.get("/api/admin/campaigns")
+def admin_campaigns():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"campaigns": db().all(
+        "SELECT campaigns.*, users.name AS admin_name FROM campaigns LEFT JOIN users ON users.id = campaigns.admin_id ORDER BY campaigns.id DESC LIMIT 50")})
+
+
+@app.get("/api/admin/subscribers")
+def admin_subscribers():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"subscribers": db().all("SELECT * FROM subscribers ORDER BY id DESC")})
+
+
+@app.delete("/api/admin/subscribers/<int:sub_id>")
+def admin_delete_subscriber(sub_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can remove subscribers", 403)
+    db().run("DELETE FROM subscribers WHERE id = ?", sub_id)
+    audit(user, "delete_subscriber", sub_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/<path:_rest>", methods=["GET", "POST", "PUT", "DELETE"])
@@ -519,7 +1353,29 @@ def headers(resp):
     return resp
 
 
-ensure_schema()
+SCHEMA_READY = False
+
+
+def init_schema():
+    """Create tables once. A database outage must not stop the site from serving pages."""
+    global SCHEMA_READY
+    if SCHEMA_READY:
+        return True
+    try:
+        ensure_schema()
+        SCHEMA_READY = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"Database not ready: {exc}", file=sys.stderr, flush=True)
+    return SCHEMA_READY
+
+
+@app.before_request
+def schema_guard():
+    if request.path.startswith("/api/") and not init_schema():
+        return err("Database is not reachable right now. Try again in a minute.", 503)
+
+
+init_schema()
 
 if __name__ == "__main__":
     app.run(port=int(os.environ.get("PORT", 8000)), debug=True)

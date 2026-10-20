@@ -1,0 +1,34 @@
+name: License generator
+
+# Tests the licensing library and builds RotaidemLicenseGenerator.exe.
+# Download it from the run's "Artifacts" section on the Actions tab.
+on:
+  push:
+    paths: ["licensing/**", ".github/workflows/license-generator.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: licensing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Test
+        run: dotnet test -c Release
+      - name: Publish Windows exe
+        run: >
+          dotnet publish src/Rotaidem.LicenseGenerator -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none
+          -o ../out/RotaidemLicenseGenerator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RotaidemLicenseGenerator-win-x64
+          path: out/RotaidemLicenseGenerator

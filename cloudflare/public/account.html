@@ -4,30 +4,34 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>My account | Rotaidem</title>
-    <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
 </head>
-<body data-nav="solid">
-<main class="section" style="padding-top:130px">
+<body>
+<main class="section">
     <div class="wrap">
-        <span class="eyebrow">My account</span>
-        <h1 class="title-lg" id="welcome">Welcome</h1>
+        <h1 id="welcome">My account</h1>
         <p class="muted" id="email-line">Loading account…</p>
 
         <div class="grid grid-3" style="margin:36px 0">
-            <div class="card"><label>Orders</label><div class="stat-num" id="order-count">0</div></div>
-            <div class="card"><label>Account type</label><div class="stat-num" style="font-size:32px" id="role">Customer</div></div>
-            <div class="card"><label>License</label><div class="stat-num" style="font-size:32px">Personal</div></div>
+            <div class="card"><label class="muted">Orders</label><div class="stat-num" id="order-count">0</div></div>
+            <div class="card"><label class="muted">Account type</label><div class="stat-num" style="font-size:32px" id="role">Customer</div></div>
+            <div class="card"><label class="muted">Licence</label><div class="stat-num" style="font-size:32px">Personal</div></div>
         </div>
 
         <div class="split" style="align-items:start">
             <div>
-                <div class="card" style="padding:0;margin-bottom:24px">
+                <div class="box" style="padding:0;margin-bottom:24px">
+                    <h3 style="padding:24px 24px 0">Licence keys</h3>
+                    <p class="muted" style="padding:0 24px;font-size:14px;margin:4px 0 0">Enter your key in the HeavyPro installer. Each key works on a set number of computers; to move to a new PC, deactivate it in HeavyPro first or contact support.</p>
+                    <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Computers</th><th>Status</th><th></th></tr></thead><tbody id="licenses"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+                </div>
+                <div class="box" style="padding:0;margin-bottom:24px">
                     <h3 style="padding:24px 24px 0">Order history</h3>
                     <div class="table-wrap"><table class="table"><thead><tr><th>Order</th><th>Product</th><th>Payment</th><th>Amount</th><th>Date</th></tr></thead><tbody id="orders"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
                 </div>
             </div>
-            <form class="card" id="settings-form">
+            <form class="box" id="settings-form">
                 <h3>Settings</h3>
                 <div class="field"><label for="s-name">Name</label><input id="s-name" required></div>
                 <div class="field"><label for="s-cur">Current password</label><input id="s-cur" type="password" placeholder="Only needed to change password" autocomplete="current-password"></div>
@@ -42,7 +46,7 @@
 <script>
 const token = localStorage.getItem("rsg_token");
 if (!token) location.href = "/login";
-const headers = { "content-type": "application/json", Authorization: "Bearer " + token };
+const headers = { "content-type": "application/json", Authorization: "Bearer " + token, "X-Rotaidem-Token": token };
 
 async function init() {
     const res = await fetch("/api/me", { headers });
@@ -54,6 +58,10 @@ async function init() {
     document.getElementById("order-count").textContent = user.orders_count;
     document.getElementById("s-name").value = user.name;
 
+    const licenses = (await (await fetch("/api/account/licenses", { headers })).json()).licenses || [];
+    document.getElementById("licenses").innerHTML = licenses.length ? licenses.map(l =>
+        `<tr><td style="font-family:ui-monospace,Consolas,monospace;letter-spacing:.04em;color:var(--ink);white-space:nowrap">${esc(l.license_key)}</td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td><button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${esc(l.license_key)}');this.textContent='Copied'">Copy</button></td></tr>`
+    ).join("") : '<tr><td colspan="5" class="muted">No licence keys yet. They appear here after you buy a product.</td></tr>';
     const orders = (await (await fetch("/api/account/orders", { headers })).json()).orders || [];
     document.getElementById("orders").innerHTML = orders.length ? orders.map(o =>
         `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`

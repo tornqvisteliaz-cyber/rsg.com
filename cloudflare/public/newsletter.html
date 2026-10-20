@@ -5,20 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>News | Rotaidem</title>
     <meta name="description" content="Development news from Rotaidem.">
-    <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-<header class="hero hero-short" style="background-image:url('https://i.postimg.cc/28WybSM2/metroliner.jpg')">
-    <div class="wrap"><span class="eyebrow">News</span><h1 class="title-xl">From the hangar</h1><p class="lead">Development updates, previews and release notes.</p></div>
-</header>
+<section class="page-head" data-image="header" style="background-image:url('/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / News</div><h1>News</h1><p>Development updates and release notes.</p></div></section>
 <section class="section-tight"><div class="wrap"><div class="prose" id="posts"><p class="muted">Loading…</p></div></div></section>
 <script src="/auth.js"></script>
 <script>
-fetch("/api/newsletter").then(r => r.json()).then(data => {
-    const posts = data.posts || [];
-    document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `<article class="post"><span class="eyebrow">${esc(p.date)}</span><h2 class="title-lg" style="font-size:34px">${esc(p.title)}</h2>${/^https?:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : ""}<p class="lead" style="white-space:pre-line;max-width:none">${esc(p.content)}</p></article>`).join("") : '<div class="empty">No news yet.</div>';
-});
+const none = '<div class="empty"><h3>No news yet</h3><p>The first update will be posted here.</p></div>';
+fetch("/api/newsletter").then(r => r.json()).then(d => {
+    const posts = d.posts || [];
+    document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `<article class="post"><div class="muted" style="font-size:14px">${esc(p.date)}</div><h2>${esc(p.title)}</h2>${/^https?:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : ""}<p style="white-space:pre-line">${esc(p.content)}</p></article>`).join("") : none;
+}).catch(() => { document.getElementById("posts").innerHTML = none; });
 </script>
 </body>
 </html>

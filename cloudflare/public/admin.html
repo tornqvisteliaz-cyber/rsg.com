@@ -5,326 +5,991 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex">
     <title>Admin | Rotaidem</title>
-    <link rel="icon" type="image/png" href="https://i.postimg.cc/rwKST91B/rsgsoftware.png">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <style>
-        body { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
-        .side { background: #05070a; border-right: 1px solid var(--line); padding: 24px 16px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
-        .side .brand { padding: 0 8px 28px; }
-        .side button.tab { all: unset; display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; color: #c4cbd6; }
-        .side button.tab:hover { background: var(--panel); color: #fff; }
-        .side button.tab.active { background: var(--accent); color: #fff; }
-        .side .count { font-size: 11px; background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 999px; }
-        .side .who { margin-top: auto; padding: 14px; border-top: 1px solid var(--line); font-size: 13px; }
-        .main { padding: 36px 40px 80px; min-width: 0; }
-        .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
-        .top h1 { font-size: 30px; font-weight: 800; margin: 0; }
+        body { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; background: var(--bg-2); }
+        .side { background: var(--navy); color: #b8c1cc; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 22px 0; overflow-y: auto; }
+        .side .brand { padding: 0 22px 26px; }
+        .side .group { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6f7c8b; padding: 18px 22px 6px; }
+        .side .tab { all: unset; box-sizing: border-box; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 9px 22px; cursor: pointer; font-size: 14px; color: #b8c1cc; border-left: 3px solid transparent; }
+        .side .tab:hover { color: #fff; background: rgba(255,255,255,.04); }
+        .side .tab.active { color: #fff; background: var(--navy-2); border-left-color: var(--accent); }
+        .side .count { font-size: 12px; color: #8d98a6; }
+        .side .who { margin-top: auto; padding: 18px 22px 0; border-top: 1px solid var(--navy-line); font-size: 13px; }
+        .side .who a, .side .who button { all: unset; cursor: pointer; color: #b8c1cc; margin-right: 14px; }
+        .side .who a:hover, .side .who button:hover { color: #fff; text-decoration: underline; }
+        .main { min-width: 0; }
+        .bar { background: rgba(var(--navy-rgb), .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); padding: 18px 36px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+        .bar h1 { font-size: 22px; margin: 0; }
+        .content { padding: 28px 36px 80px; }
         .pane { display: none; }
         .pane.active { display: block; }
-        .thumb { width: 72px; height: 50px; border-radius: 8px; object-fit: cover; background: #000; }
-        .row-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+        .panel { background: var(--surface); border: 1px solid var(--line); }
+        .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+        .panel-head h2 { font-size: 16px; margin: 0; }
+        .panel-body { padding: 20px; }
+        .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px; }
+        .stats div { background: var(--surface); padding: 18px 20px; }
+        .stats span { display: block; font-size: 13px; color: var(--muted); }
+        .stats strong { display: block; font-size: 26px; font-weight: 600; color: var(--ink); margin-top: 2px; }
+        .two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+        .compose { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+        .thumb { width: 64px; height: 42px; object-fit: cover; background: var(--bg-2); display: block; }
+        .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+        .table td, .table th { padding-left: 20px; }
+        .search { width: 260px; padding: 8px 12px; }
+        .notice { background: rgba(226,176,74,.1); border-left: 3px solid #e2b04a; padding: 14px 18px; margin-bottom: 20px; font-size: 14px; color: #ecd39a; }
+        .checks label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-weight: 400; padding: 10px 0; border-bottom: 1px solid var(--line); margin: 0; cursor: pointer; }
+        .checks label span:first-child { display: flex; gap: 10px; align-items: center; }
+        .checks small { display: block; color: var(--muted); font-size: 13px; }
+        .total { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; font-weight: 600; color: var(--ink); }
+        .preview-mail { background: var(--bg-2); padding: 20px; }
+        .preview-mail .mail { background: #fff; color: #3a3c40; max-width: 560px; margin: 0 auto; font-family: Arial, sans-serif; font-size: 15px; }
+        .preview-mail .mail-head { background: var(--navy); color: #fff; padding: 16px 22px; font-weight: bold; letter-spacing: 3px; font-size: 13px; }
+        .preview-mail .mail-body { padding: 22px; line-height: 1.6; }
+        .preview-mail .mail-foot { padding: 14px 22px; border-top: 1px solid #e4e4e7; font-size: 12px; color: #6d6f75; }
+        .preview-mail img { width: 100%; margin-bottom: 14px; }
+        /* drawer */
+        .drawer-bg { position: fixed; inset: 0; background: rgba(var(--navy-rgb),.45); z-index: 40; display: none; }
+        .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 100%); background: var(--bg); border-left: 1px solid var(--line); z-index: 41; transform: translateX(100%); transition: transform .22s ease; display: flex; flex-direction: column; }
+        .drawer.open { transform: none; }
+        .drawer.open + .drawer-bg, .drawer-bg.show { display: block; }
+        .drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+        .drawer-head h2 { font-size: 18px; margin: 0; }
+        .drawer-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .drawer-foot { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; gap: 10px; flex-wrap: wrap; }
+        .x { all: unset; cursor: pointer; font-size: 24px; line-height: 1; color: var(--muted); }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
         .form-grid .full { grid-column: 1 / -1; }
-        .preview { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 12px; background: #000; margin-bottom: 18px; }
-        .toast { position: fixed; right: 24px; bottom: 24px; background: var(--panel); border: 1px solid var(--line); padding: 14px 20px; border-radius: 12px; opacity: 0; transform: translateY(10px); transition: .25s; pointer-events: none; z-index: 99; }
+        .sub { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 8px 0 14px; padding-top: 18px; border-top: 1px solid var(--line); }
+        .drawer-body > div.sub:first-of-type { border-top: 0; padding-top: 0; }
+        .preview { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--bg-2); margin-bottom: 18px; }
+        .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+        /* modal + toast */
+        .modal-bg { position: fixed; inset: 0; background: rgba(var(--navy-rgb),.5); z-index: 60; display: none; align-items: center; justify-content: center; padding: 16px; }
+        .modal-bg.show { display: flex; }
+        .modal { background: var(--surface); border: 1px solid var(--line); max-width: 440px; width: 100%; padding: 26px; }
+        .modal h3 { margin-bottom: 8px; }
+        .modal .actions { margin-top: 22px; }
+        .toast { position: fixed; right: 24px; bottom: 24px; background: var(--ink); color: var(--bg); padding: 13px 18px; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; z-index: 99; font-size: 14px; border-left: 3px solid var(--accent); }
         .toast.show { opacity: 1; transform: none; }
-        .toast.error { border-color: var(--danger); color: var(--danger); }
-        .search { max-width: 280px; }
-        @media (max-width: 900px) {
+        .toast.error { border-left-color: var(--danger); }
+        .menu-btn { display: none; }
+        .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+        .img-tile { position: relative; aspect-ratio: 16/10; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+        .img-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .img-tile .rm { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: 0; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; font-size: 15px; line-height: 1; }
+        .img-tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; font-size: 11px; background: rgba(0,0,0,.6); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .img-tile.pick { cursor: pointer; }
+        .img-tile.pick:hover { outline: 2px solid var(--accent); }
+        .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+        .slot img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: var(--bg); border: 1px solid var(--line); }
+        .slot h3 { font-size: 15px; margin: 10px 0 2px; }
+        .slot p { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+        .dropzone { border: 1px dashed var(--field-line); padding: 26px; text-align: center; color: var(--muted); }
+        .dropzone.over { border-color: var(--accent); color: var(--ink); }
+        .bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: 0 20px 6px; }
+        .bars div { flex: 1; background: var(--accent); opacity: .75; min-height: 2px; }
+        .bars div:hover { opacity: 1; }
+        .bars-legend { display: flex; justify-content: space-between; padding: 0 20px 16px; font-size: 12px; color: var(--muted); }
+        .card-preview { max-width: 300px; margin-bottom: 6px; pointer-events: none; }
+        .linkish { all: unset; cursor: pointer; color: var(--ink); font-weight: 600; }
+        .linkish:hover { text-decoration: underline; }
+        .key { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 14px; letter-spacing: .04em; color: var(--ink); white-space: nowrap; }
+        .keys-out { background: var(--bg); border: 1px solid var(--line); padding: 14px 16px; margin-top: 16px; display: none; }
+        .keys-out pre { margin: 0 0 12px; font: 15px/1.8 ui-monospace, Consolas, monospace; color: var(--ink); white-space: pre-wrap; }
+        .modal.wide { max-width: 620px; }
+        @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } .compose, .two { grid-template-columns: 1fr; } }
+        @media (max-width: 860px) {
             body { grid-template-columns: 1fr; }
-            .side { position: static; height: auto; flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 14px; }
-            .side .brand { padding: 0 8px 0 0; width: 100%; margin-bottom: 8px; }
-            .side .who { display: none; }
-            .main { padding: 24px 16px 60px; }
+            .side { position: fixed; left: 0; width: 260px; z-index: 50; transform: translateX(-100%); transition: transform .2s; }
+            .side.open { transform: none; }
+            .menu-btn { display: inline-flex; }
+            .bar, .content { padding-left: 16px; padding-right: 16px; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
             .form-grid { grid-template-columns: 1fr; }
+            .search { width: 100%; }
         }
     </style>
 </head>
 <body data-layout="off">
-<aside class="side">
-    <a class="brand" href="/"><img src="https://i.postimg.cc/rwKST91B/rsgsoftware.png" alt="">Rotaidem</a>
+<aside class="side" id="side">
+    <a class="brand" href="/"><img src="/logo.svg" alt="">Rotaidem</a>
     <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="products">Products <span class="count" id="c-products">0</span></button>
-    <button class="tab" data-tab="news">News <span class="count" id="c-posts">0</span></button>
-    <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders">0</span></button>
-    <button class="tab" data-tab="users">Users <span class="count" id="c-customers">0</span></button>
-    <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages">0</span></button>
-    <button class="tab" data-tab="activity">Activity</button>
-    <div class="who"><div id="who-name" style="font-weight:700">Admin</div><div class="muted" id="who-role"></div><div style="margin-top:10px;display:flex;gap:8px"><a class="btn btn-ghost btn-sm" href="/">Site</a><button class="btn btn-ghost btn-sm" onclick="rsgLogout()">Log out</button></div></div>
+    <div class="group">Catalogue</div>
+    <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
+    <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
+    <div class="group">Website</div>
+    <button class="tab" data-tab="site">Site images &amp; banner</button>
+    <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
+    <div class="group">Marketing</div>
+    <button class="tab" data-tab="email">Email a product</button>
+    <button class="tab" data-tab="subscribers">Subscribers <span class="count" id="c-subscribers"></span></button>
+    <div class="group">Customers</div>
+    <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders"></span></button>
+    <button class="tab" data-tab="users">Users <span class="count" id="c-users"></span></button>
+    <button class="tab" data-tab="licenses">Licences <span class="count" id="c-licenses"></span></button>
+    <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
+    <div class="group">System</div>
+    <button class="tab" data-tab="activity">Activity log</button>
+    <div class="who"><div id="who-name" style="color:#fff;font-weight:500">…</div><div id="who-role" style="margin-bottom:10px"></div><a href="/">View site</a><button onclick="rsgLogout()">Log out</button></div>
 </aside>
 
 <main class="main">
-    <!-- Dashboard -->
-    <section class="pane active" id="pane-dashboard">
-        <div class="top"><h1 id="greeting">Dashboard</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
-        <div class="grid grid-4" style="margin-bottom:24px">
-            <div class="card"><label>Revenue</label><div class="stat-num" id="s-revenue">$0</div></div>
-            <div class="card"><label>Orders</label><div class="stat-num" id="s-orders">0</div></div>
-            <div class="card"><label>Customers</label><div class="stat-num" id="s-customers">0</div></div>
-            <div class="card"><label>Products</label><div class="stat-num" id="s-products">0</div></div>
+    <div class="bar"><div style="display:flex;gap:12px;align-items:center"><button class="btn btn-ghost btn-sm menu-btn" onclick="document.getElementById('side').classList.toggle('open')">Menu</button><h1 id="bar-title">Dashboard</h1></div><div id="bar-actions" class="actions"></div></div>
+    <div class="content">
+
+    <section class="pane active" id="pane-dashboard" data-title="Dashboard">
+        <div class="stats">
+            <div><span>Revenue</span><strong id="s-revenue">$0</strong></div>
+            <div><span>Orders</span><strong id="s-orders">0</strong></div>
+            <div><span>Customers</span><strong id="s-customers">0</strong></div>
+            <div><span>Subscribers</span><strong id="s-subscribers">0</strong></div>
+            <div><span>Products</span><strong id="s-products">0</strong></div>
         </div>
-        <div class="grid grid-2">
-            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest orders</h3><div class="table-wrap"><table class="table"><tbody id="dash-orders"></tbody></table></div></div>
-            <div class="card" style="padding:0"><h3 style="padding:24px 24px 0">Latest messages</h3><div class="table-wrap"><table class="table"><tbody id="dash-messages"></tbody></table></div></div>
+        <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Orders, last 30 days</h2><span class="muted" style="font-size:13px" id="chart-total"></span></div><div class="bars" id="chart"></div><div class="bars-legend"><span id="chart-start"></span><span>Today</span></div></div>
+        <div class="two">
+            <div class="panel"><div class="panel-head"><h2>Latest orders</h2><a class="more" href="#orders" data-go="orders">All orders</a></div><table class="table"><tbody id="dash-orders"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Latest messages</h2><a class="more" href="#messages" data-go="messages">Inbox</a></div><table class="table"><tbody id="dash-messages"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Recent emails</h2><a class="more" href="#email" data-go="email">Email a product</a></div><table class="table"><tbody id="dash-campaigns"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Recent activity</h2><a class="more" href="#activity" data-go="activity">Full log</a></div><table class="table"><tbody id="dash-audit"></tbody></table></div>
         </div>
     </section>
 
-    <!-- Products -->
-    <section class="pane" id="pane-products">
-        <div class="top"><h1>Products</h1><button class="btn btn-sm" onclick="openProduct()">New product</button></div>
-        <div class="grid" style="grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);align-items:start" id="products-layout">
-            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th></th><th>Product</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div></div>
-            <form class="card" id="product-form">
-                <h3 id="pf-title">New product</h3>
-                <img id="preview" class="preview" src="" alt="">
-                <input id="p-id" type="hidden">
-                <div class="form-grid">
-                    <div class="field full"><label>Name</label><input id="p-name" placeholder="HeavyPro 747-400" required></div>
-                    <div class="field full"><label>Tagline</label><input id="p-tagline" placeholder="The Queen of the Skies, study-level"></div>
-                    <div class="field"><label>Price</label><input id="p-price" placeholder="$69.99"></div>
-                    <div class="field"><label>Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
-                    <div class="field"><label>Simulator</label><input id="p-sim" placeholder="MSFS 2024"></div>
-                    <div class="field"><label>Version</label><input id="p-version" placeholder="1.0.0"></div>
-                    <div class="field full"><label>Cover image URL</label><input id="p-image" placeholder="https://…"></div>
-                    <div class="field full"><label>Gallery image URLs (one per line)</label><textarea id="p-images" rows="3"></textarea></div>
-                    <div class="field full"><label>Description</label><textarea id="p-desc" rows="5"></textarea></div>
-                    <div class="field full"><label>Feature list (one per line)</label><textarea id="p-features" rows="4" placeholder="Custom FMS&#10;Full hydraulic system"></textarea></div>
-                    <div class="field"><label>Buy link</label><input id="p-buy" placeholder="https://… or mailto:"></div>
-                    <div class="field"><label>Sort order</label><input id="p-sort" type="number" value="0"></div>
-                </div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Save product</button><button class="btn btn-ghost" type="button" onclick="openProduct()">Clear</button><a class="btn btn-ghost" id="p-open" target="_blank" style="display:none">View page</a></div>
-            </form>
+    <section class="pane" id="pane-products" data-title="Products" data-action="product">
+        <div class="panel">
+            <div class="panel-head"><h2>All products</h2><input class="search" id="product-search" placeholder="Search products"></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th style="width:84px"></th><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div>
         </div>
     </section>
 
-    <!-- News -->
-    <section class="pane" id="pane-news">
-        <div class="top"><h1>News</h1></div>
-        <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start">
-            <form class="card" id="post-form">
-                <h3 id="nf-title">New post</h3>
-                <input id="n-id" type="hidden">
-                <div class="field"><label>Title</label><input id="n-title" required></div>
-                <div class="field"><label>Image URL</label><input id="n-image" placeholder="https://…"></div>
-                <div class="field"><label>Article</label><textarea id="n-content" rows="9" required></textarea></div>
-                <div style="display:flex;gap:10px"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
-            </form>
-            <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><tbody id="posts-list"></tbody></table></div></div>
-        </div>
-    </section>
-
-    <!-- Orders -->
-    <section class="pane" id="pane-orders">
-        <div class="top"><h1>Orders</h1></div>
-        <form class="card" id="order-form" style="margin-bottom:24px">
-            <h3>Add manual order</h3>
-            <div class="grid grid-4" style="gap:0 16px">
-                <div class="field"><label>Customer</label><select id="o-customer" required></select></div>
-                <div class="field"><label>Product</label><select id="o-product"></select></div>
-                <div class="field"><label>Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
-                <div class="field"><label>Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
+    <section class="pane" id="pane-site" data-title="Site images & banner">
+        <form class="panel" id="banner-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Announcement banner</h2><span class="muted" style="font-size:13px">A thin bar above the menu on every page</span></div>
+            <div class="panel-body form-grid">
+                <div class="field full"><label for="b-text">Text</label><input id="b-text" maxlength="200" placeholder="HeavyPro 1.0 is out now"></div>
+                <div class="field"><label for="b-link">Link (optional)</label><input id="b-link" placeholder="/heavypro or https://"></div>
+                <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:28px 0 0"><input type="checkbox" id="b-on"> Show the banner</label>
+                <div class="full"><button class="btn">Save banner</button></div>
             </div>
-            <button class="btn btn-sm">Add order</button>
         </form>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+        <div class="panel">
+            <div class="panel-head"><h2>Site images</h2><span class="muted" style="font-size:13px">Upload your own screenshots or photos for each place on the site</span></div>
+            <div class="panel-body"><div class="slots" id="slots"></div></div>
+        </div>
     </section>
 
-    <!-- Users -->
-    <section class="pane" id="pane-users">
-        <div class="top"><h1>Users</h1><input class="search" id="user-search" placeholder="Search name or email"></div>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div></div>
+    <section class="pane" id="pane-media" data-title="Media library">
+        <div class="panel">
+            <div class="panel-head"><h2>Images</h2><button class="btn btn-sm" type="button" onclick="$('media-file').click()">Upload images</button></div>
+            <div class="panel-body">
+                <div class="dropzone" id="dropzone">Drop images here, or use Upload images. Large pictures are resized to 2400 px wide before uploading.</div>
+                <input type="file" id="media-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+                <div class="img-grid" id="media-grid" style="margin-top:18px"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-news" data-title="News posts">
+        <div class="two">
+            <form class="panel" id="post-form">
+                <div class="panel-head"><h2 id="nf-title">New post</h2></div>
+                <div class="panel-body">
+                    <input id="n-id" type="hidden">
+                    <div class="field"><label for="n-title">Title</label><input id="n-title" required></div>
+                    <div class="field"><label for="n-image">Image URL</label><input id="n-image" placeholder="https://"></div>
+                    <div class="field"><label for="n-content">Article</label><textarea id="n-content" rows="10" required></textarea></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
+                </div>
+            </form>
+            <div class="panel"><div class="panel-head"><h2>Published</h2></div><table class="table"><tbody id="posts-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-email" data-title="Email a product">
+        <div class="notice" id="email-setup" style="display:none">Email sending is not set up yet. Add <strong>RESEND_API_KEY</strong> (from resend.com) to the server's environment variables and redeploy. Emails are sent from <strong>Rotaidem &lt;no-reply@rotaidem.com&gt;</strong>, so rotaidem.com must be verified in Resend. You can still prepare a message and see who would receive it.</div>
+        <div class="compose">
+            <form class="panel" id="email-form">
+                <div class="panel-head"><h2>Compose</h2><span class="muted" style="font-size:13px" id="e-from"></span></div>
+                <div class="panel-body">
+                    <div class="field"><label for="e-product">Product to feature</label><select id="e-product"></select></div>
+                    <div class="field"><label for="e-subject">Subject</label><input id="e-subject" required placeholder="HeavyPro is now available"></div>
+                    <div class="field"><label for="e-message">Message</label><textarea id="e-message" rows="7" required placeholder="Write a short note. The product's picture, name, price and a button are added below it."></textarea></div>
+                    <div class="sub">Who receives it</div>
+                    <div class="checks">
+                        <label><span><input type="checkbox" value="accounts" checked><span>Everyone with an account<small>Customers, staff, all registered users</small></span></span><span class="muted" data-count="accounts">0</span></label>
+                        <label><span><input type="checkbox" value="subscribers" checked><span>Newsletter subscribers<small>Signed up on the website, no account needed</small></span></span><span class="muted" data-count="subscribers">0</span></label>
+                        <label><span><input type="checkbox" value="contacts" checked><span>People who contacted us<small>Addresses from the contact form</small></span></span><span class="muted" data-count="contacts">0</span></label>
+                        <label><span><input type="checkbox" value="buyers"><span>Buyers only<small>Accounts that have placed an order</small></span></span><span class="muted" data-count="buyers">0</span></label>
+                    </div>
+                    <div class="field" style="margin-top:16px"><label for="e-extra">Extra addresses</label><textarea id="e-extra" rows="3" placeholder="Paste any other email addresses, separated by commas or new lines"></textarea><div class="hint">Duplicates are removed and anyone who unsubscribed is skipped automatically.</div></div>
+                    <div class="total"><span>Recipients</span><span id="e-total">0</span></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-accent" type="submit" id="e-send">Send email</button></div>
+                    <div class="sub" style="margin-top:22px">Send a test first</div>
+                    <div style="display:flex;gap:0"><input type="email" id="e-test-to" placeholder="Your email address" aria-label="Test address"><button class="btn btn-ghost" type="button" id="e-test" style="white-space:nowrap">Send test</button></div>
+                    <div class="hint" id="e-test-hint"></div>
+                    <p class="msg" id="e-msg"></p>
+                </div>
+            </form>
+            <div class="panel"><div class="panel-head"><h2>Preview</h2></div><div class="preview-mail"><div class="mail"><div class="mail-head">ROTAIDEM</div><div class="mail-body" id="mail-preview"></div><div class="mail-foot">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news. <u>Unsubscribe</u></div></div></div></div>
+        </div>
+        <div class="panel" style="margin-top:24px"><div class="panel-head"><h2>Sent emails</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Subject</th><th>Product</th><th>Audience</th><th>Sent</th><th>By</th></tr></thead><tbody id="campaigns-list"></tbody></table></div></div>
+    </section>
+
+    <section class="pane" id="pane-subscribers" data-title="Subscribers">
+        <div class="panel">
+            <div class="panel-head"><h2>Newsletter subscribers</h2><div class="actions"><input class="search" id="sub-search" placeholder="Search email"><button class="btn btn-ghost btn-sm" onclick="exportSubscribers()">Export CSV</button></div></div>
+            <form class="panel-body" id="sub-form" style="display:flex;gap:0;border-bottom:1px solid var(--line)"><input type="email" id="sub-email" placeholder="Add an address by hand" required><button class="btn">Add</button></form>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th>Signed up from</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody id="subs-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-orders" data-title="Orders">
+        <form class="panel" id="order-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Add a manual order</h2></div>
+            <div class="panel-body form-grid" style="grid-template-columns:2fr 2fr 1fr 1fr auto;align-items:end">
+                <div class="field"><label for="o-customer">Customer</label><select id="o-customer" required></select></div>
+                <div class="field"><label for="o-product">Product</label><select id="o-product"></select></div>
+                <div class="field"><label for="o-amount">Amount</label><input id="o-amount" type="number" step="0.01" min="0" required></div>
+                <div class="field"><label for="o-pay">Payment</label><select id="o-pay"><option>Paid</option><option>Pending</option><option>Refunded</option></select></div>
+                <div class="field"><button class="btn">Add</button></div>
+                <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="o-license" checked> Create a licence key for this order and email it to the customer</label>
+            </div>
+        </form>
+        <div class="panel"><div class="panel-head"><h2>All orders</h2><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+    </section>
+
+    <section class="pane" id="pane-users" data-title="Users">
+        <div class="panel">
+            <div class="panel-head"><h2>Registered users</h2><div class="actions"><input class="search" id="user-search" placeholder="Search name or email"><button class="btn btn-ghost btn-sm" type="button" onclick="exportUsers()">Export CSV</button></div></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
+        </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
     </section>
 
-    <!-- Messages -->
-    <section class="pane" id="pane-messages">
-        <div class="top"><h1>Messages</h1></div>
+    <section class="pane" id="pane-licenses" data-title="Licences">
+        <div class="two" style="margin-bottom:24px">
+            <form class="panel" id="lic-form">
+                <div class="panel-head"><h2>Create licence keys</h2></div>
+                <div class="panel-body">
+                    <div class="form-grid">
+                        <div class="field"><label for="l-product">Product</label><select id="l-product"></select><div class="hint">HeavyPro checks for id <strong>heavypro</strong>.</div></div>
+                        <div class="field"><label for="l-prefix">Key prefix</label><input id="l-prefix" value="HPRO" maxlength="8"></div>
+                        <div class="field"><label for="l-count">How many</label><input id="l-count" type="number" min="1" max="500" value="1"></div>
+                        <div class="field"><label for="l-max">Computers per key</label><input id="l-max" type="number" min="1" max="100" value="2"></div>
+                        <div class="field full"><label for="l-email">Customer email (optional)</label><input id="l-email" type="email" list="user-emails" placeholder="Links the key to this customer's account"></div>
+                        <div class="field full"><label for="l-note">Note (optional)</label><input id="l-note" placeholder="e.g. Beta tester, giveaway, reseller batch"></div>
+                        <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 18px"><input type="checkbox" id="l-send" checked> Email the keys to the customer when an email is filled in</label>
+                    </div>
+                    <button class="btn">Create keys</button>
+                    <div class="keys-out" id="l-out"><pre id="l-keys"></pre><button class="btn btn-ghost btn-sm" type="button" id="l-copy">Copy all</button></div>
+                </div>
+            </form>
+            <div class="panel">
+                <div class="panel-head"><h2>Import from the generator</h2></div>
+                <div class="panel-body">
+                    <p class="muted" style="font-size:14px">Keys made with the Rotaidem License Generator are registered automatically when it has an API key. If you made them offline, import the CSV file it saved here.</p>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="l-file-send"> Email each customer in the file their keys</label>
+                    <div class="field"><input type="file" id="l-file" accept=".csv,text/csv"></div>
+                    <p class="msg" id="l-import-msg"></p>
+                    <p class="muted" style="font-size:13px;margin:0">The generator connects with <strong>LICENSE_API_KEY</strong> from the server's environment variables.</p>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-head"><h2>All licences</h2><div class="actions"><input class="search" id="lic-search" placeholder="Search key, email or note"><button class="btn btn-ghost btn-sm" type="button" onclick="exportLicenses()">Export CSV</button></div></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
+        </div>
+        <datalist id="user-emails"></datalist>
+    </section>
+
+    <section class="pane" id="pane-messages" data-title="Messages">
         <div id="messages-list"></div>
     </section>
 
-    <!-- Activity -->
-    <section class="pane" id="pane-activity">
-        <div class="top"><h1>Activity</h1></div>
-        <div class="card" style="padding:0"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
+    <section class="pane" id="pane-activity" data-title="Activity log">
+        <div class="panel" id="backup-panel" style="margin-bottom:24px;display:none"><div class="panel-head"><h2>Backup</h2><button class="btn btn-ghost btn-sm" type="button" id="backup-btn">Download backup</button></div>
+            <div class="panel-body muted" style="font-size:14px">One file with every account, product, order, licence, image and setting. Keep it somewhere safe; it can also move the site to another host.</div></div>
+        <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
     </section>
+    </div>
 </main>
+
+<form class="drawer" id="drawer">
+    <div class="drawer-head"><h2 id="pf-title">New product</h2><button type="button" class="x" onclick="closeDrawer()" aria-label="Close">×</button></div>
+    <div class="drawer-body">
+        <input id="p-id" type="hidden">
+        <div class="card-preview" id="p-card"></div>
+        <div class="sub">Basics</div>
+        <div class="form-grid">
+            <div class="field full"><label for="p-name">Name</label><input id="p-name" placeholder="HeavyPro" required><div class="hint" id="p-slug"></div></div>
+            <div class="field full"><label for="p-tagline">Tagline</label><input id="p-tagline" placeholder="Airliner control feel for MSFS 2024"></div>
+            <div class="field"><label for="p-price">Price</label><input id="p-price" placeholder="$29.99"></div>
+            <div class="field"><label for="p-status">Status</label><select id="p-status"><option value="in_development">In development</option><option value="coming_soon">Coming soon</option><option value="published">Available</option></select></div>
+            <div class="field"><label for="p-sim">Simulator</label><input id="p-sim" placeholder="MSFS 2024"></div>
+            <div class="field"><label for="p-version">Version</label><input id="p-version" placeholder="1.0.0"></div>
+        </div>
+        <div class="sub">Download</div>
+        <div class="field"><label for="p-download">Installer download link</label><input id="p-download" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
+        <div class="sub">Images</div>
+        <img id="preview" class="preview" src="" alt="">
+        <div class="field"><label for="p-image">Cover image</label>
+            <div style="display:flex;gap:0"><input id="p-image" placeholder="Upload, pick from the library, or paste an https:// link"><button class="btn btn-ghost" type="button" id="p-cover-up">Upload</button><button class="btn btn-ghost" type="button" id="p-cover-lib">Library</button></div></div>
+        <div class="field"><label>Gallery</label>
+            <div class="img-grid" id="p-gallery"></div>
+            <div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="btn btn-ghost btn-sm" type="button" id="p-gal-up">Upload images</button><button class="btn btn-ghost btn-sm" type="button" id="p-gal-lib">Add from library</button><button class="btn btn-ghost btn-sm" type="button" id="p-gal-link">Add a link</button></div>
+            <textarea id="p-images" rows="3" hidden></textarea>
+            <div class="hint">Shown as screenshots on the product page. The first is used if there is no cover image.</div></div>
+        <div class="sub">Page content</div>
+        <div class="field"><label for="p-desc">Description</label><textarea id="p-desc" rows="5"></textarea></div>
+        <div class="field"><label for="p-features">Features</label><textarea id="p-features" rows="4"></textarea><div class="hint">One feature per line.</div></div>
+        <div class="sub">Selling</div>
+        <div class="form-grid">
+            <div class="field"><label for="p-buy">Buy link</label><input id="p-buy" placeholder="https:// or mailto:"></div>
+            <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
+        </div>
+    </div>
+    <div class="drawer-foot"><button class="btn" type="submit">Save product</button><a class="btn btn-ghost" id="p-open" target="_blank" rel="noopener">View page</a><button class="btn btn-ghost" type="button" id="p-dup">Duplicate</button><button class="btn btn-ghost" type="button" id="p-email">Email this product</button></div>
+</form>
+<div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
+
+<div class="modal-bg" id="lic-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 class="key" id="ld-key" style="font-size:18px"></h3><p class="muted" id="ld-meta" style="font-size:14px;margin:0"></p></div><button class="x" type="button" onclick="$('lic-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field"><label for="ld-product">Product</label><select id="ld-product"></select></div><div class="field"><label for="ld-note">Note</label><input id="ld-note"></div></div>
+    <div class="sub">Activated computers</div><table class="table"><tbody id="ld-machines"></tbody></table>
+    <div class="actions" style="margin-top:20px;justify-content:space-between"><button class="btn btn-danger" type="button" id="ld-status"></button><span class="actions"><button class="btn btn-ghost" type="button" id="ld-email-btn">Email key to customer</button><button class="btn" type="button" id="ld-save">Save</button></span></div></div></div>
+<div class="modal-bg" id="pick-modal"><div class="modal wide" style="max-width:820px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h3 style="margin:0">Choose an image</h3><button class="x" type="button" id="pick-close" aria-label="Close">×</button></div>
+    <div class="actions" style="justify-content:flex-start;margin-bottom:14px"><button class="btn btn-sm" type="button" id="pick-upload">Upload new</button></div>
+    <div class="img-grid" id="pick-grid" style="max-height:60vh;overflow:auto"></div></div></div>
+<div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
+    <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
+    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+<input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+<div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="toast" id="toast"></div>
 
 <script src="/auth.js"></script>
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
-const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || "") };
-const state = { products: [], users: [], role: "" };
+const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || ""), "X-Rotaidem-Token": localStorage.getItem("rsg_token") || "" };
+const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
+const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
+const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function downloadCsv(name, rows) {
+    const csv = rows.map(r => r.map(v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = name; a.click();
+}
+
+// Resize large pictures in the browser, then upload. Returns the new image URLs.
+async function uploadImages(files) {
+    const urls = [];
+    for (const file of [...files]) {
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) { toast(file.name + " is not a JPG, PNG, WebP or GIF", true); continue; }
+        toast("Uploading " + file.name + "…");
+        try {
+            const { data, mime, width, height } = await shrinkImage(file);
+            const r = await post("/api/admin/media", { filename: file.name, mime, data, width, height });
+            urls.push(r.url);
+        } catch (err) { toast(file.name + ": " + err.message, true); }
+    }
+    if (urls.length) { toast(`Uploaded ${urls.length} image${urls.length === 1 ? "" : "s"}`); loadMedia(); }
+    return urls;
+}
+function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const scale = Math.min(1, 2400 / img.naturalWidth);
+            const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+            const reader = new FileReader();
+            if (file.type === "image/gif" || (scale === 1 && file.size < 1.5 * 1024 * 1024)) {
+                reader.onload = () => resolve({ data: reader.result, mime: file.type, width: w, height: h });
+                reader.onerror = () => reject(new Error("could not read the file"));
+                reader.readAsDataURL(file);
+                return;
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = w; canvas.height = h;
+            canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+            const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+            resolve({ data: canvas.toDataURL(mime, .86), mime, width: w, height: h });
+        };
+        img.onerror = () => reject(new Error("could not open the image"));
+        img.src = URL.createObjectURL(file);
+    });
+}
+function chooseFiles(multiple) {
+    return new Promise(resolve => {
+        const input = $("pick-file");
+        input.multiple = multiple; input.value = "";
+        input.onchange = () => resolve(input.files);
+        input.click();
+    });
+}
+// Opens the library; resolves with the chosen URL, or null.
+function pickImage() {
+    return new Promise(resolve => {
+        const done = url => { $("pick-modal").classList.remove("show"); resolve(url); };
+        const render = () => {
+            $("pick-grid").innerHTML = state.media.length ? state.media.map(m => `<div class="img-tile pick" data-url="${esc(m.url)}"><img src="${esc(m.url)}" alt="" loading="lazy"><span class="cap">${esc(m.filename)}</span></div>`).join("")
+                : '<p class="muted">No uploaded images yet. Use Upload new.</p>';
+        };
+        render();
+        $("pick-grid").onclick = e => { const t = e.target.closest("[data-url]"); if (t) done(t.dataset.url); };
+        $("pick-close").onclick = () => done(null);
+        $("pick-upload").onclick = async () => { const urls = await uploadImages(await chooseFiles(false)); if (urls.length) done(urls[0]); };
+        $("pick-modal").classList.add("show");
+    });
+}
+const $ = id => document.getElementById(id);
+const val = id => $(id).value.trim();
+const lines = id => $(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
 
 async function api(path, opts = {}) {
     const res = await fetch(path, { headers: H, ...opts });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401 || res.status === 403) { if (path === "/api/admin/overview") { rsgLogout(); } }
+    if (res.status === 401 && path === "/api/admin/overview") rsgLogout();
     if (!res.ok) throw new Error(data.error || "Request failed");
     return data;
 }
-function toast(text, bad) { const t = document.getElementById("toast"); t.textContent = text; t.className = "toast show" + (bad ? " error" : ""); clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", 2600); }
-function money(n) { return "$" + Number(n || 0).toFixed(2); }
-function date(s) { return esc(String(s || "").slice(0, 16).replace("T", " ")); }
-function empty(cols, text) { return `<tr><td colspan="${cols}" class="muted">${text}</td></tr>`; }
-const val = id => document.getElementById(id).value.trim();
-const lines = id => document.getElementById(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
+const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data) });
+function toast(text, bad) { const t = $("toast"); t.textContent = text; t.className = "toast show" + (bad ? " error" : ""); clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", 3000); }
+function confirmBox(title, text, yes = "Confirm", danger = false) {
+    return new Promise(resolve => {
+        $("m-title").textContent = title; $("m-text").textContent = text;
+        $("m-yes").textContent = yes; $("m-yes").className = "btn" + (danger ? " btn-danger" : "");
+        $("modal").classList.add("show");
+        const done = v => { $("modal").classList.remove("show"); resolve(v); };
+        $("m-yes").onclick = () => done(true); $("m-no").onclick = () => done(false);
+    });
+}
+const money = n => "$" + Number(n || 0).toFixed(2);
+const date = s => esc(String(s || "").slice(0, 16).replace("T", " "));
+const empty = (cols, text) => `<tr><td colspan="${cols}" class="muted">${text}</td></tr>`;
 
+// navigation
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+document.addEventListener("click", e => { const a = e.target.closest("[data-go]"); if (a) { e.preventDefault(); showTab(a.dataset.go); } });
 function showTab(name) {
+    const pane = $("pane-" + name);
+    if (!pane) return;
     document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p === pane));
+    $("bar-title").textContent = pane.dataset.title;
+    $("bar-actions").innerHTML = pane.dataset.action === "product" || name === "dashboard" ? '<button class="btn btn-sm" onclick="openProduct()">New product</button>' : "";
+    $("side").classList.remove("open");
     history.replaceState(null, "", "#" + name);
 }
 
 async function loadOverview() {
     const o = await api("/api/admin/overview");
-    state.role = o.role;
-    document.getElementById("greeting").textContent = "Welcome back, " + o.name;
-    document.getElementById("who-name").textContent = o.name;
-    document.getElementById("who-role").textContent = o.role;
-    document.getElementById("s-revenue").textContent = money(o.revenue);
-    for (const k of ["orders", "customers", "products"]) document.getElementById("s-" + k).textContent = o[k];
-    for (const k of ["products", "posts", "orders", "customers", "messages"]) document.getElementById("c-" + k).textContent = o[k];
+    state.role = o.role; state.me = o.id; $("backup-panel").style.display = o.role === "Owner" ? "" : "none"; state.emailReady = !!o.email_ready;
+    $("who-name").textContent = o.name; $("who-role").textContent = o.role;
+    $("s-revenue").textContent = money(o.revenue);
+    for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
+    for (const k of ["products", "posts", "orders", "messages", "subscribers"]) $("c-" + k).textContent = o[k] || "";
+    $("email-setup").style.display = state.emailReady ? "none" : "";
 }
 
 // products
 async function loadProducts() {
     state.products = (await api("/api/products")).products || [];
-    document.getElementById("products-list").innerHTML = state.products.length ? state.products.map(p =>
-        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.price || "")}</div></td><td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
-        `<td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="openProduct('${esc(p.id)}')">Edit</button><button class="btn btn-danger btn-sm" onclick="deleteProduct('${esc(p.id)}')">Delete</button></div></td></tr>`
-    ).join("") : empty(4, "No products yet. Create your first HeavyPro product.");
-    document.getElementById("o-product").innerHTML = '<option value="">-</option>' + state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    renderProducts();
+    const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    $("o-product").innerHTML = '<option value="">None</option>' + opts;
+    const licOpts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (id: ${esc(p.id)})</option>`).join("");
+    const hasHeavyPro = state.products.some(p => p.id === "heavypro");
+    $("l-product").innerHTML = (hasHeavyPro ? "" : '<option value="heavypro">HeavyPro app (id: heavypro)</option>') + licOpts;
+    $("l-product").value = "heavypro";
+    $("ld-product").innerHTML = $("l-product").innerHTML;
+    const current = $("e-product").value;
+    $("e-product").innerHTML = '<option value="">No product, just a message</option>' + opts;
+    if (current) $("e-product").value = current;
+    renderPreview();
 }
-function openProduct(id, stay) {
-    if (!stay) showTab("products");
+function renderProducts() {
+    const q = val("product-search").toLowerCase();
+    const list = state.products.filter(p => !q || (p.name + " " + (p.tagline || "")).toLowerCase().includes(q));
+    $("products-list").innerHTML = list.length ? list.map(p =>
+        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.tagline || "")}</div></td><td>${esc(p.price || "")}</td>` +
+        `<td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-email="${esc(p.id)}">Email</button><button class="btn btn-ghost btn-sm" data-edit="${esc(p.id)}">Edit</button><button class="btn btn-danger btn-sm" data-del="${esc(p.id)}">Delete</button></div></td></tr>`
+    ).join("") : empty(5, state.products.length ? "No products match your search." : "No products yet. Click New product to add HeavyPro.");
+}
+$("product-search").oninput = renderProducts;
+$("products-list").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.edit) openProduct(b.dataset.edit);
+    if (b.dataset.del) deleteProduct(b.dataset.del);
+    if (b.dataset.email) emailProduct(b.dataset.email);
+};
+function productDraft() {
+    return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
+        simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
+        description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0 };
+}
+function refreshProductPreview() {
+    const d = productDraft();
+    $("p-card").innerHTML = productCard({ ...d, id: d.id || slugify(d.name) || "new", name: d.name || "Product name", image_url: d.image_url || d.images[0] || "" });
+    $("p-slug").innerHTML = d.id
+        ? `Product id: <strong>${esc(d.id)}</strong> (fixed; licences and the app use it)`
+        : (d.name ? `Product id will be <strong>${esc(slugify(d.name))}</strong>. HeavyPro checks for <strong>heavypro</strong>.` : "");
+}
+function renderGallery() {
+    $("p-images").value = state.gallery.join("\n");
+    $("p-gallery").innerHTML = state.gallery.length ? state.gallery.map((u, i) => `<div class="img-tile"><img src="${esc(safeImage(u))}" alt=""><button class="rm" type="button" data-rm="${i}" title="Remove">×</button></div>`).join("")
+        : '<p class="muted" style="font-size:14px;margin:0">No gallery images yet.</p>';
+    refreshProductPreview();
+}
+$("p-gallery").onclick = e => { const b = e.target.closest("[data-rm]"); if (b) { state.gallery.splice(Number(b.dataset.rm), 1); renderGallery(); } };
+function addToGallery(...urls) { for (const u of urls) if (!state.gallery.includes(u)) state.gallery.push(u); renderGallery(); }
+$("p-gal-up").onclick = async () => { addToGallery(...await uploadImages(await chooseFiles(true))); };
+$("p-gal-lib").onclick = async () => { const u = await pickImage(); if (u) addToGallery(u); };
+$("p-gal-link").onclick = () => { const u = (prompt("Image link (https://)") || "").trim(); if (!u) return; if (!IMAGE_RE.test(u)) return toast("The link must start with https://", true); addToGallery(u); };
+$("p-cover-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) { $("p-image").value = u; previewImage(); } };
+$("p-cover-lib").onclick = async () => { const u = await pickImage(); if (u) { $("p-image").value = u; previewImage(); } };
+$("drawer").addEventListener("input", refreshProductPreview);
+$("p-dup").onclick = () => {
+    const d = productDraft();
+    openProduct();
+    const set = (k, v) => $(k).value = v == null ? "" : v;
+    set("p-name", d.name + " copy"); set("p-tagline", d.tagline); set("p-price", d.price); set("p-status", "in_development"); set("p-sim", d.simulator);
+    set("p-version", d.version); set("p-image", d.image_url); set("p-desc", d.description); set("p-features", d.features.join("\n")); set("p-buy", d.buy_url);
+    set("p-download", d.download_url); set("p-sort", d.sort_order);
+    state.gallery = d.images; renderGallery(); previewImage();
+    toast("Copy ready. Change the name and save.");
+};
+function openProduct(id) {
     const p = state.products.find(x => x.id === id) || {};
-    const set = (k, v) => document.getElementById(k).value = v == null ? "" : v;
+    const set = (k, v) => $(k).value = v == null ? "" : v;
     set("p-id", p.id); set("p-name", p.name); set("p-tagline", p.tagline); set("p-price", p.price);
     set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
-    set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-sort", p.sort_order || 0);
-    document.getElementById("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
-    const open = document.getElementById("p-open");
-    open.style.display = p.id ? "" : "none";
-    open.href = "/addons/view?id=" + encodeURIComponent(p.id || "");
-    preview();
+    set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
+    $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
+    $("p-open").style.display = p.id ? "" : "none";
+    $("p-email").style.display = p.id ? "" : "none";
+    $("p-open").href = "/addons/view?id=" + encodeURIComponent(p.id || "");
+    $("p-email").onclick = () => { closeDrawer(true); emailProduct(p.id); };
+    $("p-dup").style.display = p.id ? "" : "none";
+    state.gallery = (p.images || []).slice();
+    renderGallery();
+    previewImage();
+    state.productSnapshot = JSON.stringify(productDraft());
+    $("drawer").classList.add("open"); $("drawer-bg").classList.add("show");
+    setTimeout(() => $("p-name").focus(), 50);
 }
-function preview() { document.getElementById("preview").src = safeImage(val("p-image")); }
-document.getElementById("p-image").oninput = preview;
-document.getElementById("product-form").onsubmit = async e => {
+async function closeDrawer(force) {
+    if (!$("drawer").classList.contains("open")) return;
+    if (!force && JSON.stringify(productDraft()) !== state.productSnapshot &&
+        !await confirmBox("Discard your changes?", "This product has unsaved changes.", "Discard", true)) return;
+    $("drawer").classList.remove("open"); $("drawer-bg").classList.remove("show");
+}
+document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if ($("pick-modal").classList.contains("show")) $("pick-close").click();
+    else if (!$("modal").classList.contains("show")) closeDrawer();
+});
+function previewImage() { const u = val("p-image"); $("preview").style.display = IMAGE_RE.test(u) ? "" : "none"; $("preview").src = safeImage(u); refreshProductPreview(); }
+$("p-image").oninput = previewImage;
+$("drawer").onsubmit = async e => {
     e.preventDefault();
-    const urls = [val("p-image"), ...lines("p-images")].filter(Boolean);
-    if (urls.some(u => !/^https?:\/\//.test(u))) return toast("Image links must start with https://", true);
+    if (val("p-download") && !/^https:\/\//.test(val("p-download"))) return toast("The download link must start with https://", true);
+    const draft = productDraft();
+    if ([draft.image_url, ...draft.images].filter(Boolean).some(u => !IMAGE_RE.test(u))) return toast("Image links must start with https:// or be uploaded images", true);
+    if (!draft.id && state.products.some(x => x.id === slugify(draft.name)))
+        if (!await confirmBox("Replace " + draft.name + "?", "A product with this name already exists. Saving will overwrite it.", "Overwrite", true)) return;
     try {
-        const r = await api("/api/save-product", { method: "POST", body: JSON.stringify({
-            id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
-            simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: lines("p-images"),
-            description: document.getElementById("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), sort_order: Number(val("p-sort")) || 0
-        })});
-        toast("Saved " + val("p-name"));
-        await loadProducts(); openProduct(r.id); loadOverview();
+        const r = await post("/api/save-product", draft);
+        toast("Saved " + draft.name);
+        await loadProducts(); loadOverview(); openProduct(r.id);
     } catch (err) { toast(err.message, true); }
 };
 async function deleteProduct(id) {
-    if (!confirm("Delete this product? This cannot be undone.")) return;
-    try { await api("/api/products/" + encodeURIComponent(id), { method: "DELETE" }); toast("Deleted"); loadProducts(); loadOverview(); openProduct(); }
+    const p = state.products.find(x => x.id === id);
+    if (!await confirmBox("Delete " + (p ? p.name : "product") + "?", "The product page will disappear from the website. This cannot be undone.", "Delete", true)) return;
+    try { await api("/api/products/" + encodeURIComponent(id), { method: "DELETE" }); toast("Product deleted"); loadProducts(); loadOverview(); }
     catch (err) { toast(err.message, true); }
 }
 
+// email a product
+function emailProduct(id) {
+    const p = state.products.find(x => x.id === id);
+    showTab("email");
+    $("e-product").value = id || "";
+    if (p && !val("e-subject")) $("e-subject").value = p.status === "published" ? `${p.name} is now available` : `News about ${p.name}`;
+    renderPreview();
+    $("e-message").focus();
+}
+const groups = () => [...document.querySelectorAll(".checks input:checked")].map(i => i.value);
+let audienceTimer;
+function refreshAudience() {
+    clearTimeout(audienceTimer);
+    audienceTimer = setTimeout(async () => {
+        try {
+            const r = await post("/api/admin/audience", { groups: groups(), extra: $("e-extra").value });
+            for (const [k, n] of Object.entries(r.counts)) document.querySelector(`[data-count="${k}"]`).textContent = n;
+            $("e-total").textContent = r.total;
+            $("e-send").textContent = r.total ? `Send to ${r.total} ${r.total === 1 ? "person" : "people"}` : "Send email";
+            $("e-from").textContent = "From: " + r.from;
+            $("e-test-hint").textContent = /resend\.dev/.test(r.from)
+                ? "Resend's test sender is in use, so tests only arrive at the address you signed up to Resend with. Verify rotaidem.com in Resend and set MAIL_FROM to email anyone."
+                : "";
+            state.emailReady = r.email_ready;
+            $("email-setup").style.display = r.email_ready ? "none" : "";
+        } catch (err) { toast(err.message, true); }
+    }, 250);
+}
+document.querySelectorAll(".checks input").forEach(i => i.onchange = refreshAudience);
+$("e-extra").oninput = refreshAudience;
+function renderPreview() {
+    const p = state.products.find(x => x.id === $("e-product").value);
+    const msg = esc($("e-message").value || "Your message appears here.").replace(/\n/g, "<br>");
+    let block = "";
+    if (p) block = (/^https:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : "") +
+        `<div style="font-size:20px;font-weight:bold;color:#141517">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#141517">${esc(p.price || "")}</div>`;
+    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${block}<span style="display:inline-block;background:#141517;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
+}
+["e-product", "e-message"].forEach(id => $(id).addEventListener("input", renderPreview));
+async function sendEmail(test) {
+    const msg = $("e-msg");
+    if (!val("e-subject") || !val("e-message")) { msg.className = "msg error"; msg.textContent = "Add a subject and a message first."; return; }
+    const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, groups: groups(), extra: $("e-extra").value };
+    if (test) {
+        payload.test_email = val("e-test-to");
+        if (!payload.test_email) { msg.className = "msg error"; msg.textContent = "Enter the address to send the test to."; return; }
+    } else {
+        const total = Number($("e-total").textContent);
+        if (!total) { msg.className = "msg error"; msg.textContent = "No one matches the chosen audience."; return; }
+        if (!await confirmBox(`Send to ${total} ${total === 1 ? "person" : "people"}?`, `"${val("e-subject")}" will be emailed now. This cannot be undone.`, "Send now")) return;
+    }
+    msg.className = "msg"; msg.textContent = test ? "Sending a test…" : "Sending…";
+    $("e-send").disabled = $("e-test").disabled = true;
+    try {
+        const r = await post("/api/admin/broadcast", payload);
+        msg.className = "msg ok";
+        msg.textContent = r.test ? `Test sent to ${payload.test_email}.` : `Sent to ${r.sent} ${r.sent === 1 ? "person" : "people"}${r.failed ? `, ${r.failed} failed (${r.error})` : ""}.`;
+        if (!r.test) { loadCampaigns(); loadAudit(); }
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+    $("e-send").disabled = $("e-test").disabled = false;
+}
+$("email-form").onsubmit = e => { e.preventDefault(); sendEmail(false); };
+$("e-test").onclick = () => sendEmail(true);
+async function loadCampaigns() {
+    const list = (await api("/api/admin/campaigns")).campaigns || [];
+    const name = id => (state.products.find(p => p.id === id) || {}).name || id || "-";
+    $("campaigns-list").innerHTML = list.length ? list.map(c => `<tr><td class="muted">${date(c.created_at)}</td><td>${esc(c.subject)}</td><td>${esc(name(c.product_id))}</td><td class="muted">${esc(c.audience)}</td><td>${esc(c.sent_count)}${c.failed_count ? ` <span style="color:var(--danger)">(${esc(c.failed_count)} failed)</span>` : ""}</td><td>${esc(c.admin_name || "-")}</td></tr>`).join("") : empty(6, "No emails sent yet.");
+    $("dash-campaigns").innerHTML = list.length ? list.slice(0, 5).map(c => `<tr><td>${esc(c.subject)}</td><td class="muted">${esc(c.sent_count)} sent</td></tr>`).join("") : empty(2, "No emails sent yet.");
+}
+
+// subscribers
+async function loadSubscribers() {
+    state.subs = (await api("/api/admin/subscribers")).subscribers || [];
+    renderSubscribers();
+}
+function renderSubscribers() {
+    const q = val("sub-search").toLowerCase();
+    const list = state.subs.filter(s => !q || s.email.includes(q));
+    $("subs-list").innerHTML = list.length ? list.map(s => `<tr><td>${esc(s.email)}</td><td class="muted">${esc(s.source || "-")}</td><td>${Number(s.unsubscribed) ? '<span class="badge">Unsubscribed</span>' : '<span class="badge published">Subscribed</span>'}</td><td class="muted">${date(s.created_at)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-sub="${s.id}">Remove</button></div></td></tr>`).join("") : empty(5, "No subscribers yet. Visitors can sign up in the website footer.");
+}
+$("sub-search").oninput = renderSubscribers;
+$("subs-list").onclick = async e => {
+    const b = e.target.closest("[data-sub]"); if (!b) return;
+    if (!await confirmBox("Remove this subscriber?", "They will no longer be counted as a newsletter subscriber.", "Remove", true)) return;
+    try { await api("/api/admin/subscribers/" + b.dataset.sub, { method: "DELETE" }); toast("Removed"); loadSubscribers(); loadOverview(); refreshAudience(); } catch (err) { toast(err.message, true); }
+};
+$("sub-form").onsubmit = async e => {
+    e.preventDefault();
+    try { await post("/api/subscribe", { email: val("sub-email"), source: "added by admin" }); toast("Subscriber added"); e.target.reset(); loadSubscribers(); loadOverview(); refreshAudience(); } catch (err) { toast(err.message, true); }
+};
+function exportSubscribers() {
+    const rows = [["email", "source", "status", "created_at"], ...state.subs.map(s => [s.email, s.source || "", Number(s.unsubscribed) ? "unsubscribed" : "subscribed", s.created_at || ""])];
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "rotaidem-subscribers.csv"; a.click();
+}
+
 // news
-let posts = [];
 async function loadPosts() {
-    posts = (await api("/api/newsletter")).posts || [];
-    document.getElementById("posts-list").innerHTML = posts.length ? posts.map(p =>
-        `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`
-    ).join("") : empty(2, "No posts yet.");
+    state.posts = (await api("/api/newsletter")).posts || [];
+    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
 }
 function editPost(id) {
-    const p = posts.find(x => x.id === id) || {};
-    document.getElementById("n-id").value = p.id || "";
-    document.getElementById("n-title").value = p.title || "";
-    document.getElementById("n-image").value = p.image_url || "";
-    document.getElementById("n-content").value = p.content || "";
-    document.getElementById("nf-title").textContent = p.id ? "Edit post" : "New post";
+    const p = state.posts.find(x => x.id === id) || {};
+    $("n-id").value = p.id || ""; $("n-title").value = p.title || ""; $("n-image").value = p.image_url || ""; $("n-content").value = p.content || "";
+    $("nf-title").textContent = p.id ? "Edit post" : "New post";
 }
-document.getElementById("post-form").onsubmit = async e => {
+$("post-form").onsubmit = async e => {
     e.preventDefault();
-    try {
-        await api("/api/newsletter", { method: "POST", body: JSON.stringify({ id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: document.getElementById("n-content").value }) });
-        toast("Published"); editPost(); loadPosts(); loadOverview();
-    } catch (err) { toast(err.message, true); }
+    try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value }); toast("Published"); editPost(); loadPosts(); loadOverview(); }
+    catch (err) { toast(err.message, true); }
 };
 async function deletePost(id) {
-    if (!confirm("Delete this post?")) return;
-    try { await api("/api/newsletter/" + id, { method: "DELETE" }); toast("Deleted"); loadPosts(); loadOverview(); } catch (err) { toast(err.message, true); }
+    if (!await confirmBox("Delete this post?", "It will be removed from the News page.", "Delete", true)) return;
+    try { await api("/api/newsletter/" + id, { method: "DELETE" }); toast("Post deleted"); loadPosts(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 
 // orders
 async function loadOrders() {
-    const orders = (await api("/api/admin/orders")).orders || [];
-    const row = o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:12px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`;
-    document.getElementById("orders-list").innerHTML = orders.length ? orders.map(row).join("") : empty(6, "No orders yet.");
-    document.getElementById("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
+    const orders = state.orders = (await api("/api/admin/orders")).orders || [];
+    renderChart();
+    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(6, "No orders yet.");
+    $("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
 }
-document.getElementById("order-form").onsubmit = async e => {
+$("order-form").onsubmit = async e => {
     e.preventDefault();
     try {
-        await api("/api/admin/orders", { method: "POST", body: JSON.stringify({ customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay") }) });
-        toast("Order added"); e.target.reset(); loadOrders(); loadOverview();
-    } catch (err) { toast(err.message, true); }
+        const r = await post("/api/admin/orders", { customer_id: val("o-customer"), product_id: val("o-product"), amount: val("o-amount"), payment_status: val("o-pay"), create_license: $("o-license").checked, send_email: $("o-license").checked });
+        toast(!r.license_key ? "Order added" : r.email_error ? `Order added with ${r.license_key}, but the email failed: ${r.email_error}` : r.emailed && r.emailed.length ? `Order added. ${r.license_key} emailed to ${r.emailed[0]}` : "Order added with licence " + r.license_key, !!r.email_error); e.target.reset(); loadOrders(); loadOverview(); refreshAudience(); if (r.license_key) loadLicenses();
+    }
+    catch (err) { toast(err.message, true); }
 };
+
+function renderChart() {
+    const days = [...Array(30)].map((_, i) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 29 + i); return d; });
+    const counts = days.map(d => state.orders.filter(o => { const t = new Date(String(o.created_at || "").replace(" ", "T") + (String(o.created_at || "").includes("Z") ? "" : "Z")); return t >= d && t < new Date(d.getTime() + 864e5); }));
+    const max = Math.max(1, ...counts.map(c => c.length));
+    $("chart").innerHTML = counts.map((c, i) => `<div style="height:${(c.length / max) * 100}%" title="${days[i].toLocaleDateString()}: ${c.length} order${c.length === 1 ? "" : "s"}, ${money(c.reduce((s, o) => s + Number(o.amount || 0), 0))}"></div>`).join("");
+    const total = counts.flat();
+    $("chart-total").textContent = `${total.length} order${total.length === 1 ? "" : "s"} · ${money(total.reduce((s, o) => s + Number(o.amount || 0), 0))}`;
+    $("chart-start").textContent = days[0].toLocaleDateString();
+}
+function exportOrders() { downloadCsv("rotaidem-orders.csv", [["id", "customer", "email", "product", "amount", "payment", "date"], ...state.orders.map(o => [o.id, o.customer_name, o.customer_email, o.product_id, o.amount, o.payment_status, o.created_at])]); }
+function exportUsers() { downloadCsv("rotaidem-users.csv", [["id", "name", "email", "role", "joined"], ...state.users.map(u => [u.id, u.name, u.email, u.role, u.created_at])]); }
+function exportLicenses() { downloadCsv("rotaidem-licences.csv", [["key", "product", "email", "status", "computers_used", "computers_max", "note", "created"], ...(state.licenses || []).map(l => [l.license_key, l.product_id, l.email, l.status, l.activations, l.max_activations, l.note, l.created_at])]); }
 
 // users
 async function loadUsers() {
     state.users = (await api("/api/admin/customers")).customers || [];
-    document.getElementById("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
+    $("c-users").textContent = state.users.length || "";
+    $("user-emails").innerHTML = state.users.map(u => `<option value="${esc(u.email)}">${esc(u.name)}</option>`).join("");
+    $("o-customer").innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.email)})</option>`).join("");
     renderUsers();
 }
 function renderUsers() {
     const q = val("user-search").toLowerCase();
     const list = state.users.filter(u => !q || (u.name + " " + u.email).toLowerCase().includes(q));
     const roles = ["Customer", "Support", "Admin", "Owner"];
-    document.getElementById("users-list").innerHTML = list.length ? list.map(u => {
+    $("users-list").innerHTML = list.length ? list.map(u => {
         const role = state.role === "Owner"
-            ? `<select style="width:auto;padding:6px 10px" onchange="setRole(${u.id}, this.value, this)">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
+            ? `<select style="width:auto;padding:6px 10px" data-role="${u.id}">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
             : esc(u.role);
-        return `<tr><td><strong>${esc(u.name)}</strong></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
+        return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
     }).join("") : empty(4, "No users found.");
 }
-document.getElementById("user-search").oninput = renderUsers;
-async function setRole(id, role, el) {
-    if (!confirm("Change this user's role to " + role + "?")) { renderUsers(); return; }
-    try { await api(`/api/admin/users/${id}/role`, { method: "POST", body: JSON.stringify({ role }) }); toast("Role updated"); loadUsers(); loadOverview(); }
-    catch (err) { toast(err.message, true); renderUsers(); }
+$("user-search").oninput = renderUsers;
+$("users-list").onclick = e => { const b = e.target.closest("[data-user]"); if (b) openUser(Number(b.dataset.user)); };
+async function openUser(id) {
+    try {
+        const u = (await api("/api/admin/users/" + id)).user;
+        $("um-name").textContent = u.name;
+        $("um-meta").textContent = `${u.email} · ${u.role} · joined ${String(u.created_at || "").slice(0, 10)}`;
+        $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
+        $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
+        $("um-mail").href = "mailto:" + u.email;
+        $("um-license").onclick = () => { $("user-modal").classList.remove("show"); showTab("licenses"); $("l-email").value = u.email; $("l-count").value = 1; $("l-email").focus(); };
+        $("um-delete").style.display = state.role === "Owner" && u.id !== state.me ? "" : "none";
+        $("um-delete").onclick = async () => {
+            $("user-modal").classList.remove("show");
+            if (!await confirmBox("Delete " + u.name + "?", "The account is removed. Their orders and licence keys are kept.", "Delete user", true)) return;
+            try { await api("/api/admin/users/" + id, { method: "DELETE" }); toast("User deleted"); loadUsers(); loadOverview(); } catch (err) { toast(err.message, true); }
+        };
+        $("user-modal").classList.add("show");
+    } catch (err) { toast(err.message, true); }
 }
+$("users-list").onchange = async e => {
+    const sel = e.target.closest("[data-role]"); if (!sel) return;
+    if (!await confirmBox("Change role to " + sel.value + "?", "The user will be signed out and get the new permissions next time they log in.", "Change role")) { renderUsers(); return; }
+    try { await post(`/api/admin/users/${sel.dataset.role}/role`, { role: sel.value }); toast("Role updated"); loadUsers(); loadOverview(); }
+    catch (err) { toast(err.message, true); renderUsers(); }
+};
 
 // messages
 async function loadMessages() {
     const msgs = (await api("/api/admin/messages")).messages || [];
-    document.getElementById("messages-list").innerHTML = msgs.length ? msgs.map(m =>
-        `<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><strong>${esc(m.name || "Anonymous")}</strong> <a class="muted" href="mailto:${esc(m.email)}">${esc(m.email)}</a></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
-        `<p style="white-space:pre-line;margin:14px 0">${esc(m.message)}</p><div style="display:flex;gap:8px"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div>`
-    ).join("") : '<div class="empty">Inbox zero.</div>';
-    document.getElementById("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
+    $("messages-list").innerHTML = msgs.length ? msgs.map(m =>
+        `<div class="panel" style="margin-bottom:16px"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
+        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p><div class="actions" style="justify-content:flex-start"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div></div>`
+    ).join("") : '<div class="empty">No messages. Everything is answered.</div>';
+    $("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
 }
 async function deleteMessage(id) {
-    if (!confirm("Delete this message?")) return;
-    try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
+    if (!await confirmBox("Delete this message?", "It will be removed from the inbox.", "Delete", true)) return;
+    try { await api("/api/admin/messages/" + id, { method: "DELETE" }); toast("Message deleted"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 
+// licences
+async function loadLicenses() {
+    state.licenses = (await api("/api/admin/licenses")).licenses || [];
+    $("c-licenses").textContent = state.licenses.filter(l => l.status === "active").length || "";
+    renderLicenses();
+}
+function renderLicenses() {
+    const q = val("lic-search").toLowerCase();
+    const list = (state.licenses || []).filter(l => !q || [l.license_key, l.email, l.note, l.product_id].join(" ").toLowerCase().includes(q));
+    $("lic-list").innerHTML = list.length ? list.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span>${l.note ? `<div class="muted" style="font-size:13px">${esc(l.note)}</div>` : ""}</td><td>${esc(l.product_id)}</td><td>${esc(l.email || "-")}</td>` +
+        `<td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td class="muted">${date(l.created_at)}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(l.license_key)}">Copy</button><button class="btn btn-ghost btn-sm" data-lic="${l.id}">Manage</button></div></td></tr>`).join("")
+        : empty(7, (state.licenses || []).length ? "No licences match your search." : "No licences yet. Create some above or with the License Generator.");
+}
+$("lic-search").oninput = renderLicenses;
+$("lic-list").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.copy) navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Copied " + b.dataset.copy));
+    if (b.dataset.lic) openLicense(Number(b.dataset.lic));
+};
+$("lic-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const r = await post("/api/admin/licenses/generate", { product_id: val("l-product") || "heavypro", prefix: val("l-prefix"), count: Number(val("l-count")) || 1, max_activations: Number(val("l-max")) || 2, email: val("l-email"), note: val("l-note"), send_email: $("l-send").checked });
+        $("l-keys").textContent = r.keys.join("\n"); $("l-out").style.display = "block";
+        const made = `Created ${r.keys.length} key${r.keys.length === 1 ? "" : "s"}`;
+        if (r.email_error) toast(`${made}, but the email failed: ${r.email_error}`, true);
+        else toast(r.emailed && r.emailed.length ? `${made} and emailed ${r.keys.length === 1 ? "it" : "them"} to ${r.emailed[0]}` : made);
+        loadLicenses(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("l-copy").onclick = () => navigator.clipboard.writeText($("l-keys").textContent).then(() => toast("Keys copied"));
+$("l-file").onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const rows = (await file.text()).split(/\r?\n/).filter(Boolean);
+    const head = rows.shift().split(",").map(h => h.trim().toLowerCase());
+    const col = n => head.indexOf(n);
+    const cells = line => { const out = []; let cur = "", q = false; for (const ch of line) { if (ch === '"') q = !q; else if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; } out.push(cur); return out; };
+    const licenses = rows.map(cells).map(c => ({ key: c[col("key")], product_id: c[col("product")] || "heavypro", email: col("email") >= 0 ? c[col("email")] : "", max_activations: Number(c[col("max_activations")]) || 2, note: col("note") >= 0 ? c[col("note")] : "" }));
+    const msg = $("l-import-msg");
+    try {
+        const r = await post("/api/licenses/import", { licenses, send_email: $("l-file-send").checked });
+        msg.className = r.email_error ? "msg error" : "msg ok";
+        msg.textContent = `Imported ${r.created.length}. Already registered: ${r.skipped.length}. Not valid: ${r.invalid.length}.` + (r.emailed && r.emailed.length ? ` Emailed ${r.emailed.length} customer(s).` : "") + (r.email_error ? ` Email problems: ${r.email_error}` : "");
+        loadLicenses(); loadAudit();
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+    e.target.value = "";
+};
+async function openLicense(id) {
+    try {
+        const l = (await api("/api/admin/licenses/" + id)).license;
+        $("ld-key").textContent = l.license_key;
+        $("ld-meta").textContent = `${l.product_id} · created ${String(l.created_at || "").slice(0, 10)}${l.created_by ? " by " + l.created_by : ""}`;
+        $("ld-email").value = l.email || ""; $("ld-max").value = l.max_activations; $("ld-note").value = l.note || "";
+        if (![...$("ld-product").options].some(o => o.value === l.product_id)) $("ld-product").insertAdjacentHTML("beforeend", `<option value="${esc(l.product_id)}">${esc(l.product_id)}</option>`);
+        $("ld-product").value = l.product_id;
+        $("ld-machines").innerHTML = l.machines.length ? l.machines.map(m => `<tr><td>${esc(m.machine_name || "Unknown computer")}<div class="muted key" style="font-size:12px">${esc(m.machine_id)}</div></td><td class="muted">Last seen ${date(m.last_seen)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-act="${m.id}">Remove</button></div></td></tr>`).join("") : empty(3, "Not activated on any computer yet.");
+        $("ld-status").textContent = l.status === "active" ? "Revoke key" : "Restore key";
+        $("ld-status").className = "btn " + (l.status === "active" ? "btn-danger" : "btn-ghost");
+        const save = async extra => { await post("/api/admin/licenses/" + id, { email: val("ld-email"), max_activations: Number(val("ld-max")) || 1, note: val("ld-note"), product_id: $("ld-product").value, ...extra }); loadLicenses(); loadAudit(); };
+        $("ld-save").onclick = async () => { try { await save({}); toast("Licence saved"); $("lic-modal").classList.remove("show"); } catch (err) { toast(err.message, true); } };
+        $("ld-status").onclick = async () => {
+            const revoke = l.status === "active";
+            $("lic-modal").classList.remove("show");
+            if (revoke && !await confirmBox("Revoke " + l.license_key + "?", "HeavyPro stops working on every computer that uses this key the next time it checks.", "Revoke", true)) { $("lic-modal").classList.add("show"); return; }
+            try { await save({ status: revoke ? "revoked" : "active" }); toast(revoke ? "Key revoked" : "Key restored"); } catch (err) { toast(err.message, true); }
+        };
+        $("ld-email-btn").onclick = async () => {
+            try {
+                if (val("ld-email") !== (l.email || "")) await save({});
+                const r = await post(`/api/admin/licenses/${id}/email`, { email: val("ld-email") });
+                toast("Key emailed to " + r.emailed[0]); loadAudit();
+            } catch (err) { toast(err.message, true); }
+        };
+        $("ld-machines").onclick = async e => {
+            const b = e.target.closest("[data-act]"); if (!b) return;
+            try { await api(`/api/admin/licenses/${id}/activations/${b.dataset.act}`, { method: "DELETE" }); toast("Computer removed"); openLicense(id); loadLicenses(); } catch (err) { toast(err.message, true); }
+        };
+        $("lic-modal").classList.add("show");
+    } catch (err) { toast(err.message, true); }
+}
+
+// website: banner and image slots
+const SLOT_INFO = {
+    hero: ["Home page, top", "Big picture behind Welcome to Rotaidem"],
+    feature: ["Home page, HeavyPro section", "Picture next to A joystick is not a yoke"],
+    heavypro: ["HeavyPro page, top", "Banner on the HeavyPro page"],
+    header: ["Page headers", "Band behind the title on inner pages"],
+    login: ["Log in and sign up", "Side panel next to the form"],
+    about: ["About page", "Picture on the About page"],
+    product: ["Products without a picture", "Used when a product has no cover image"],
+};
+async function loadSite() {
+    state.site = await api("/api/admin/settings");
+    const a = state.site.announcement || {};
+    $("b-text").value = a.text || ""; $("b-link").value = a.link || ""; $("b-on").checked = !!a.enabled;
+    renderSlots();
+}
+function renderSlots() {
+    const imgs = state.site.images, defs = state.site.defaults;
+    $("slots").innerHTML = Object.keys(SLOT_INFO).map(k => `<div class="slot"><img src="${esc(safeImage(imgs[k]))}" alt=""><h3>${SLOT_INFO[k][0]}</h3><p>${SLOT_INFO[k][1]}${imgs[k] === defs[k] ? " · default" : ""}</p>
+        <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" data-slot-up="${k}">Upload</button><button class="btn btn-ghost btn-sm" data-slot-lib="${k}">Library</button><button class="btn btn-ghost btn-sm" data-slot-link="${k}">Link</button>${imgs[k] !== defs[k] ? `<button class="btn btn-ghost btn-sm" data-slot-reset="${k}">Reset</button>` : ""}</div></div>`).join("");
+}
+async function saveSlot(slot, url) {
+    try {
+        const images = { ...state.site.images, [slot]: url };
+        state.site = await post("/api/admin/settings", { images });
+        renderSlots(); toast("Image updated on the website"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+}
+$("slots").onclick = async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.slotUp) { const [u] = await uploadImages(await chooseFiles(false)); if (u) saveSlot(b.dataset.slotUp, u); }
+    if (b.dataset.slotLib) { const u = await pickImage(); if (u) saveSlot(b.dataset.slotLib, u); }
+    if (b.dataset.slotLink) { const u = (prompt("Image link (https://)") || "").trim(); if (u) saveSlot(b.dataset.slotLink, u); }
+    if (b.dataset.slotReset) saveSlot(b.dataset.slotReset, state.site.defaults[b.dataset.slotReset]);
+};
+$("banner-form").onsubmit = async e => {
+    e.preventDefault();
+    try { state.site = await post("/api/admin/settings", { announcement: { text: val("b-text"), link: val("b-link"), enabled: $("b-on").checked } }); toast($("b-on").checked ? "Banner is live" : "Banner saved (hidden)"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+
+// media library
+async function loadMedia() {
+    state.media = (await api("/api/admin/media")).media || [];
+    $("c-media").textContent = state.media.length || "";
+    const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+    $("media-grid").innerHTML = state.media.length ? state.media.map(m => `<div><div class="img-tile"><img src="${esc(m.url)}" alt="" loading="lazy"><button class="rm" type="button" data-media-del="${m.id}" title="Delete">×</button></div>
+        <div style="font-size:12px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.filename)}</div><div class="muted" style="font-size:12px">${m.width ? m.width + "×" + m.height + " · " : ""}${kb(m.size)} · <button class="linkish" style="font-weight:400" data-media-copy="${esc(m.url)}">Copy link</button></div></div>`).join("")
+        : '<p class="muted" style="margin:0">No images yet.</p>';
+}
+$("media-file").onchange = async () => { await uploadImages($("media-file").files); $("media-file").value = ""; };
+const dz = $("dropzone");
+dz.ondragover = e => { e.preventDefault(); dz.classList.add("over"); };
+dz.ondragleave = () => dz.classList.remove("over");
+dz.ondrop = async e => { e.preventDefault(); dz.classList.remove("over"); await uploadImages(e.dataTransfer.files); };
+$("media-grid").onclick = async e => {
+    const c = e.target.closest("[data-media-copy]");
+    if (c) { navigator.clipboard.writeText(location.origin + c.dataset.mediaCopy).then(() => toast("Link copied")); return; }
+    const d = e.target.closest("[data-media-del]"); if (!d) return;
+    if (!await confirmBox("Delete this image?", "Pages or products that use it will show the default picture instead.", "Delete", true)) return;
+    try { await api("/api/admin/media/" + d.dataset.mediaDel, { method: "DELETE" }); toast("Image deleted"); loadMedia(); } catch (err) { toast(err.message, true); }
+};
+
+$("backup-btn").onclick = async () => {
+    try {
+        const r = await fetch("/api/admin/backup", { headers: H });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Backup failed");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await r.blob());
+        a.download = "rotaidem-backup-" + new Date().toISOString().slice(0, 10) + ".json"; a.click();
+        loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    document.getElementById("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(l.action)}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
+    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber" }[a] || a);
+    $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
+    $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
 
 (async () => {
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
-    openProduct(undefined, true);
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit()].map(p => p.catch(err => toast(err.message, true))));
-    const start = location.hash.slice(1);
-    if (start && document.getElementById("pane-" + start)) showTab(start);
+    api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite()].map(p => p.catch(err => toast(err.message, true))));
+    refreshAudience();
+    showTab(location.hash.slice(1) || "dashboard");
 })();
 </script>
 </body>
