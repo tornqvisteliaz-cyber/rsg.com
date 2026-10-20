@@ -44,14 +44,34 @@ def fail(message):
     out("Status: 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + message + "\n")
 
 
+def web_user_report(config_path):
+    """Who the web server runs CGI programs as, compared with who owns the settings. No secrets."""
+    try:
+        st = os.stat(config_path)
+    except OSError:
+        try:
+            st = os.stat(os.path.dirname(config_path))  # a private folder hides the file; its owner is the same
+        except OSError as exc:
+            return False, f"Kan inte läsa {config_path}: {exc}"
+    uid, groups = os.getuid(), set(os.getgroups()) | {os.getgid()}
+    if uid == st.st_uid:
+        return True, f"Webbservern kör programmet som ditt eget konto (användare {uid}). Inställningarna kan vara privata (600)."
+    if st.st_gid in groups:
+        return False, (f"Webbservern kör som användare {uid}, filerna ägs av {st.st_uid}, men ni delar grupp {st.st_gid}. "
+                       "Kör över SSH:  python3 rotaidem/strato/setup.py permissions group")
+    return False, (f"Webbservern kör som användare {uid}, filerna ägs av {st.st_uid} och ni delar ingen grupp. "
+                   "Då kan hemligheterna inte skyddas från andra kunder på servern. Gör inte filerna läsbara för alla; "
+                   "fråga STRATO om CGI kan köras som ditt eget konto.")
+
+
 def run(app_dir, config_path):
+    os.umask(0o077)  # files the program creates (SQLite journal, database) stay private
     try:
         prepare(app_dir, config_path)
         from server import app
     except PermissionError:
         traceback.print_exc()
-        fail("Rotaidem: the web server may not read the settings file " + config_path + ".\n"
-             "Fix: log in with SSH and run:  python3 rotaidem/strato/setup.py permissions")
+        fail("Rotaidem: the web server may not read the settings file.\n\n" + web_user_report(config_path)[1])
         return
     except Exception:  # noqa: BLE001 - show the reason instead of a bare "500"
         traceback.print_exc()
@@ -116,11 +136,12 @@ def run_check(app_dir, config_path):
     import urllib.parse
     from urllib.request import urlopen
 
+    os.umask(0o077)
     query = urllib.parse.parse_qs(os.environ.get("QUERY_STRING", ""))
     try:
         values = load_config(config_path)
     except Exception as exc:  # noqa: BLE001
-        fail(f"Kan inte läsa inställningarna ({exc}).\nKör över SSH:  python3 rotaidem/strato/setup.py permissions")
+        fail(f"Kan inte läsa inställningarna ({exc}).\n\n{web_user_report(config_path)[1]}")
         return
     if not values.get("CHECK_KEY") or not hmac.compare_digest(query.get("key", [""])[0], values["CHECK_KEY"]):
         out("Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot found\n")
@@ -132,10 +153,14 @@ def run_check(app_dir, config_path):
 
     rows = [("Python", sys.version_info >= (3, 8), f"{platform.python_version()} ({sys.executable}), användare {os.getuid()}")]
     rows.append(("Inställningar", True, config_path))
+    rows.append(("Webbserverns användare", *web_user_report(config_path)))
+    mode = os.stat(config_path).st_mode & 0o777
+    rows.append(("Inställningarna är privata", mode & 0o007 == 0, f"behörighet {mode:o} (ska vara 600 eller 640)"))
     try:
         prepare(app_dir, config_path)
         import flask
-        rows.append(("Flask", True, getattr(flask, "__version__", "")))
+        from importlib.metadata import version
+        rows.append(("Flask", True, f"{version('flask')} från {os.path.dirname(os.path.dirname(flask.__file__))}"))
         import server
         rows.append(("Programmet startar", True, "server.py"))
         server.ensure_schema()
@@ -150,12 +175,13 @@ def run_check(app_dir, config_path):
     except Exception as exc:  # noqa: BLE001
         rows.append(("Programmet eller databasen", False, f"{type(exc).__name__}: {exc}"))
     if values.get("RESEND_API_KEY"):
+        resend = values.get("RESEND_API_URL", "https://api.resend.com")
         try:
-            urlopen("https://api.resend.com", timeout=15).close()
-            rows.append(("E-post (Resend) kan nås", True, "api.resend.com"))
+            urlopen(resend, timeout=15).close()
+            rows.append(("E-post (Resend) kan nås", True, resend))
         except Exception as exc:  # noqa: BLE001
             ok = getattr(exc, "code", None) is not None  # any HTTP answer means the connection works
-            rows.append(("E-post (Resend) kan nås", ok, "api.resend.com" if ok else str(exc)))
+            rows.append(("E-post (Resend) kan nås", ok, resend if ok else str(exc)))
     else:
         rows.append(("E-post", True, "Ingen RESEND_API_KEY angiven: licensmejl och utskick är avstängda."))
 

@@ -5,9 +5,10 @@ Run over SSH from the webspace folder that contains the uploaded "rotaidem" fold
     python3 rotaidem/strato/setup.py              first installation (asks questions)
     python3 rotaidem/strato/setup.py update       after uploading a new version
     python3 rotaidem/strato/setup.py check        tests the settings and the database
-    python3 rotaidem/strato/setup.py permissions  if the web server may not read the settings
+    python3 rotaidem/strato/setup.py permissions  makes the settings and database private again
     python3 rotaidem/strato/setup.py password     sets a new password for an account
     python3 rotaidem/strato/setup.py import FILE  loads a backup downloaded from the old site
+    python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
 """
 import getpass
 import json
@@ -17,6 +18,7 @@ import secrets
 import shutil
 import sys
 import urllib.request
+from datetime import datetime
 
 STRATO_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(STRATO_DIR)
@@ -176,6 +178,17 @@ def install_files(public_dir, data_dir):
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
+    # The web server must be able to read the public pages, whatever modes the upload left behind.
+    for name in os.listdir(PUBLIC_SRC):
+        top = os.path.join(public_dir, name)
+        if name in SKIP_PUBLIC:
+            continue
+        if os.path.isfile(top):
+            os.chmod(top, 0o644)
+        for root, dirs, files in os.walk(top):
+            os.chmod(root, 0o755)
+            for f in files:
+                os.chmod(os.path.join(root, f), 0o644)
 
     htaccess = os.path.join(public_dir, ".htaccess")
     if os.path.exists(htaccess):
@@ -203,7 +216,57 @@ def prepare_database(data_dir):
     d = server.DB()
     users = d.first("SELECT COUNT(*) AS n FROM users")["n"]
     d.close()
+    secure_data(data_dir)
     say(f"  Databasen fungerar. Konton just nu: {users}")
+
+
+def secure_data(data_dir, group=False):
+    """Only your own account may open the settings and the SQLite database (with group=True also your
+    group). Never other users: on shared hosting those are other customers."""
+    sqlite = not cgi_app.load_config(config_path(data_dir)).get("MYSQL_HOST")
+    # SQLite writes a journal file next to the database, so the folder itself must be writable.
+    dir_mode = (0o770 if sqlite else 0o750) if group else 0o700
+    os.chmod(data_dir, dir_mode)
+    for name in os.listdir(data_dir):
+        path = os.path.join(data_dir, name)
+        if not os.path.isfile(path):
+            continue
+        if name == ".htaccess":
+            os.chmod(path, 0o644)  # holds no secrets; Apache may need to read it
+        elif name.startswith("rotaidem.db"):
+            os.chmod(path, 0o660 if group else 0o600)
+        else:
+            os.chmod(path, 0o640 if group else 0o600)
+
+
+def ensure_owner(data_dir, name, email, password):
+    """Create (or reset) the Owner account directly, so no password has to be stored in config.env."""
+    server = connect(data_dir)
+    d = server.DB()
+    row = d.first("SELECT id FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", email.lower(), name.lower())
+    if row:
+        d.run("UPDATE users SET name = ?, email = ?, password_hash = ?, role = 'Owner', token = NULL WHERE id = ?",
+              name, email, server.hash_password(password), row["id"])
+    else:
+        d.run("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'Owner')",
+              name, email, server.hash_password(password))
+    d.close()
+    say(f"  Administratörskontot {name} är klart.")
+
+
+def install(public_dir, data_dir, values, owner=None):
+    """Everything after the questions: used by cmd_install and by the automated tests."""
+    os.makedirs(data_dir, exist_ok=True)
+    os.chmod(data_dir, 0o700)
+    cfg = config_path(data_dir)
+    if not os.path.exists(cfg) or values != cgi_app.load_config(cfg):
+        write_config(cfg, values)
+        say(f"Inställningarna sparades i {cfg}")
+    save_location(public_dir, data_dir)
+    install_files(public_dir, data_dir)
+    prepare_database(data_dir)
+    if owner:
+        ensure_owner(data_dir, *owner)
 
 
 # ---------- commands ----------
@@ -257,9 +320,8 @@ def cmd_install():
             break
         say(f"  Hittar inte {public_dir}. Kontrollera stavningen.")
     data_dir = DEFAULT_DATA_DIR
-    os.makedirs(data_dir, exist_ok=True)
-    os.chmod(data_dir, 0o700)
     cfg = config_path(data_dir)
+    owner = None
 
     if os.path.exists(cfg) and ask_yes("Det finns redan inställningar. Behålla dem?"):
         values = cgi_app.load_config(cfg)
@@ -269,10 +331,9 @@ def cmd_install():
         if "MYSQL_HOST" not in values:
             values["DATA_DIR"] = data_dir
         say()
-        say("Ditt administratörskonto (används första gången du loggar in på /login):")
-        values["ADMIN_USERNAME"] = ask("Användarnamn", "eliaz")
-        values["ADMIN_EMAIL"] = ask("E-post", "Eliaz@rotaidem.com")
-        values["ADMIN_PASSWORD"] = ask_secret("Lösenord, minst 8 tecken (syns inte när du skriver)", 8, confirm=True)
+        say("Ditt administratörskonto (lösenordet sparas bara krypterat i databasen):")
+        owner = (ask("Användarnamn", "eliaz"), ask("E-post", "Eliaz@rotaidem.com"),
+                 ask_secret("Lösenord, minst 8 tecken (syns inte när du skriver)", 8, confirm=True))
         say()
         values["SITE_URL"] = ask("Webbplatsens adress", "https://rotaidem.com")
         say()
@@ -284,12 +345,8 @@ def cmd_install():
         say()
         say("Nyckeln som licensgeneratorn använder. Har du en från Render, klistra in samma.")
         values["LICENSE_API_KEY"] = ask("LICENSE_API_KEY (Enter = skapa en ny)") or secrets.token_hex(24)
-        write_config(cfg, values)
-        say(f"Inställningarna sparades i {cfg}")
 
-    save_location(public_dir, data_dir)
-    install_files(public_dir, data_dir)
-    prepare_database(data_dir)
+    install(public_dir, data_dir, values, owner)
     finish(values)
 
 
@@ -321,7 +378,8 @@ def cmd_check():
     cgi_app.prepare(APP_DIR, cfg)  # also puts strato/vendor on the path, as the website does
     try:
         import flask
-        say(f"Flask:             {getattr(flask, '__version__', 'ok')}")
+        from importlib.metadata import version
+        say(f"Flask:             {version('flask')} ({os.path.dirname(flask.__file__)})")
     except ImportError:
         say("Flask:             SAKNAS. Se felsökning i STRATO.md.")
     prepare_database(loc["data_dir"])
@@ -335,19 +393,37 @@ def cmd_check():
     say(f"Kontrollsida: {site}/cgi-bin/rotaidem-check.py?key={values.get('CHECK_KEY', '')}")
 
 
-def cmd_permissions():
+def cmd_permissions(mode):
     loc = load_location()
-    cfg = config_path(loc["data_dir"])
-    os.chmod(loc["data_dir"], 0o755)
-    os.chmod(cfg, 0o644)
-    say("Webbservern får nu läsa inställningarna (mappen skyddas fortfarande av .htaccess).")
-    values = cgi_app.load_config(cfg)
-    if not values.get("MYSQL_HOST"):
-        os.chmod(loc["data_dir"], 0o777)
-        db_file = os.path.join(loc["data_dir"], "rotaidem.db")
-        if os.path.exists(db_file):
-            os.chmod(db_file, 0o666)
-        say("SQLite-filen får nu skrivas av webbservern.")
+    if mode == "group":
+        secure_data(loc["data_dir"], group=True)
+        say("Ditt konto och din grupp får läsa inställningarna. Andra användare får det inte.")
+        say("Använd bara detta om kontrollsidan säger att webbservern är med i din grupp.")
+    else:
+        secure_data(loc["data_dir"])
+        say("Bara ditt eget konto får läsa inställningarna och databasfilen (700/600).")
+    say("Filerna görs aldrig läsbara för alla: på ett delat webbhotell vore det andra kunder.")
+
+
+def cmd_reset_catalog():
+    loc = load_location()
+    server = connect(loc["data_dir"])
+    server.ensure_schema()
+    d = server.DB()
+    products = d.all("SELECT * FROM products")
+    if not products:
+        say("Produktkatalogen är redan tom. Inget ändrades.")
+        return
+    say(f"Detta tar bort alla {len(products)} produkter från webbplatsen: " + ", ".join(p["name"] or p["id"] for p in products))
+    say("Konton, beställningar, licenser och bilder påverkas inte.")
+    if input("Skriv JA för att ta bort produkterna: ").strip() != "JA":
+        say("Avbrutet. Inget ändrades.")
+        return
+    copy = os.path.join(loc["data_dir"], f"products-before-reset-{datetime.now():%Y%m%d-%H%M%S}.json")
+    write_file(copy, json.dumps(products, indent=2, default=str) + "\n", 0o600)
+    d.run("DELETE FROM products")
+    d.close()
+    say(f"Produkterna är borttagna. En kopia sparades i {copy}")
 
 
 def cmd_password():
@@ -407,6 +483,7 @@ def main():
     if sys.version_info < (3, 8):
         say("Python 3.8 eller nyare behövs. Skriv python3, inte python.")
         sys.exit(1)
+    os.umask(0o077)  # anything this program creates is private unless chmod'ed on purpose
     args = sys.argv[1:]
     command = args[0] if args else "install"
     if command == "install":
@@ -416,7 +493,9 @@ def main():
     elif command == "check":
         cmd_check()
     elif command == "permissions":
-        cmd_permissions()
+        cmd_permissions(args[1] if len(args) > 1 else "strict")
+    elif command == "reset-catalog":
+        cmd_reset_catalog()
     elif command == "password":
         cmd_password()
     elif command == "import" and len(args) == 2:

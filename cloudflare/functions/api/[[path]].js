@@ -83,12 +83,7 @@ async function ensure(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS subscribers (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS media (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT, mime TEXT, data TEXT, size INTEGER DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
-  // One-time wipe of the old catalog for the HeavyPro relaunch.
-  const reset = await env.DB.prepare("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'").first();
-  if (!reset) {
-    await env.DB.prepare("DELETE FROM products").run();
-    await env.DB.prepare("INSERT INTO meta (key, value) VALUES ('catalog_reset_heavypro', ?)").bind(new Date().toISOString()).run();
-  }
+  // Never delete data here: this runs on every request that starts a new worker.
 }
 
 async function login(request, env) {
