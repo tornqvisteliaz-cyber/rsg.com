@@ -4,7 +4,7 @@ Home of HeavyPro, a control-feel app for Microsoft Flight Simulator 2024. All ri
 
 The site lives in `cloudflare/public` (static pages) and has one API with two interchangeable backends:
 
-- `server.py`: Flask, for Python hosts such as **Starto** (also Docker / Procfile).
+- `server.py`: Flask. Runs on **STRATO Webhosting** as a CGI script (see [STRATO.md](STRATO.md)), or with Gunicorn on Render, Docker or any Procfile host.
 - `cloudflare/functions/api/[[path]].js`: Cloudflare Pages Functions with D1 (see `cloudflare/README.md`).
 
 ## Deploy on Render (quickest way to try the backend)
@@ -31,7 +31,11 @@ Sending uses [Resend](https://resend.com). Set these environment variables:
 
 HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator program in `licensing/`, or in Admin → **Licences**, and activated by the app and installer through `/api/licenses/*`. Set `LICENSE_API_KEY` on the server so the generator can register keys. When a customer email is filled in (admin panel, generator, or an order with a licence), the key is emailed to the customer automatically. See [licensing/README.md](licensing/README.md).
 
-## Deploy on Starto
+## Deploy on STRATO Webhosting
+
+No Gunicorn and no server process: Apache runs the Flask app as a CGI script per request, with STRATO's MySQL database. Step-by-step guide in Swedish: [STRATO.md](STRATO.md). The files are in `strato/`.
+
+## Deploy on a Python host with Gunicorn
 
 1. Create a Python app from this repository.
 2. Start command (also in `Procfile`):
@@ -42,7 +46,7 @@ HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator pro
 
 3. Environment variables:
    - `ADMIN_EMAIL`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`: the first login with these creates the Owner account.
-   - `DATABASE_URL`: PostgreSQL URL (recommended). Without it the app uses SQLite at `DATA_DIR/rotaidem.db`.
+   - `DATABASE_URL`: PostgreSQL URL (recommended), or `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` for MySQL/MariaDB. Without either the app uses SQLite at `DATA_DIR/rotaidem.db`.
    - `DATA_DIR`: only for SQLite; point it at a persistent volume, never the ephemeral container disk.
 4. Health check path: `/health`.
 

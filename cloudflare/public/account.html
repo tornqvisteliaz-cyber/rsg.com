@@ -46,7 +46,7 @@
 <script>
 const token = localStorage.getItem("rsg_token");
 if (!token) location.href = "/login";
-const headers = { "content-type": "application/json", Authorization: "Bearer " + token };
+const headers = { "content-type": "application/json", Authorization: "Bearer " + token, "X-Rotaidem-Token": token };
 
 async function init() {
     const res = await fetch("/api/me", { headers });

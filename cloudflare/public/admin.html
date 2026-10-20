@@ -309,6 +309,8 @@
     </section>
 
     <section class="pane" id="pane-activity" data-title="Activity log">
+        <div class="panel" id="backup-panel" style="margin-bottom:24px;display:none"><div class="panel-head"><h2>Backup</h2><button class="btn btn-ghost btn-sm" type="button" id="backup-btn">Download backup</button></div>
+            <div class="panel-body muted" style="font-size:14px">One file with every account, product, order, licence, image and setting. Keep it somewhere safe; it can also move the site to another host.</div></div>
         <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
     </section>
     </div>
@@ -370,7 +372,7 @@
 <script src="/auth.js"></script>
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
-const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || "") };
+const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || ""), "X-Rotaidem-Token": localStorage.getItem("rsg_token") || "" };
 const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
 const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
 const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -484,7 +486,7 @@ function showTab(name) {
 
 async function loadOverview() {
     const o = await api("/api/admin/overview");
-    state.role = o.role; state.me = o.id; state.emailReady = !!o.email_ready;
+    state.role = o.role; state.me = o.id; $("backup-panel").style.display = o.role === "Owner" ? "" : "none"; state.emailReady = !!o.email_ready;
     $("who-name").textContent = o.name; $("who-role").textContent = o.role;
     $("s-revenue").textContent = money(o.revenue);
     for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
@@ -965,9 +967,19 @@ $("media-grid").onclick = async e => {
     try { await api("/api/admin/media/" + d.dataset.mediaDel, { method: "DELETE" }); toast("Image deleted"); loadMedia(); } catch (err) { toast(err.message, true); }
 };
 
+$("backup-btn").onclick = async () => {
+    try {
+        const r = await fetch("/api/admin/backup", { headers: H });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Backup failed");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await r.blob());
+        a.download = "rotaidem-backup-" + new Date().toISOString().slice(0, 10) + ".json"; a.click();
+        loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", delete_subscriber: "Removed subscriber" }[a] || a);
+    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber" }[a] || a);
     $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
     $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }

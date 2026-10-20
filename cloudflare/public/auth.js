@@ -67,7 +67,7 @@ function paintAuth() {
 
 function rsgLogout() {
     const token = localStorage.getItem("rsg_token");
-    if (token) fetch("/api/logout", { method: "POST", headers: { Authorization: "Bearer " + token } }).catch(() => {});
+    if (token) fetch("/api/logout", { method: "POST", headers: { Authorization: "Bearer " + token, "X-Rotaidem-Token": token } }).catch(() => {});
     localStorage.removeItem("rsg_token");
     localStorage.removeItem("rsg_name");
     localStorage.removeItem("rsg_admin");

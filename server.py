@@ -1,11 +1,12 @@
-"""Rotaidem site for Python hosts such as Starto.
+"""Rotaidem site for Python hosts.
 
 Serves the static site in cloudflare/public and the same /api routes as
 cloudflare/functions/api/[[path]].js, so one codebase runs on Cloudflare
-Pages or on any host that runs `gunicorn server:app`.
+Pages, on hosts that run `gunicorn main:app` (Render, Docker), or as a CGI
+script on shared web hosting such as STRATO (see strato/).
 
-Database: PostgreSQL when DATABASE_URL is set, otherwise SQLite at
-DATA_DIR/rotaidem.db (put DATA_DIR on persistent storage).
+Database: PostgreSQL when DATABASE_URL is set, MySQL/MariaDB when MYSQL_HOST
+is set, otherwise SQLite at DATA_DIR/rotaidem.db (put DATA_DIR on persistent storage).
 """
 import base64
 import hashlib
@@ -32,6 +33,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
 USE_PG = DATABASE_URL.startswith("postgresql://")
+USE_MYSQL = not USE_PG and bool(os.environ.get("MYSQL_HOST"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "instance"))
 STAFF = ("Owner", "Admin", "Support")
 SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
@@ -76,6 +78,18 @@ class DB:
                     if attempt == 4:
                         raise
                     time.sleep(2 ** attempt)
+        elif USE_MYSQL:
+            import pymysql
+            options = dict(host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT") or 3306),
+                           user=os.environ.get("MYSQL_USER", ""), password=os.environ.get("MYSQL_PASSWORD", ""),
+                           database=os.environ.get("MYSQL_DATABASE", ""), charset="utf8mb4",
+                           cursorclass=pymysql.cursors.DictCursor, autocommit=True, connect_timeout=10)
+            try:
+                # TLS whenever the server offers it. It also lets MySQL 8 logins work without the
+                # 'cryptography' package, which shared hosting may not have.
+                self.conn = pymysql.connect(ssl={"check_hostname": False}, **options)
+            except Exception:  # noqa: BLE001 - e.g. an old TLS setup on the server: try without
+                self.conn = pymysql.connect(**options)
         else:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(DATA_DIR / "rotaidem.db")
@@ -83,19 +97,36 @@ class DB:
             self.conn.isolation_level = None
 
     def run(self, sql, *args):
+        if USE_MYSQL:
+            cur = self.conn.cursor()
+            cur.execute(mysql_sql(sql), args or None)
+            return cur
         if USE_PG:
             sql = sql.replace("?", "%s")
         return self.conn.execute(sql, args)
 
     def first(self, sql, *args):
         row = self.run(sql, *args).fetchone()
-        return dict(row) if row else None
+        return plain_row(row) if row else None
 
     def all(self, sql, *args):
-        return [dict(r) for r in self.run(sql, *args).fetchall()]
+        return [plain_row(r) for r in self.run(sql, *args).fetchall()]
 
     def close(self):
         self.conn.close()
+
+
+def mysql_sql(sql):
+    """The queries are written for SQLite/PostgreSQL; adjust the few spots MySQL spells differently."""
+    sql = sql.replace("?", "%s")
+    sql = re.sub(r"ON CONFLICT\s*\(\w+\)\s*DO UPDATE SET", "ON DUPLICATE KEY UPDATE", sql)
+    sql = re.sub(r"\bexcluded\.(\w+)", r"VALUES(\1)", sql)
+    return re.sub(r"(?<![\w.`'])key(?![\w`'])", "`key`", sql)  # meta.key is a reserved word in MySQL
+
+
+def plain_row(row):
+    # MySQL returns DATETIME columns as datetime objects; the site expects "YYYY-MM-DD HH:MM:SS" text.
+    return {k: (v.strftime("%Y-%m-%d %H:%M:%S") if isinstance(v, datetime) else v) for k, v in dict(row).items()}
 
 
 def db():
@@ -111,26 +142,43 @@ def close_db(_exc):
         conn.close()
 
 
+# Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
+# matters on CGI hosting where every request starts a fresh process.
+SCHEMA_VERSION = "2026-10-20"
+
+
 def ensure_schema():
     d = DB()
-    pk = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    now = "CURRENT_TIMESTAMP"
+    try:
+        row = d.first("SELECT value FROM meta WHERE key = 'schema_version'")
+        if row and row["value"] == SCHEMA_VERSION:
+            d.close()
+            return
+    except Exception:  # noqa: BLE001 - first run: the meta table does not exist yet
+        pass
+    if USE_MYSQL:
+        # MySQL needs a length on keys, a real DATETIME for defaults, LONGTEXT for images and 2 decimals for money.
+        pk, ts, ident, big, money = "INT AUTO_INCREMENT PRIMARY KEY", "DATETIME DEFAULT CURRENT_TIMESTAMP", "VARCHAR(191)", "LONGTEXT", "DECIMAL(10,2)"
+        tail = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    else:
+        pk = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        ts, ident, big, money, tail = "TEXT DEFAULT CURRENT_TIMESTAMP", "TEXT", "TEXT", "NUMERIC", ""
     for sql in (
-        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email TEXT UNIQUE, password_hash TEXT, role TEXT DEFAULT 'Customer', token TEXT, created_at TEXT DEFAULT {now})",
-        "CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT, simulator TEXT, version TEXT, folder_name TEXT, download_url TEXT, image_url TEXT, price TEXT, description TEXT, buy_url TEXT, status TEXT, images TEXT, tagline TEXT, features TEXT, sort_order INTEGER DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS liveries (id TEXT PRIMARY KEY, name TEXT, aircraft TEXT, folder_name TEXT, download_url TEXT, image_url TEXT)",
+        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email {ident} UNIQUE, password_hash TEXT, role TEXT DEFAULT 'Customer', token TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS products (id {ident} PRIMARY KEY, name TEXT, simulator TEXT, version TEXT, folder_name TEXT, download_url TEXT, image_url TEXT, price TEXT, description TEXT, buy_url TEXT, status TEXT, images TEXT, tagline TEXT, features TEXT, sort_order INTEGER DEFAULT 0)",
+        f"CREATE TABLE IF NOT EXISTS liveries (id {ident} PRIMARY KEY, name TEXT, aircraft TEXT, folder_name TEXT, download_url TEXT, image_url TEXT)",
         f"CREATE TABLE IF NOT EXISTS posts (id {pk}, title TEXT, content TEXT, image_url TEXT, date TEXT)",
-        f"CREATE TABLE IF NOT EXISTS messages (id {pk}, name TEXT, email TEXT, message TEXT, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount NUMERIC DEFAULT 0, invoice_file TEXT, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT {now})",
-        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
-        f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email TEXT UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT {now}, last_seen TEXT DEFAULT {now}, UNIQUE (license_id, machine_id))",
-        f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data TEXT, size INTEGER, width INTEGER, height INTEGER, created_at TEXT DEFAULT {now})",
-        f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at TEXT DEFAULT {now})",
+        f"CREATE TABLE IF NOT EXISTS messages (id {pk}, name TEXT, email TEXT, message TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount {money} DEFAULT 0, invoice_file TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS meta (key {ident} PRIMARY KEY, value TEXT)",
+        f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email {ident} UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key {ident} UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id {ident}, machine_name TEXT, first_seen {ts}, last_seen {ts}, UNIQUE (license_id, machine_id))",
+        f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
     ):
-        d.run(sql)
+        d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
                           ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT")):
         try:
@@ -141,6 +189,8 @@ def ensure_schema():
     if not d.first("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'"):
         d.run("DELETE FROM products")
         d.run("INSERT INTO meta (key, value) VALUES ('catalog_reset_heavypro', ?)", today())
+    d.run("DELETE FROM meta WHERE key = 'schema_version'")
+    d.run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", SCHEMA_VERSION)
     d.close()
 
 
@@ -161,7 +211,9 @@ def err(message, status):
 
 
 def bearer():
-    return request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    # X-Rotaidem-Token is a copy for web servers that drop the Authorization header before CGI scripts.
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    return token or request.headers.get("X-Rotaidem-Token", "").strip()
 
 
 def current_user():
@@ -1019,6 +1071,31 @@ def media_file(media_id, ext):
         abort(404)
     resp = app.response_class(base64.b64decode(row["data"]), mimetype=row["mime"])
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------- backup ----------
+
+BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
+                 "licenses", "license_activations", "media", "campaigns")
+
+
+def table_columns(d, table):
+    return [c[0] for c in d.run(f"SELECT * FROM {table} LIMIT 0").description]
+
+
+@app.get("/api/admin/backup")
+def admin_backup():
+    """Everything in the database as one JSON file: for safekeeping, or to move to another host
+    (strato/setup.py import loads it)."""
+    user = staff_user()
+    if not user or user["role"] != "Owner":
+        return err("Only the Owner can download a backup", 403)
+    audit(user, "download_backup", "")
+    tables = {t: db().all(f"SELECT * FROM {t} ORDER BY 1") for t in BACKUP_TABLES}
+    resp = app.response_class(json.dumps({"format": "rotaidem-backup-1", "created_at": datetime.now(timezone.utc).isoformat(),
+                                          "tables": tables}, default=str), mimetype="application/json")
+    resp.headers["Content-Disposition"] = f'attachment; filename="rotaidem-backup-{datetime.now():%Y%m%d-%H%M}.json"'
     return resp
 
 
