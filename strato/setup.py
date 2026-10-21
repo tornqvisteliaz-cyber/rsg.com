@@ -274,13 +274,22 @@ Deny from all
 """
 
 
-def cgi_script(target, data_dir):
+ENTRY_POINTS = (("rotaidem.py", "wsgi_app", "run"), ("rotaidem-check.py", "wsgi_check", "run_check"))
+
+
+def cgi_script(wsgi_target, cgi_target, data_dir):
     return f"""#!{CGI_PYTHON}
-# Written by rotaidem/strato/setup.py. Runs the Rotaidem backend once per request (CGI).
+# Written by rotaidem/strato/setup.py: the entry point of the Rotaidem backend.
+# STRATO's new platform imports this file into a FastCGI process and calls `application` (WSGI).
+# Classic CGI hosts run it as a program, once per request (the __main__ part).
 import sys
 sys.path.insert(0, {STRATO_DIR!r})
 import cgi_app
-cgi_app.{target}({APP_DIR!r}, {config_path(data_dir)!r})
+
+application = cgi_app.{wsgi_target}({APP_DIR!r}, {config_path(data_dir)!r})
+
+if __name__ == "__main__":
+    cgi_app.{cgi_target}({APP_DIR!r}, {config_path(data_dir)!r})
 """
 
 
@@ -321,8 +330,8 @@ def install_files(public_dir, data_dir, cgi_htaccess, deploy_id):
     cgi_bin = os.path.join(public_dir, "cgi-bin")
     os.makedirs(cgi_bin, exist_ok=True)
     os.chmod(cgi_bin, 0o755)
-    for name, target in (("rotaidem.py", "run"), ("rotaidem-check.py", "run_check")):
-        write_file(os.path.join(cgi_bin, name), cgi_script(target, data_dir), 0o755)
+    for name, wsgi_target, cgi_target in ENTRY_POINTS:
+        write_file(os.path.join(cgi_bin, name), cgi_script(wsgi_target, cgi_target, data_dir), 0o755)
     cgi_ht = os.path.join(cgi_bin, ".htaccess")
     if cgi_htaccess:
         write_file(cgi_ht, HTACCESS_CGI)
@@ -576,6 +585,17 @@ def run_cgi(script, path, extra_env=None):
     return status, headers, body.decode("utf-8", "replace")
 
 
+def run_wsgi(script, requests):
+    """Call the entry script like STRATO's FastCGI launcher does (see wsgi_probe.py)."""
+    python = CGI_PYTHON if os.path.exists(CGI_PYTHON) else sys.executable
+    env = {**os.environ, "ROTAIDEM_NO_SCHEMA_UPDATE": "1"}
+    p = subprocess.run([python, os.path.join(STRATO_DIR, "wsgi_probe.py"), script], input=json.dumps(requests),
+                       env=env, capture_output=True, text=True, timeout=120)
+    if p.returncode:
+        raise RuntimeError((p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else "no output")
+    return json.loads(p.stdout)
+
+
 def check_layout(r, loc, data_dir, values):
     say("Program and settings")
     if sys.version_info >= (3, 9):
@@ -696,6 +716,19 @@ def check_program(r, loc, data_dir, values):
         else:
             r.fail(f"{path} -> {status or 'no output'}: {body[:160].strip()}",
                    "Details from the private log follow below." if status else "The script printed nothing.")
+    say()
+    say("Program test, STRATO way (imports the script and calls its `application`, like STRATO's FastCGI launcher)")
+    try:
+        replies = run_wsgi(script, [{"path": "/health"}, {"path": "/api/site"}, {"path": "/api/products"}])
+        for path, reply, expect in zip(("/health", "/api/site", "/api/products"), replies,
+                                       ('"database":"ok"', '"announcement"', '"products"')):
+            if reply["status"] == 200 and expect in reply["body"]:
+                r.ok(f"{path} -> 200 {reply['headers'].get('content-type', '')}")
+            else:
+                r.fail(f"{path} -> {reply['status']}: {reply['body'][:160].strip()}", "Details from the private log follow below.")
+    except Exception as exc:  # noqa: BLE001
+        r.fail(f"The script cannot be loaded the STRATO way: {exc}",
+               "Run deploy again: older versions of the entry script had no `application`.")
     for name in ("cgi-error.log", "app-error.log"):
         text = tail(os.path.join(logs, name))
         if text:
@@ -729,8 +762,11 @@ def check_program(r, loc, data_dir, values):
                "Check MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER and MYSQL_PASSWORD in config.env.")
 
 
-def fetch(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": "rotaidem-diagnose/1", "Cache-Control": "no-cache"})
+def fetch(url, timeout=15, data=None):
+    headers = {"User-Agent": "rotaidem-diagnose/1", "Cache-Control": "no-cache"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read(65536).decode("utf-8", "replace"), resp.geturl(), None
@@ -804,6 +840,15 @@ def check_domain(r, loc, values, domain):
                             "Run  python3 rotaidem/strato/setup.py deploy --cgi-htaccess  (if that gives 500, "
                             "undo it with  deploy --no-cgi-htaccess  and ask STRATO whether Python CGI is enabled)")
                 r.fail(f"{base}{path} -> {status or err} ({label})", hint)
+        # Image uploads in the admin are sent as one request of up to a few MB. Without a login the
+        # program answers 403; anything else means the host stopped the request before the program.
+        big = json.dumps({"mime": "image/jpeg", "data": "A" * 1_500_000}).encode()
+        status, _body, _final, err = fetch(f"{base}/api/admin/media", timeout=60, data=big)
+        if status == 403:
+            r.ok(f"{base} accepts 1.5 MB requests (image uploads in the admin fit)")
+        else:
+            r.fail(f"A 1.5 MB request to {base}/api/admin/media -> {status or err}",
+                   "The host limits request size, so uploading larger images in the admin fails. Tell me this line.")
         for path in ("/.htaccess", "/cgi-bin/", "/rotaidem-data/config.env", "/rotaidem/server.py"):
             status, _body, _final, _err = fetch(f"{base}{path}")
             if status == 200:

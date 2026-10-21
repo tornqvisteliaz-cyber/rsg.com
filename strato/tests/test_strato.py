@@ -155,6 +155,15 @@ class Webspace:
         p = subprocess.run([PY, *flags, script_path], input=data, env=env, capture_output=True, timeout=60)
         return Response(p.stdout, p.stderr)
 
+    def wsgi(self, requests, script="rotaidem.py", flags=()):
+        """STRATO's way: import the entry script once and call its `application` for each request."""
+        probe = os.path.join(self.app, "strato", "wsgi_probe.py")
+        p = subprocess.run([PY, *flags, probe, os.path.join(self.public, "cgi-bin", script)], input=json.dumps(requests),
+                           capture_output=True, text=True, timeout=120)
+        if p.returncode:
+            raise AssertionError(p.stdout + p.stderr)
+        return json.loads(p.stdout)
+
     def remove(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -436,6 +445,93 @@ class StratoCGITests:
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=self.owner_token))["user"]["role"], "Owner")
 
 
+    # ---------- STRATO's FastCGI launcher (imports the script, calls `application`) ----------
+
+    def test_strato_fastcgi_mode(self):
+        login = self.w.wsgi([{"method": "POST", "path": "/api/login", "body": {"email": OWNER[0], "password": OWNER[2]}}])[0]
+        self.assertEqual(login["status"], 200, login["body"])
+        token = json.loads(login["body"])["token"]
+        with open(IMAGE, "rb") as fh:
+            image = "data:image/jpeg;base64," + base64.b64encode(fh.read()).decode()
+        replies = self.w.wsgi([
+            {"path": "/health"},
+            {"path": "/api/site", "no_path_info": True},  # PATH_INFO left empty: taken from REQUEST_URI
+            {"path": "/api/me", "headers": {"Authorization": "Bearer " + token}, "redirect_auth": True},
+            {"path": "/api/me", "headers": {"X-Rotaidem-Token": token}},
+            {"path": "/api/admin/overview", "headers": {"Authorization": "Bearer " + token}},
+            {"method": "POST", "path": "/api/admin/media", "headers": {"Authorization": "Bearer " + token},
+             "body": {"filename": "x.jpg", "mime": "image/jpeg", "data": image}},
+            {"path": "/api/admin/overview"},  # no token: refused
+            {"path": "/api/nope"},
+        ])
+        self.assertEqual([r["status"] for r in replies], [200, 200, 200, 200, 200, 200, 403, 404], [r["body"][:120] for r in replies])
+        self.assertEqual(json.loads(replies[0]["body"]), {"ok": True, "database": "ok"})
+        self.assertIn("announcement", replies[1]["body"])
+        self.assertEqual(json.loads(replies[2]["body"])["user"]["role"], "Owner")
+        media_url = json.loads(replies[5]["body"])["url"]
+        served = self.w.wsgi([{"path": media_url}])[0]
+        self.assertEqual((served["status"], served["headers"]["content-type"]), (200, "image/jpeg"))
+        check = self.w.wsgi([{"path": "/cgi-bin/rotaidem-check.py", "query": "key=checkkey123"},
+                             {"path": "/cgi-bin/rotaidem-check.py", "query": "key=wrong"},
+                             {"path": "/cgi-bin/rotaidem-check.py", "query": "key=checkkey123&echo=1",
+                              "headers": {"Authorization": "Bearer x"}, "redirect_auth": True}], script="rotaidem-check.py")
+        self.assertEqual([c["status"] for c in check], [200, 404, 200])
+        self.assertIn("Database can be read and written", check[0]["body"])
+        self.assertIn("FastCGI (application)", check[0]["body"])
+        self.assertNotIn('class="bad"', check[0]["body"].split("From your browser")[0])
+        self.assertTrue(json.loads(check[2]["body"])["REDIRECT_HTTP_AUTHORIZATION"])
+
+    def test_strato_fastcgi_picks_up_changed_settings(self):
+        """The FastCGI process stays loaded: an edited config.env must apply without a restart."""
+        cfg = os.path.join(self.w.data, "config.env")
+        with open(cfg, "rb") as fh:
+            original = fh.read()
+        code = f"""
+import importlib.machinery, importlib.util, io, json, os, sys, time
+sys.path.insert(0, {os.path.join(self.w.app, "strato")!r})
+import wsgi_probe
+script = {os.path.join(self.w.public, "cgi-bin", "rotaidem.py")!r}
+app = wsgi_probe.load(script)
+req = lambda key: wsgi_probe.call(app, script, {{"method": "POST", "path": "/api/licenses/import",
+    "headers": {{"X-License-Api-Key": key}}, "body": {{"licenses": []}}}})["status"]
+before = (req("generator-key-0123456789"), req("a-brand-new-generator-key"))
+time.sleep(0.05)
+text = open({cfg!r}).read().replace("LICENSE_API_KEY=generator-key-0123456789", "LICENSE_API_KEY=a-brand-new-generator-key")
+open({cfg!r}, "w").write(text)
+after = (req("generator-key-0123456789"), req("a-brand-new-generator-key"))
+print(json.dumps([before, after]))
+"""
+        try:
+            p = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(json.loads(p.stdout), [[200, 403], [403, 200]])
+        finally:
+            with open(cfg, "wb") as fh:
+                fh.write(original)
+            os.chmod(cfg, 0o600)
+
+    def test_strato_fastcgi_startup_failure_is_generic(self):
+        vendor = os.path.join(self.w.app, "strato", "vendor")
+        os.rename(vendor, vendor + ".away")
+        try:
+            # Importing the script must still work (the launcher needs `application`); requests get a plain 503.
+            replies = self.w.wsgi([{"path": "/api/site"}, {"path": "/health"}], flags=("-S",))
+        finally:
+            os.rename(vendor + ".away", vendor)
+        for r in replies:
+            self.assertEqual(r["status"], 503)
+            self.assertNotIn("Traceback", r["body"])
+            self.assertNotIn(self.w.app, r["body"])
+        # The next request after the problem is fixed works without restarting anything.
+        self.assertEqual(self.w.wsgi([{"path": "/health"}])[0]["status"], 200)
+
+    def test_entry_scripts_offer_both_ways(self):
+        for name, wsgi_target, cgi_target in (("rotaidem.py", "wsgi_app", "run"), ("rotaidem-check.py", "wsgi_check", "run_check")):
+            with open(os.path.join(self.w.public, "cgi-bin", name)) as fh:
+                text = fh.read()
+            self.assertIn(f"application = cgi_app.{wsgi_target}(", text)
+            self.assertIn(f'if __name__ == "__main__":\n    cgi_app.{cgi_target}(', text)
+
     # ---------- deploy safety ----------
 
     def test_refuses_unsafe_website_folders(self):
@@ -525,6 +621,7 @@ class StratoCGITests:
         self.assertNotIn("[FAIL]", out)
         self.assertIn("choose 'rotaidem-public' as the domain target", out)
         self.assertIn("/health -> 200", out)
+        self.assertIn("Program test, STRATO way", out)
         self.assertIn("Database (read-only)", out)
         after = snapshot()
         self.assertEqual({k: v for k, v in after.items() if "logs" not in k}, {k: v for k, v in before.items() if "logs" not in k})

@@ -1,8 +1,10 @@
 """Runs the Rotaidem Flask app (server.py) as a CGI script.
 
-STRATO Webhosting has no long-running processes, so there is no Gunicorn: Apache starts
-cgi-bin/rotaidem.py for each request to /api/*, /media/* or /health (see the .htaccess written by
-setup.py), and that script calls run() below. Nothing has to be kept running.
+Requests to /api/*, /media/* and /health go to cgi-bin/rotaidem.py (see the .htaccess written by
+setup.py). How that file is run depends on the host, and both ways work:
+- STRATO's new platform imports it into a FastCGI process it manages and calls its `application`
+  (WSGI): see wsgi_app(). Nothing has to be started or kept running by you.
+- Classic CGI hosts start it once per request as a program: see run().
 
 Visitors never see a stack trace. When something breaks, they get a short JSON error and the
 details go to rotaidem-data/logs/ (private), which `setup.py diagnose` prints.
@@ -10,6 +12,7 @@ details go to rotaidem-data/logs/ (private), which `setup.py diagnose` prints.
 import os
 import sys
 import traceback
+import urllib.parse
 from datetime import datetime, timezone
 
 
@@ -42,10 +45,11 @@ def log_dir(config_path):
     return os.path.join(os.path.dirname(config_path), "logs")
 
 
-def log_error(config_path, text):
+def log_error(config_path, text, env=None):
     """Append to the private error log; also to stderr, which Apache keeps in its error log."""
+    env = os.environ if env is None else env
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    entry = f"[{stamp}] {os.environ.get('REQUEST_METHOD', '')} {os.environ.get('PATH_INFO', '')}\n{text.rstrip()}\n\n"
+    entry = f"[{stamp}] {env.get('REQUEST_METHOD', '')} {env.get('PATH_INFO', '')}\n{text.rstrip()}\n\n"
     sys.stderr.write(entry)
     try:
         os.makedirs(log_dir(config_path), mode=0o700, exist_ok=True)
@@ -105,33 +109,109 @@ def attach_error_log(app, config_path):
     app.logger.addHandler(handler)
 
 
-def run(app_dir, config_path):
-    os.umask(0o077)  # files the program creates (logs, SQLite journal) stay private
-    try:
-        prepare(app_dir, config_path)
-        from server import app
-    except PermissionError:
-        log_error(config_path, "The settings file cannot be read.\n" + web_user_report(config_path)[1] + "\n" + traceback.format_exc())
-        unavailable()
-        return
-    except Exception:  # noqa: BLE001 - details to the private log, a plain message to the visitor
-        log_error(config_path, "The program could not start.\n" + traceback.format_exc())
-        unavailable()
-        return
-    attach_error_log(app, config_path)
-
-    env = os.environ
-    # Apache does not hand the Authorization header to CGI scripts; the .htaccess copies it into
-    # a variable, which mod_rewrite renames to REDIRECT_HTTP_AUTHORIZATION after the rewrite.
+def fix_environ(env):
+    """Make the request look the same to Flask however Apache handed it over."""
+    # Apache does not pass the Authorization header to CGI/FastCGI scripts; the .htaccess copies it
+    # into a variable, which mod_rewrite renames to REDIRECT_HTTP_AUTHORIZATION after the rewrite.
     if not env.get("HTTP_AUTHORIZATION"):
         for name in ("REDIRECT_HTTP_AUTHORIZATION", "REDIRECT_REDIRECT_HTTP_AUTHORIZATION"):
             if env.get(name):
                 env["HTTP_AUTHORIZATION"] = env[name]
                 break
     # Requests arrive as /cgi-bin/rotaidem.py/api/...; the app should see just /api/...
+    script = env.get("SCRIPT_NAME") or ""
+    path = env.get("PATH_INFO") or ""
+    if script and path.startswith(script + "/"):
+        path = path[len(script):]
+    if not path:  # some FastCGI setups leave PATH_INFO empty: fall back to the address that was asked for
+        uri = urllib.parse.unquote((env.get("REQUEST_URI") or "").split("?", 1)[0])
+        path = uri[len(script):] if script and uri.startswith(script) else uri
+    env["PATH_INFO"] = path or "/"
     env["SCRIPT_NAME"] = ""
-    env.setdefault("PATH_INFO", "/")
+    return env
 
+
+def load_app(app_dir, config_path, env):
+    """Import server.py's Flask app, or log why not and return None."""
+    os.umask(0o077)  # files the program creates (logs, SQLite journal) stay private
+    try:
+        prepare(app_dir, config_path)
+        from server import app
+    except PermissionError:
+        log_error(config_path, "The settings file cannot be read.\n" + web_user_report(config_path)[1] + "\n" + traceback.format_exc(), env)
+        return None
+    except Exception:  # noqa: BLE001 - details to the private log, a plain message to the visitor
+        log_error(config_path, "The program could not start.\n" + traceback.format_exc(), env)
+        return None
+    if not getattr(app, "_rotaidem_log", False):
+        attach_error_log(app, config_path)
+        app._rotaidem_log = True
+    return app
+
+
+def reload_app(app_dir, config_path, env):
+    """Re-read config.env and server.py inside a process that stays loaded (STRATO's FastCGI)."""
+    import importlib
+    try:
+        os.environ.update(load_config(config_path))  # a line deleted from the file stays until the process restarts
+        server = importlib.reload(sys.modules["server"])
+    except Exception:  # noqa: BLE001
+        log_error(config_path, "Reloading after a change failed.\n" + traceback.format_exc(), env)
+        return None
+    attach_error_log(server.app, config_path)
+    server.app._rotaidem_log = True
+    return server.app
+
+
+UNAVAILABLE = b'{"error": "The service is temporarily unavailable. Please try again later."}\n'
+
+
+def wsgi_app(app_dir, config_path):
+    """The `application` STRATO's new platform calls. It does not run cgi-bin/*.py as plain CGI: a
+    FastCGI launcher (cm4all, flup) imports the file once, keeps it loaded, and calls its
+    `application(environ, start_response)` for every request.
+    - The Flask app is loaded on the first request (and retried after a failure), so a broken
+      setting never breaks importing the file.
+    - Because the process stays loaded, a changed config.env or server.py (after `setup.py deploy`)
+      is picked up on the next request instead of whenever STRATO restarts the process."""
+    import threading
+    state, lock = {}, threading.Lock()
+    watched = (config_path, os.path.join(app_dir, "server.py"))
+
+    def stamp():
+        out = []
+        for path in watched:
+            try:
+                out.append(os.stat(path).st_mtime_ns)
+            except OSError:
+                out.append(None)
+        return tuple(out)
+
+    def application(environ, start_response):
+        env = fix_environ(dict(environ))
+        with lock:
+            current, app = stamp(), state.get("app")
+            if app is not None and state.get("stamp") != current:
+                app = reload_app(app_dir, config_path, env)
+            if app is None:
+                app = load_app(app_dir, config_path, env)
+            state["app"], state["stamp"] = app, current
+        if app is None:
+            start_response("503 Service Unavailable", [("Content-Type", "application/json"), ("Cache-Control", "no-store"),
+                                                       ("Content-Length", str(len(UNAVAILABLE)))])
+            return [UNAVAILABLE]
+        return app(env, start_response)
+
+    return application
+
+
+def run(app_dir, config_path):
+    """Plain CGI (hosts that start the script once per request)."""
+    env = fix_environ(os.environ)
+    app = load_app(app_dir, config_path, env)
+    if app is None:
+        unavailable()
+        return
     from wsgiref.handlers import CGIHandler
     CGIHandler().run(app)
 
@@ -170,31 +250,29 @@ def json_dumps(value):
     return json.dumps(value).replace("</", "<\\/")
 
 
-def run_check(app_dir, config_path):
+def check_page(app_dir, config_path, env):
+    """The key-protected check page. Returns (status, content type, body)."""
     import hmac
     import json
     import platform
-    import urllib.parse
     from urllib.request import urlopen
 
     os.umask(0o077)
-    query = urllib.parse.parse_qs(os.environ.get("QUERY_STRING", ""))
+    query = urllib.parse.parse_qs(env.get("QUERY_STRING", ""))
     try:
         values = load_config(config_path)
     except Exception:  # noqa: BLE001
         # No key can be checked without the settings, so say only what the owner needs: who runs what.
-        log_error(config_path, "Check page: settings unreadable.\n" + traceback.format_exc())
-        fail("Rotaidem cannot read its settings.\n\n" + web_user_report(config_path)[1], "503 Service Unavailable")
-        return
+        log_error(config_path, "Check page: settings unreadable.\n" + traceback.format_exc(), env)
+        return "503 Service Unavailable", "text/plain; charset=utf-8", "Rotaidem cannot read its settings.\n\n" + web_user_report(config_path)[1] + "\n"
     if not values.get("CHECK_KEY") or not hmac.compare_digest(query.get("key", [""])[0], values["CHECK_KEY"]):
-        out("Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot found\n")
-        return
+        return "404 Not Found", "text/plain", "Not found\n"
     if query.get("echo"):  # the browser test below: did the login header reach the program?
-        seen = {k: bool(os.environ.get(k)) for k in ("HTTP_AUTHORIZATION", "REDIRECT_HTTP_AUTHORIZATION", "HTTP_X_ROTAIDEM_TOKEN")}
-        out("Content-Type: application/json\r\n\r\n" + json.dumps(seen))
-        return
+        seen = {k: bool(env.get(k)) for k in ("HTTP_AUTHORIZATION", "REDIRECT_HTTP_AUTHORIZATION", "HTTP_X_ROTAIDEM_TOKEN")}
+        return "200 OK", "application/json", json.dumps(seen)
 
-    rows = [("Python", sys.version_info >= (3, 9), f"{platform.python_version()} ({sys.executable}), user {os.getuid()}")]
+    mode_name = "FastCGI (application)" if env.get("wsgi.version") else "CGI"
+    rows = [("Python", sys.version_info >= (3, 9), f"{platform.python_version()} ({sys.executable}), user {os.getuid()}, {mode_name}")]
     rows.append(("Settings", True, config_path))
     rows.append(("Web server user", *web_user_report(config_path)))
     mode = os.stat(config_path).st_mode & 0o777
@@ -232,16 +310,33 @@ def run_check(app_dir, config_path):
     browser = [
         {"name": "Backend via /api", "url": "/api/site", "contains": "announcement",
          "help": "/api/ does not reach the program. Check the .htaccess in the website folder."},
-        {"name": "Health check (/health)", "url": "/health", "contains": "\"database\":\"ok\"",
+        {"name": "Health check (/health)", "url": "/health", "contains": '"database":"ok"',
          "help": "The program runs but the database does not answer."},
         {"name": "Pages without .html (/login)", "url": "/login", "contains": "<html",
          "help": "mod_rewrite seems to be off."},
         {"name": "Login header reaches the program", "url": f"/cgi-bin/rotaidem-check.py?key={key}&echo=1",
          "headers": {"Authorization": "Bearer test", "X-Rotaidem-Token": "test"}, "contains": "true"},
     ]
-    public_dir = os.path.dirname(os.path.dirname(os.path.abspath(os.environ.get("SCRIPT_FILENAME", ""))))
+    public_dir = os.path.dirname(os.path.dirname(os.path.abspath(env.get("SCRIPT_FILENAME", ""))))
     for label, path in (("Settings file is blocked", config_path), ("Program code is blocked", os.path.join(app_dir, "server.py"))):
         rel = os.path.relpath(path, public_dir) if public_dir else ".."
         if not rel.startswith(".."):
             browser.append({"name": label, "url": "/" + rel.replace(os.sep, "/"), "expect": "blocked"})
-    out("Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nX-Robots-Tag: noindex\r\n\r\n" + _html(rows, browser))
+    return "200 OK", "text/html; charset=utf-8", _html(rows, browser)
+
+
+def wsgi_check(app_dir, config_path):
+    """The check page as `application`, for STRATO's FastCGI launcher."""
+    def application(environ, start_response):
+        status, ctype, body = check_page(app_dir, config_path, environ)
+        data = body.encode("utf-8")
+        start_response(status, [("Content-Type", ctype), ("Cache-Control", "no-store"), ("X-Robots-Tag", "noindex"),
+                                ("Content-Length", str(len(data)))])
+        return [data]
+    return application
+
+
+def run_check(app_dir, config_path):
+    """The check page as plain CGI."""
+    status, ctype, body = check_page(app_dir, config_path, os.environ)
+    out(f"Status: {status}\r\nContent-Type: {ctype}\r\nCache-Control: no-store\r\nX-Robots-Tag: noindex\r\n\r\n{body}")

@@ -1,8 +1,15 @@
 # Rotaidem on STRATO Webhosting
 
-The website runs on STRATO Webhosting Basic without any server process: Apache serves the pages as
-plain files and starts the Python backend (`server.py`, Flask) once per request through CGI. Your
-domain, DNS and e-mail stay exactly as they are at STRATO.
+The website runs on STRATO Webhosting Basic without a server process of your own: Apache serves the
+pages as plain files and hands `/api/...`, `/media/...` and `/health` to the Python backend
+(`server.py`, Flask). Your domain, DNS and e-mail stay exactly as they are at STRATO.
+
+**How STRATO runs Python (confirmed from a traceback on the live server):** files in `cgi-bin` are
+not run as classic CGI programs. A FastCGI launcher managed by STRATO (`cm4all/fcgi/launcher.py`,
+using `flup`) imports the file, keeps it loaded, and calls its `application` function (WSGI) for
+each request. The entry scripts written by `deploy` provide `application` for this, and still work
+as classic CGI on other hosts. Because the process stays loaded, a changed `config.env` or
+`server.py` is picked up automatically on the next request.
 
 ## Why the site showed 403 Forbidden
 
@@ -92,11 +99,17 @@ Finally, open `https://rotaidem.com`, log in at `/login`, and open `/admin`.
 
 ## Updating later
 
+With Git:
+
 ```
 cd /home/www
 git -C rotaidem pull
 python3 rotaidem/strato/setup.py deploy
 ```
+
+With FileZilla: download the ZIP of the branch from GitHub, upload its contents over
+`/home/www/rotaidem` (let it overwrite), then run `python3 rotaidem/strato/setup.py deploy` over SSH.
+Never upload into `rotaidem-data` or `rotaidem-public` by hand: `deploy` fills `rotaidem-public`.
 
 ## When diagnose reports a problem
 
@@ -107,6 +120,8 @@ python3 rotaidem/strato/setup.py deploy
 | `the name does not resolve` | The domain or `www` has no address | Check that `www.rotaidem.com` exists and has the same target at STRATO |
 | `certificate problem` | SSL not active for this name | Activate the SSL certificate for the domain at STRATO |
 | `/health` or `/api/site` -> 404 or 500 while the pages load | Python CGI does not run in `cgi-bin` | `python3 rotaidem/strato/setup.py deploy --cgi-htaccess`. If that gives 500, undo it with `deploy --no-cgi-htaccess` and ask STRATO whether Python CGI is enabled for your package |
+| `module 'rotaidem' has no attribute 'application'` (traceback in the browser) | The entry scripts come from an older version | Upload the new code and run `deploy` |
+| `A 1.5 MB request ... -> 413` or `500` | STRATO limits request size | Image uploads in the admin are too big for the host; tell me the line |
 | `/health` -> 503 `database unavailable` | MySQL not reachable or wrong login | Check the `MYSQL_*` lines in `rotaidem-data/config.env` against STRATO's database page |
 | `old Rotaidem rules ... also apply to the website folder` | The old `/home/www/.htaccess` | Run `deploy` (it renames the file) |
 | `The web server runs as user ...` (check page) | CGI does not run as your account | `python3 rotaidem/strato/setup.py permissions group` if you share a group; otherwise ask STRATO. Never make the files readable for everyone |
