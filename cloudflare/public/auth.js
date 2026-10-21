@@ -128,7 +128,7 @@ function applyTexts(texts) {
 }
 
 // Site settings from the admin panel: images per slot, page texts and the announcement banner.
-function applySiteSettings(site) {
+function applyContent(site) {
     applyTexts(site.texts || {});
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
@@ -138,6 +138,8 @@ function applySiteSettings(site) {
         if (el.tagName === "IMG") el.src = safeImage(url);
         else el.style.backgroundImage = `url('${safeImage(url).replace(/'/g, "%27")}')`;
     });
+}
+function applyBanner(site) {
     const banner = site.announcement || {};
     let dismissed = "";
     try { dismissed = sessionStorage.getItem("rsg_banner_closed") || ""; } catch (err) {}
@@ -154,13 +156,13 @@ function applySiteSettings(site) {
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
-    // The last known texts first (no flash of the old wording), then the current ones.
-    let cached = null;
-    try { cached = JSON.parse(localStorage.getItem("rsg_texts") || "null"); } catch (err) {}
-    if (cached) applyTexts(cached);
+    if (window.RSG_SITE) { applyBanner(window.RSG_SITE); return; }
+    // Hosts without /site-settings.js: ask the API instead (the page shows the defaults until then).
     fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => {
-        if (!site) return;
-        applySiteSettings(site);
-        try { localStorage.setItem("rsg_texts", JSON.stringify(site.texts || {})); } catch (err) {}
+        if (site) { applyContent(site); applyBanner(site); }
     }).catch(() => {});
 });
+
+// /site-settings.js (loaded in <head>) already holds the pictures and texts: put them in now,
+// before the page is first drawn, so visitors never see the default wording or pictures.
+if (window.RSG_SITE) applyContent(window.RSG_SITE);

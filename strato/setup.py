@@ -236,7 +236,12 @@ RewriteRule (^|/)\\.(?!well-known/) - [F,L]
 RewriteRule ^(?!cgi-bin/).*\\.(py|pyc|env|ini|cfg|sql|sqlite|sqlite3|db|log|bak)$ - [F,L]
 
 # The backend.
-RewriteRule ^((api|media)/.*|health)$ cgi-bin/rotaidem.py/$1 [L,QSA]
+RewriteRule ^(api/.*|health)$ cgi-bin/rotaidem.py/$1 [L,QSA]
+
+# Uploaded pictures and the site settings script: plain files once the program has written them
+# into this folder (fast); until then the program answers and writes them.
+RewriteCond %{{REQUEST_FILENAME}} !-f
+RewriteRule ^(media/.+|site-settings\\.js)$ cgi-bin/rotaidem.py/$1 [L,QSA]
 
 # No folder listings: a folder without index.html is refused.
 RewriteCond %{{REQUEST_FILENAME}} -d
@@ -256,6 +261,23 @@ Header always set Referrer-Policy "strict-origin-when-cross-origin"
 Header always set X-Frame-Options "SAMEORIGIN"
 <FilesMatch "^(admin|account)\\.html$">
 Header set Cache-Control "private, no-store"
+</FilesMatch>
+# Pictures and fonts may be kept by the browser for a day; site-settings.js is checked every time.
+<FilesMatch "\\.(jpg|jpeg|png|webp|gif|svg|woff2?)$">
+Header set Cache-Control "public, max-age=86400"
+</FilesMatch>
+<FilesMatch "^site-settings\\.js$">
+Header set Cache-Control "no-cache"
+</FilesMatch>
+</IfModule>
+"""
+
+
+HTACCESS_MEDIA = f"""{MARK}
+# Uploaded pictures never change (a new upload gets a new number), so browsers keep them for a year.
+<IfModule mod_headers.c>
+<FilesMatch "\\.(jpg|png|webp|gif)$">
+Header set Cache-Control "public, max-age=31536000, immutable"
 </FilesMatch>
 </IfModule>
 """
@@ -283,13 +305,15 @@ Deny from all
 ENTRY_POINTS = (("rotaidem.py", "wsgi_app", "run"), ("rotaidem-check.py", "wsgi_check", "run_check"))
 
 
-def cgi_script(wsgi_target, cgi_target, data_dir):
+def cgi_script(wsgi_target, cgi_target, data_dir, public_dir):
     return f"""#!{CGI_PYTHON}
 # Written by rotaidem/strato/setup.py: the entry point of the Rotaidem backend.
 # STRATO's new platform imports this file into a FastCGI process and calls `application` (WSGI).
 # Classic CGI hosts run it as a program, once per request (the __main__ part).
 import importlib
+import os
 import sys
+os.environ["ROTAIDEM_PUBLIC_DIR"] = {public_dir!r}  # pictures and site settings are copied here as plain files
 sys.path.insert(0, {STRATO_DIR!r})
 import cgi_app
 cgi_app = importlib.reload(cgi_app)  # a process that stays loaded may still hold an older copy
@@ -339,7 +363,7 @@ def install_files(public_dir, data_dir, cgi_htaccess, deploy_id):
     os.makedirs(cgi_bin, exist_ok=True)
     os.chmod(cgi_bin, 0o755)
     for name, wsgi_target, cgi_target in ENTRY_POINTS:
-        write_file(os.path.join(cgi_bin, name), cgi_script(wsgi_target, cgi_target, data_dir), 0o755)
+        write_file(os.path.join(cgi_bin, name), cgi_script(wsgi_target, cgi_target, data_dir, public_dir), 0o755)
     cgi_ht = os.path.join(cgi_bin, ".htaccess")
     if cgi_htaccess:
         write_file(cgi_ht, HTACCESS_CGI)
@@ -348,6 +372,36 @@ def install_files(public_dir, data_dir, cgi_htaccess, deploy_id):
             if MARK in fh.read():
                 os.remove(cgi_ht)  # ours from an earlier --cgi-htaccess deploy; anything else is left alone
     write_file(os.path.join(public_dir, DEPLOY_ID_FILE), f"rotaidem {deploy_id}\n")
+    media = os.path.join(public_dir, "media")
+    os.makedirs(media, exist_ok=True)
+    os.chmod(media, 0o755)
+    write_file(os.path.join(media, ".htaccess"), HTACCESS_MEDIA)
+
+
+def publish_static(public_dir, data_dir, refresh=False):
+    """Write uploaded pictures and site-settings.js into the website folder, so the web server sends
+    them as plain files. refresh=True rewrites pictures that are already there (after an import)."""
+    server = connect(data_dir)
+    os.environ["ROTAIDEM_PUBLIC_DIR"] = public_dir
+    d = server.DB()
+    rows = d.all("SELECT id, mime FROM media ORDER BY id")
+    written = 0
+    if refresh:  # drop copies of pictures that no longer exist
+        keep = {f"{r['id']}.{server.MEDIA_TYPES.get(r['mime'], 'jpg')}" for r in rows}
+        folder = os.path.join(public_dir, "media")
+        for name in os.listdir(folder) if os.path.isdir(folder) else []:
+            if re.match(r"^\d+\.(jpg|png|webp|gif)$", name) and name not in keep:
+                os.remove(os.path.join(folder, name))
+    for row in rows:
+        name = f"media/{row['id']}.{server.MEDIA_TYPES.get(row['mime'], 'jpg')}"
+        if refresh or not os.path.exists(os.path.join(public_dir, name)):
+            data = d.first("SELECT data FROM media WHERE id = ?", row["id"])["data"]
+            server.write_public(name, __import__("base64").b64decode(data))
+            written += 1
+    d.close()
+    with server.app.app_context():
+        server.publish_site_settings()
+    say(f"  Pictures as plain files: {len(rows)} ({written} written now), site-settings.js updated")
 
 
 def prepare_database(data_dir):
@@ -409,6 +463,7 @@ def deploy_to(public_dir, data_dir, cgi_htaccess=False):
     retire_parent_htaccess(public_dir)
     install_files(public_dir, data_dir, cgi_htaccess, deploy_id)
     prepare_database(data_dir)
+    publish_static(public_dir, data_dir)
     save_location(data_dir, {"public_dir": public_dir, "data_dir": data_dir, "app_dir": APP_DIR,
                              "cgi_htaccess": bool(cgi_htaccess), "deploy_id": deploy_id,
                              "deployed_at": datetime.now().isoformat(timespec="seconds")})
@@ -1205,6 +1260,9 @@ def cmd_import(path):
             d.run(f"INSERT INTO {table} ({names}) VALUES ({', '.join('?' for _ in row)})", *row.values())
         say(f"  {table}: {len(rows)} rows")
     d.close()
+    public_dir = read_location().get("public_dir")
+    if public_dir and os.path.isdir(public_dir):
+        publish_static(public_dir, data_dir, refresh=True)  # picture numbers now belong to the imported pictures
     say("Import finished. Log in with the accounts and passwords from the backup.")
 
 

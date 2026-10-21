@@ -1366,6 +1366,7 @@ def admin_save_settings():
         if len(texts) > TEXT_COUNT:
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
+    publish_site_settings()
     audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
@@ -1404,6 +1405,7 @@ def admin_upload_media():
              name, mime, base64.b64encode(raw).decode(), len(raw), clamp_int(b.get("width"), 0, 0, 20000), clamp_int(b.get("height"), 0, 0, 20000))
     row = db().first("SELECT MAX(id) AS id FROM media")
     audit(user, "upload_media", name)
+    write_public(f"media/{row['id']}.{MEDIA_TYPES[mime]}", raw)
     return jsonify({"ok": True, "id": row["id"], "url": f"/media/{row['id']}.{MEDIA_TYPES[mime]}"})
 
 
@@ -1412,8 +1414,10 @@ def admin_delete_media(media_id):
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can delete images", 403)
-    row = db().first("SELECT filename FROM media WHERE id = ?", media_id)
+    row = db().first("SELECT filename, mime FROM media WHERE id = ?", media_id)
     db().run("DELETE FROM media WHERE id = ?", media_id)
+    if row:
+        remove_public(f"media/{media_id}.{MEDIA_TYPES.get(row['mime'], 'jpg')}")
     audit(user, "delete_media", row["filename"] if row else media_id)
     return jsonify({"ok": True})
 
@@ -1423,8 +1427,76 @@ def media_file(media_id, ext):
     row = db().first("SELECT mime, data FROM media WHERE id = ?", media_id)
     if not row or MEDIA_TYPES.get(row["mime"]) != ext:
         abort(404)
-    resp = app.response_class(base64.b64decode(row["data"]), mimetype=row["mime"])
+    raw = base64.b64decode(row["data"])
+    write_public(f"media/{media_id}.{ext}", raw)  # from now on the web server sends it as a plain file
+    resp = app.response_class(raw, mimetype=row["mime"])
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------- plain-file copies for the web server ----------
+# On STRATO the entry script sets ROTAIDEM_PUBLIC_DIR (the website folder). Uploaded images and
+# the site settings are then also written there, so Apache sends them straight away instead of
+# starting this program and reading the database for every picture. Elsewhere this does nothing.
+
+def public_path(name):
+    folder = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
+    if not folder or not os.path.isdir(folder) or not re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name):
+        return ""
+    return os.path.join(folder, name)
+
+
+def write_public(name, data):
+    path = public_path(name)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.chmod(os.path.dirname(path), 0o755)  # the program runs with umask 077; pictures are public
+        temp = f"{path}.{os.getpid()}.tmp"
+        with open(temp, "wb") as fh:
+            fh.write(data)
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)  # never a half-written file
+    except OSError as exc:
+        app.logger.warning("Could not write %s: %s", path, exc)
+
+
+def remove_public(name):
+    path = public_path(name)
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError as exc:
+            app.logger.warning("Could not remove %s: %s", path, exc)
+
+
+def css_url(url):
+    return "".join(c if c.isalnum() or c in "/:.-_~?=&%#+,;@!" else "%{:02X}".format(ord(c)) for c in url)
+
+
+def site_settings_js():
+    """Loaded in <head> of every page: the custom pictures apply before anything is drawn (CSS),
+    and auth.js puts in the page texts without waiting for /api/site."""
+    site = site_settings()
+    css = "".join(f'[data-image="{slot}"]:not(img){{background-image:url("{css_url(url)}")!important}}'
+                  for slot, url in site["images"].items() if url and url != IMAGE_SLOTS.get(slot))
+    data = json.dumps(site).replace("</", "<\\/")
+    style = json.dumps(css).replace("</", "<\\/")
+    return (f"window.RSG_SITE={data};\n"
+            f"(function(){{var s=document.createElement('style');s.textContent={style};document.head.appendChild(s);}})();\n")
+
+
+def publish_site_settings():
+    write_public("site-settings.js", site_settings_js().encode())
+
+
+@app.get("/site-settings.js")
+def site_settings_script():
+    js = site_settings_js()
+    write_public("site-settings.js", js.encode())
+    resp = app.response_class(js, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

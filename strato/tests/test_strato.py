@@ -397,6 +397,49 @@ class StratoCGITests:
         self.ok(self.w.cgi("DELETE", "/api/admin/media/" + r["url"].split("/")[2].split(".")[0], token=t))
         self.assertEqual(self.w.cgi("GET", r["url"]).status, 404)
 
+    def test_pictures_and_settings_as_plain_files(self):
+        """Apache sends uploaded pictures and site-settings.js as plain files, without starting the program."""
+        t = self.owner_token
+        media = os.path.join(self.w.public, "media")
+        with open(os.path.join(media, ".htaccess")) as fh:
+            self.assertIn("immutable", fh.read())
+        with open(os.path.join(self.w.public, ".htaccess")) as fh:
+            rules = fh.read()
+        self.assertIn("RewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^(media/.+|site-settings\\.js)$", rules)
+        with open(os.path.join(self.w.public, "cgi-bin", "rotaidem.py")) as fh:
+            self.assertIn(f'os.environ["ROTAIDEM_PUBLIC_DIR"] = {self.w.public!r}', fh.read())
+        self.assertTrue(os.path.isfile(os.path.join(self.w.public, "site-settings.js")), "deploy writes it")
+        with open(IMAGE, "rb") as fh:
+            raw = fh.read()
+        r = self.ok(self.w.cgi("POST", "/api/admin/media", {"filename": "plain.jpg", "mime": "image/jpeg",
+                                                           "data": base64.b64encode(raw).decode()}, token=t))
+        copy = os.path.join(self.w.public, r["url"].lstrip("/"))
+        with open(copy, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+        self.assertEqual(os.stat(copy).st_mode & 0o777, 0o644)
+        self.assertEqual(os.stat(media).st_mode & 0o777, 0o755)
+        os.remove(copy)
+        self.assertEqual(self.w.cgi("GET", r["url"]).body, raw)  # the program answers once ...
+        self.assertTrue(os.path.isfile(copy))                     # ... and writes the copy again
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"images": {"hero": r["url"]}, "texts": {"index.products": "Our add-ons"}}, token=t))
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            js = fh.read()
+        css = f'[data-image="hero"]:not(img){{background-image:url("{r["url"]}")!important}}'
+        self.assertIn(json.dumps(css), js)  # inside the script as a JSON string
+        self.assertIn('"index.products": "Our add-ons"', js)
+        self.assertNotIn("</", js)
+        served = self.w.cgi("GET", "/site-settings.js")
+        self.assertEqual((served.status, served.headers["content-type"].split(";")[0]), (200, "application/javascript"))
+        self.assertTrue(served.body.decode().startswith("window.RSG_SITE="))
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"images": {}, "texts": {"index.products": None}}, token=t))
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            self.assertNotIn("data-image", fh.read())
+        self.ok(self.w.cgi("DELETE", "/api/admin/media/" + r["url"].split("/")[2].split(".")[0], token=t))
+        self.assertFalse(os.path.exists(copy))
+        for page in ("index.html", "about.html", "addons/view.html", "admin.html"):
+            with open(os.path.join(self.w.public, page)) as fh:
+                self.assertIn('<script src="/site-settings.js"></script>', fh.read(), page)
+
     # ---------- e-mail ----------
 
     def test_email_through_resend(self):
