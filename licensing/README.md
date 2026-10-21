@@ -26,7 +26,7 @@ HeavyPro ──────────(every start: CheckAsync)─────�
 
 Build it with `dotnet run --project src/Rotaidem.LicenseGenerator`, or download the ready `.exe` from the **License generator** workflow on GitHub (Actions tab → latest run → Artifacts).
 
-1. In Render, open the web service → Environment and copy the value of `LICENSE_API_KEY` (the blueprint generates it; otherwise set any random value of 16+ characters).
+1. Copy the value of `LICENSE_API_KEY` from `/home/www/rotaidem-data/config.env` on the STRATO server (open it in FileZilla). On Render it is in the web service's Environment instead.
 2. Copy `generator.example.json` to `generator.json` next to the exe and fill in `siteUrl` and `apiKey`. Alternatively set the environment variables `ROTAIDEM_SITE_URL` and `ROTAIDEM_LICENSE_API_KEY`.
 3. Double-click the exe for the menu, or use the command line:
 
