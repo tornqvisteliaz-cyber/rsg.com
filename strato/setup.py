@@ -1077,8 +1077,15 @@ def main():
         cmd_password()
     elif command == "import" and len(args) == 2:
         cmd_import(args[1])
-    else:
+    elif command in ("help", "-h", "--help"):
         say(__doc__)
+    else:
+        import difflib
+        known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update", "check"]
+        close = difflib.get_close_matches(command, known, n=1)
+        say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
+        say("All commands:  python3 rotaidem/strato/setup.py help")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
