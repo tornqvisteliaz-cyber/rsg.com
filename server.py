@@ -1220,6 +1220,20 @@ def profile_get():
     return jsonify({"ok": True, "name": row["name"], "profile": json.loads(row["data"])})
 
 
+@app.post("/api/profiles/list")
+def profile_list():
+    """Community list: every shared profile, most downloaded first. Optional "search" filters by name."""
+    _lic, error = licensed_computer()
+    if error:
+        return error
+    search = " ".join(str(body().get("search") or "").split()).lower()[:40]
+    rows = db().all("SELECT name, downloads, updated_at FROM shared_profiles ORDER BY downloads DESC, name_key")
+    if search:
+        rows = [r for r in rows if search in str(r["name"]).lower()]
+    return jsonify({"ok": True, "profiles": [{"name": r["name"], "downloads": int(r["downloads"] or 0),
+                                               "updated_at": str(r["updated_at"] or "")} for r in rows[:500]]})
+
+
 @app.post("/api/profiles/delete")
 def profile_delete():
     lic, error = licensed_computer()

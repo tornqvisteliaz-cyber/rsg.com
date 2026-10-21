@@ -368,6 +368,10 @@ class StratoCGITests:
         self.assertEqual(call("get", bob, "PC-B", name="nope").status, 404)
         self.assertEqual(call("publish", alice, "PC-A", name="x", profile=profile).json()["reason"], "invalid_name")
         self.assertEqual(call("publish", alice, "PC-A", name="big", profile={"x": "y" * 5000}).json()["reason"], "too_large")
+        call("publish", bob, "PC-B", name="Cessna light", profile=profile)
+        listed = self.ok(call("list", bob, "PC-B"))["profiles"]
+        self.assertEqual([p["name"] for p in listed], ["777 Heavy", "Cessna light"])
+        self.assertEqual([p["name"] for p in self.ok(call("list", alice, "PC-A", search="cess"))["profiles"]], ["Cessna light"])
         self.ok(call("delete", alice, "PC-A", name="777 Heavy"))
         self.assertEqual(call("get", bob, "PC-B", name="777 Heavy").status, 404)
 
