@@ -21,6 +21,7 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py import FILE  loads a backup (replaces the database contents; asks first)
     python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
     python3 rotaidem/strato/setup.py email-test ADDRESS  sends a test e-mail and shows what Resend answers
+    python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
 
 Options:  deploy --public FOLDER   use another website folder (relative to the webspace or absolute)
           deploy --cgi-htaccess    also enable CGI with cgi-bin/.htaccess (only if diagnose says CGI does not run)
@@ -1039,6 +1040,33 @@ def cmd_email_test(address):
         say("  " + error)
 
 
+def cmd_admin_password():
+    """Set or remove the admin page password (also possible in Admin > Security). Works when it is forgotten."""
+    data_dir = current_data_dir()
+    require_config(data_dir)
+    server = connect(data_dir)
+    server.ensure_schema()
+    d = server.DB()
+    enabled = bool(d.first("SELECT value FROM meta WHERE key = ?", server.GATE_KEY))
+    say("The admin page password is " + ("ON." if enabled else "OFF.") + " Staff enter it after logging in, before the admin page opens.")
+    password = getpass.getpass("New admin password, at least 8 characters (Enter = " + ("remove it" if enabled else "keep it off") + "): ")
+    if not password:
+        if enabled:
+            d.run("DELETE FROM meta WHERE key = ?", server.GATE_KEY)
+            say("The admin password is removed. Staff only need their own login now.")
+        d.close()
+        return
+    if len(password) < 8:
+        say("Too short: nothing changed.")
+    elif getpass.getpass("Type it again: ") != password:
+        say("The two did not match: nothing changed.")
+    else:
+        d.run("DELETE FROM meta WHERE key = ?", server.GATE_KEY)
+        d.run("INSERT INTO meta (key, value) VALUES (?, ?)", server.GATE_KEY, json.dumps(server.hash_password(password)))
+        say("The admin password is set. Everyone who has the admin page open must enter it again.")
+    d.close()
+
+
 TIMESTAMP_COLUMNS = {"created_at", "updated_at", "first_seen", "last_seen"}
 
 
@@ -1109,12 +1137,14 @@ def main():
         cmd_import(args[1])
     elif command == "email-test" and len(args) == 2:
         cmd_email_test(args[1])
+    elif command == "admin-password":
+        cmd_admin_password()
     elif command in ("help", "-h", "--help"):
         say(__doc__)
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test"]
+                 "check", "email-test", "admin-password"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")

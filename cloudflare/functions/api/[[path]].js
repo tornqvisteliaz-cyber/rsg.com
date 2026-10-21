@@ -1,4 +1,14 @@
+// A locked staff member (admin password not entered) is treated as a customer by currentUser();
+// their "admin only" answers then become "enter the admin password" so the admin page can ask.
+const LOCKED = new WeakSet();
 export async function onRequest(context) {
+  const response = await handleRequest(context);
+  if (LOCKED.has(context.request) && (response.status === 401 || response.status === 403))
+    return json({ error: "Enter the admin password to continue.", locked: true }, 403);
+  return response;
+}
+
+async function handleRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/$/, "");
@@ -11,6 +21,9 @@ export async function onRequest(context) {
     if (method === "POST" && path === "/api/signup") return signup(request, env);
     if (method === "POST" && path === "/api/logout") return logout(request, env);
     if (method === "GET" && path === "/api/me") return me(request, env);
+    if (method === "GET" && path === "/api/admin/gate") return adminGateState(request, env);
+    if (method === "POST" && path === "/api/admin/unlock") return adminUnlock(request, env);
+    if (method === "POST" && path === "/api/admin/gate") return adminSetGate(request, env);
     if (method === "POST" && path === "/api/password/forgot") return passwordForgot(request, env);
     if (method === "POST" && path === "/api/password/check") return passwordCheck(request, env);
     if (method === "POST" && path === "/api/password/reset") return passwordReset(request, env);
@@ -355,7 +368,8 @@ async function siteSettings(env) {
   const images = { ...IMAGE_SLOTS };
   for (const [k, v] of Object.entries(saved)) if (k in IMAGE_SLOTS && v) images[k] = v;
   const banner = (await getSetting(env, "site.announcement", {})) || {};
-  return { images, defaults: IMAGE_SLOTS, announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
+  const texts = (await getSetting(env, "site.texts", {})) || {};
+  return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -388,7 +402,22 @@ async function adminSaveSettings(request, env) {
     if (link && !(link.startsWith("https://") || link.startsWith("/"))) return json({ error: "The banner link must start with https:// or /" }, 400);
     await setSetting(env, "site.announcement", { enabled: !!a.enabled, text: String(a.text || "").slice(0, 200), link: link.slice(0, 300) });
   }
-  await audit(env, user, "save_settings", ["images", "announcement"].filter(k => k in body).join(", "));
+  if ("texts" in body) {
+    // A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
+    const changes = body.texts;
+    if (!changes || typeof changes !== "object" || Array.isArray(changes)) return json({ error: "texts must be an object" }, 400);
+    const texts = { ...((await getSetting(env, "site.texts", {})) || {}) };
+    for (const [key, raw] of Object.entries(changes)) {
+      if (!/^[a-z0-9-]{1,40}\.[a-z0-9-]{1,60}$/.test(key)) return json({ error: `Unknown text ${key}` }, 400);
+      const value = raw == null ? "" : String(raw).replace(/\r\n/g, "\n").trim();
+      if (value.length > 5000) return json({ error: "A text can be at most 5000 characters" }, 400);
+      if (value) texts[key] = value; else delete texts[key];
+    }
+    if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
+    await setSetting(env, "site.texts", texts);
+  }
+  await audit(env, user, "save_settings", ["images", "announcement", "texts"].filter(k => k in body).join(", ")
+    + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
 
@@ -743,6 +772,69 @@ async function unsubscribeToken(env, email) {
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
 }
 
+// ---------- admin password ----------
+// Same scheme as server.py: only a hash is stored (meta "admin.gate"); the unlock code is signed
+// over the staff member's session token and the current admin password hash.
+const STAFF_ROLES = ["Owner", "Admin", "Support"];
+const GATE_KEY = "admin.gate", GATE_HOURS = 12, GATE_ATTEMPTS = 5, GATE_MINUTES = 15;
+
+async function gateSignature(env, user, expires, stored) {
+  const secret = env.SECRET_KEY || env.ADMIN_PASSWORD || "rotaidem-dev-secret";
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`gate:${user.id}:${user.token || ""}:${expires}:${stored}`));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+}
+async function gateHash(env) { return String((await getSetting(env, GATE_KEY, "")) || ""); }
+async function adminUnlocked(request, env, user) {
+  const stored = await gateHash(env);
+  if (!stored) return true;
+  const [expires, signature] = String(request.headers.get("X-Rotaidem-Admin") || "").trim().split(".");
+  return /^\d+$/.test(expires || "") && Number(expires) > Date.now() / 1000 && (await gateSignature(env, user, Number(expires), stored)) === signature;
+}
+async function unlockCode(env, user, stored) {
+  const expires = Math.floor(Date.now() / 1000) + GATE_HOURS * 3600;
+  return `${expires}.${await gateSignature(env, user, expires, stored)}`;
+}
+async function adminGateState(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user || !STAFF_ROLES.includes(user.role)) return json({ error: "Admin only" }, 403);
+  return json({ enabled: !!(await gateHash(env)), unlocked: await adminUnlocked(request, env, user), can_change: user.role === "Owner" });
+}
+async function adminUnlock(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user || !STAFF_ROLES.includes(user.role)) return json({ error: "Admin only" }, 403);
+  const stored = await gateHash(env);
+  if (!stored) return json({ unlock: "", enabled: false });
+  const ip = request.headers.get("CF-Connecting-IP") || "";
+  const failed = await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'admin_unlock_failed' AND admin_id = ? AND created_at >= ?").bind(user.id, utcStamp(GATE_MINUTES * 60)).first();
+  if (failed && failed.n >= GATE_ATTEMPTS) return json({ error: `Too many wrong attempts. Wait ${GATE_MINUTES} minutes and try again.` }, 429);
+  const body = await request.json().catch(() => ({}));
+  const ok = await verifyPassword(String(body.password || ""), stored);
+  await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, ?, '', ?, ?)").bind(user.id, ok ? "admin_unlock" : "admin_unlock_failed", ip, utcStamp()).run();
+  if (!ok) return json({ error: "Wrong admin password" }, 401);
+  return json({ unlock: await unlockCode(env, user, stored), enabled: true });
+}
+async function adminSetGate(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || !STAFF_ROLES.includes(user.role)) return json({ error: "Admin only" }, 403);
+  if (user.role !== "Owner") return json({ error: "Only the Owner can change the admin password" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const stored = await gateHash(env);
+  if (stored && !(await verifyPassword(String(body.current_password || ""), stored))) return json({ error: "The current admin password is wrong" }, 400);
+  if (body.disable) {
+    await env.DB.prepare("DELETE FROM meta WHERE key = ?").bind(GATE_KEY).run();
+    await audit(env, user, "admin_password", "removed");
+    return json({ ok: true, enabled: false });
+  }
+  const next = String(body.new_password || "");
+  if (next.length < 8) return json({ error: "The admin password needs at least 8 characters" }, 400);
+  if (await verifyPassword(next, user.password_hash)) return json({ error: "Use a different password than your own login password" }, 400);
+  const hash = await hashPassword(next);
+  await setSetting(env, GATE_KEY, hash);
+  await audit(env, user, "admin_password", stored ? "changed" : "turned on");
+  return json({ ok: true, enabled: true, unlock: await unlockCode(env, user, hash) });
+}
+
 // ---------- forgot password ----------
 // The reset link carries "user id.expiry.signature". The signature covers the current password
 // hash, so a link stops working once the password changes and nothing has to be stored.
@@ -971,10 +1063,13 @@ function bearerToken(request) {
   // X-Rotaidem-Token is what the site sends; Authorization stays supported for other clients.
   return (request.headers.get("Authorization") || "").replace("Bearer ", "").trim() || (request.headers.get("X-Rotaidem-Token") || "").trim();
 }
-async function currentUser(request, env) {
+async function currentUser(request, env, { ignoreGate = false } = {}) {
   const token = bearerToken(request);
   if (!token || !env.DB) return null;
-  return env.DB.prepare("SELECT * FROM users WHERE token = ?").bind(token).first();
+  const user = await env.DB.prepare("SELECT * FROM users WHERE token = ?").bind(token).first();
+  if (!user || ignoreGate || !STAFF_ROLES.includes(user.role) || (await adminUnlocked(request, env, user))) return user;
+  LOCKED.add(request);
+  return { ...user, role: "Customer" };
 }
 function slug(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || crypto.randomUUID().slice(0, 8); }
 async function hashPassword(password) {

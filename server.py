@@ -226,7 +226,7 @@ def current_user():
 
 def staff_user():
     user = current_user()
-    return user if user and user["role"] in STAFF else None
+    return user if user and user["role"] in STAFF and admin_unlocked(user) else None
 
 
 def audit(user, action, target=""):
@@ -336,6 +336,122 @@ def me():
     count = db().first("SELECT COUNT(*) AS n FROM orders WHERE customer_id = ?", user["id"])
     return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"],
                              "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0}})
+
+
+# ---------- admin password ----------
+# An extra password in front of the admin pages, on top of each staff member's own login. Only
+# its hash is stored (meta "admin.gate"). After entering it, the browser gets an unlock code
+# signed over the staff member's session and the current admin password; every admin request
+# sends it in X-Rotaidem-Admin. Logging out, logging in elsewhere or changing the admin password
+# makes old unlock codes useless. Set or change it under Admin > Security, or over SSH with
+# `strato/setup.py admin-password`.
+
+GATE_KEY = "admin.gate"
+GATE_HOURS = 12
+GATE_ATTEMPTS, GATE_MINUTES = 5, 15
+
+
+def gate_hash():
+    if "gate_hash" not in g:
+        try:
+            g.gate_hash = str(get_setting(GATE_KEY, "") or "")
+        except Exception:  # noqa: BLE001 - e.g. before the tables exist; the role checks still apply
+            g.gate_hash = ""
+    return g.gate_hash
+
+
+def gate_signature(user, expires, stored):
+    message = f"gate:{user['id']}:{user.get('token') or ''}:{expires}:{stored}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def admin_unlocked(user):
+    stored = gate_hash()
+    if not stored:
+        return True
+    try:
+        expires, signature = request.headers.get("X-Rotaidem-Admin", "").strip().split(".")
+        expires = int(expires)
+    except ValueError:
+        expires, signature = 0, ""
+    if expires > time.time() and hmac.compare_digest(gate_signature(user, expires, stored), signature):
+        return True
+    g.admin_locked = True  # turns this request's "Admin only" answer into "enter the admin password"
+    return False
+
+
+def staff_role_user():
+    """A staff member by role, whether or not the admin password was entered yet."""
+    user = current_user()
+    return user if user and user["role"] in STAFF else None
+
+
+@app.after_request
+def admin_locked_answer(resp):
+    if getattr(g, "admin_locked", False) and resp.status_code in (401, 403):
+        resp.set_data(json.dumps({"error": "Enter the admin password to continue.", "locked": True}))
+        resp.status_code, resp.mimetype = 403, "application/json"
+    return resp
+
+
+@app.get("/api/admin/gate")
+def admin_gate_state():
+    user = staff_role_user()
+    if not user:
+        return err("Admin only", 403)
+    enabled = bool(gate_hash())
+    return jsonify({"enabled": enabled, "unlocked": admin_unlocked(user), "can_change": user["role"] == "Owner"})
+
+
+@app.post("/api/admin/unlock")
+def admin_unlock():
+    user = staff_role_user()
+    if not user:
+        return err("Admin only", 403)
+    stored = gate_hash()
+    if not stored:
+        return jsonify({"unlock": "", "enabled": False})
+    cutoff = utc_stamp(GATE_MINUTES * 60)
+    failed = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'admin_unlock_failed' AND admin_id = ? AND created_at >= ?",
+                        user["id"], cutoff)
+    if failed and failed["n"] >= GATE_ATTEMPTS:
+        return err(f"Too many wrong attempts. Wait {GATE_MINUTES} minutes and try again.", 429)
+    if not verify_password(str(body().get("password", "")), stored):
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'admin_unlock_failed', '', ?, ?)",
+                 user["id"], request.remote_addr or "", utc_stamp())
+        return err("Wrong admin password", 401)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'admin_unlock', '', ?, ?)",
+             user["id"], request.remote_addr or "", utc_stamp())
+    expires = int(time.time()) + GATE_HOURS * 3600
+    return jsonify({"unlock": f"{expires}.{gate_signature(user, expires, stored)}", "enabled": True})
+
+
+@app.post("/api/admin/gate")
+def admin_set_gate():
+    """Owner only. Turning it on needs no current admin password; changing or removing it does."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    if user["role"] != "Owner":
+        return err("Only the Owner can change the admin password", 403)
+    b = body()
+    stored = gate_hash()
+    if stored and not verify_password(str(b.get("current_password", "")), stored):
+        return err("The current admin password is wrong", 400)
+    new = str(b.get("new_password", ""))
+    if b.get("disable"):
+        db().run("DELETE FROM meta WHERE key = ?", GATE_KEY)
+        audit(user, "admin_password", "removed")
+        return jsonify({"ok": True, "enabled": False})
+    if len(new) < 8:
+        return err("The admin password needs at least 8 characters", 400)
+    if verify_password(new, user["password_hash"]):
+        return err("Use a different password than your own login password", 400)
+    g.gate_hash = hash_password(new)
+    set_setting(GATE_KEY, g.gate_hash)
+    audit(user, "admin_password", "changed" if stored else "turned on")
+    expires = int(time.time()) + GATE_HOURS * 3600
+    return jsonify({"ok": True, "enabled": True, "unlock": f"{expires}.{gate_signature(user, expires, g.gate_hash)}"})
 
 
 # ---------- forgot password ----------
@@ -1167,8 +1283,15 @@ def site_settings():
     images = dict(IMAGE_SLOTS)
     images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
     banner = get_setting("site.announcement", {}) or {}
-    return {"images": images, "defaults": IMAGE_SLOTS,
+    texts = get_setting("site.texts", {}) or {}
+    return {"images": images, "defaults": IMAGE_SLOTS, "texts": texts if isinstance(texts, dict) else {},
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
+
+
+# Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their
+# own (auth.js). Only changed texts are stored; the HTML keeps the defaults.
+TEXT_KEY = re.compile(r"^[a-z0-9-]{1,40}\.[a-z0-9-]{1,60}$")
+TEXT_MAX, TEXT_COUNT = 5000, 1000
 
 
 def valid_image_url(url):
@@ -1210,7 +1333,27 @@ def admin_save_settings():
         if link and not (link.startswith("https://") or link.startswith("/")):
             return err("The banner link must start with https:// or /", 400)
         set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement") if k in b))
+    if "texts" in b:
+        # A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
+        changes = b.get("texts")
+        if not isinstance(changes, dict):
+            return err("texts must be an object", 400)
+        texts = dict(get_setting("site.texts", {}) or {})
+        for key, value in changes.items():
+            if not TEXT_KEY.match(str(key)):
+                return err(f"Unknown text {key}", 400)
+            value = "" if value is None else str(value).replace("\r\n", "\n").strip()
+            if len(value) > TEXT_MAX:
+                return err(f"A text can be at most {TEXT_MAX} characters", 400)
+            if value:
+                texts[key] = value
+            else:
+                texts.pop(key, None)
+        if len(texts) > TEXT_COUNT:
+            return err("Too many changed texts", 400)
+        set_setting("site.texts", texts)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "texts") if k in b)
+          + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
 
@@ -1333,7 +1476,7 @@ def admin_delete_user(user_id):
 def manager_user():
     """Owner or Admin: allowed to email people."""
     user = current_user()
-    return user if user and user["role"] in ("Owner", "Admin") else None
+    return user if user and user["role"] in ("Owner", "Admin") and admin_unlocked(user) else None
 
 
 def collect_recipients(groups, extra):

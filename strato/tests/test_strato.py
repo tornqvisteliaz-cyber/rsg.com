@@ -450,6 +450,77 @@ class StratoCGITests:
         logs = self.ok(self.w.cgi("GET", "/api/admin/audit", token=self.owner_token))["logs"]
         self.assertIn("password_reset", [entry["action"] for entry in logs])
 
+    def test_page_texts(self):
+        t = self.owner_token
+        key = "index.welcome-to-rotaidem"
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"texts": {key: "Hello pilots\r\nof **MSFS**", "about.who-we-are": "Us"}}, token=t))
+        self.assertEqual(r["texts"][key], "Hello pilots\nof **MSFS**")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["texts"], {key: "Hello pilots\nof **MSFS**", "about.who-we-are": "Us"})
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"texts": {"about.who-we-are": None, key: ""}}, token=t))
+        self.assertEqual(r["texts"], {})
+        for bad in ({"<script>": "x"}, {"index": "x"}, {key: "x" * 5001}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": bad}, token=t).status, 400, bad)
+        customer, _ = self.customer("texty")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": {key: "hacked"}}, token=customer).status, 403)
+
+    def test_page_text_markers_are_unique_and_valid(self):
+        import glob
+        import re
+        seen = {}
+        for path in glob.glob(os.path.join(REPO, "cloudflare", "public", "**", "*.html"), recursive=True):
+            with open(path, encoding="utf-8") as fh:
+                for key in re.findall(r'data-text="([^"]+)"', fh.read()):
+                    self.assertRegex(key, r"^[a-z0-9-]{1,40}\.[a-z0-9-]{1,60}$")
+                    self.assertNotIn(key, seen, f"{key} is used in {seen.get(key)} and {path}")
+                    seen[key] = path
+        self.assertGreater(len(seen), 100)
+
+    def test_admin_password(self):
+        t = self.owner_token
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/gate", token=t)), {"enabled": False, "unlocked": True, "can_change": True})
+        self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"new_password": "short"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"new_password": OWNER[2]}, token=t).status, 400)  # not the login password
+        unlock = self.ok(self.w.cgi("POST", "/api/admin/gate", {"new_password": "gate-pass-123"}, token=t))["unlock"]
+        try:
+            # Without the unlock code every admin request asks for the admin password.
+            r = self.w.cgi("GET", "/api/admin/overview", token=t)
+            self.assertEqual((r.status, r.json().get("locked")), (403, True))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": {}}, token=t).json().get("locked"), True)
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t, headers={"X-Rotaidem-Admin": "1.abc"}).status, 403)
+            self.ok(self.w.cgi("GET", "/api/admin/overview", token=t, headers={"X-Rotaidem-Admin": unlock}))
+            # Customers still get the plain answer, the shop's licence tool still works, public pages still work.
+            customer, _ = self.customer("gatecustomer")
+            self.assertNotIn("locked", self.w.cgi("GET", "/api/admin/overview", token=customer).json())
+            self.ok(self.w.cgi("POST", "/api/licenses/import", {"product_id": "heavypro", "licenses": []}, headers={"X-License-Api-Key": "generator-key-0123456789"}))
+            self.ok(self.w.cgi("GET", "/api/site"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=t))["user"]["is_admin"], True)
+            # Unlocking.
+            self.assertEqual(self.w.cgi("POST", "/api/admin/unlock", {"password": "wrong-one"}, token=t).status, 401)
+            fresh = self.ok(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=t))["unlock"]
+            self.ok(self.w.cgi("GET", "/api/admin/customers", token=t, headers={"X-Rotaidem-Admin": fresh}))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=customer).status, 403)
+            # A new login (new session) needs a new unlock.
+            t2 = self.owner_token
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t2, headers={"X-Rotaidem-Admin": fresh}).status, 403)
+            fresh = self.ok(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=t2))["unlock"]
+            h = {"X-Rotaidem-Admin": fresh}
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/gate", token=t2, headers=h))["unlocked"], True)
+            # Changing it needs the current one and makes old unlock codes useless.
+            self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"current_password": "nope", "new_password": "gate-pass-456"}, token=t2, headers=h).status, 400)
+            newer = self.ok(self.w.cgi("POST", "/api/admin/gate", {"current_password": "gate-pass-123", "new_password": "gate-pass-456"}, token=t2, headers=h))["unlock"]
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t2, headers=h).status, 403)
+            self.ok(self.w.cgi("GET", "/api/admin/overview", token=t2, headers={"X-Rotaidem-Admin": newer}))
+            # Too many wrong attempts lock the unlock form for a while.
+            statuses = [self.w.cgi("POST", "/api/admin/unlock", {"password": "guess"}, token=t2).status for _ in range(6)]
+            self.assertEqual(statuses[-1], 429)
+            logs = [l["action"] for l in self.ok(self.w.cgi("GET", "/api/admin/audit", token=t2, headers={"X-Rotaidem-Admin": newer}))["logs"]]
+            self.assertIn("admin_unlock_failed", logs)
+            self.assertIn("admin_password", logs)
+        finally:
+            out = self.w.setup_cmd("admin-password", stdin="\n")  # Enter = remove (the SSH way back in)
+        self.assertIn("removed", out)
+        self.ok(self.w.cgi("GET", "/api/admin/overview", token=self.owner_token))
+
     def test_email_test_command(self):
         self.resend.requests.clear()
         out = self.w.setup_cmd("email-test", "me@example.com")

@@ -104,8 +104,32 @@ document.addEventListener("submit", async e => {
     if (res && res.ok) form.reset();
 });
 
-// Site settings from the admin panel: images per slot and the announcement banner.
+// Page texts edited in the admin: plain text, new lines become line breaks, **word** becomes bold.
+// Built with DOM nodes (never innerHTML), so saved text cannot inject markup.
+const ORIGINAL_TEXT = new WeakMap();
+function renderText(el, value) {
+    if (!ORIGINAL_TEXT.has(el)) ORIGINAL_TEXT.set(el, el.innerHTML);
+    el.textContent = "";
+    String(value).split("\n").forEach((line, i) => {
+        if (i) el.append(document.createElement("br"));
+        line.split(/\*\*(.+?)\*\*/).forEach((part, j) => {
+            if (!part) return;
+            if (j % 2) { const b = document.createElement("strong"); b.textContent = part; el.append(b); }
+            else el.append(document.createTextNode(part));
+        });
+    });
+}
+function applyTexts(texts) {
+    document.querySelectorAll("[data-text]").forEach(el => {
+        const value = texts[el.dataset.text];
+        if (value) renderText(el, value);
+        else if (ORIGINAL_TEXT.has(el)) { el.innerHTML = ORIGINAL_TEXT.get(el); ORIGINAL_TEXT.delete(el); }
+    });
+}
+
+// Site settings from the admin panel: images per slot, page texts and the announcement banner.
 function applySiteSettings(site) {
+    applyTexts(site.texts || {});
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
     document.querySelectorAll("[data-image]").forEach(el => {
@@ -130,5 +154,13 @@ function applySiteSettings(site) {
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
-    fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => { if (site) applySiteSettings(site); }).catch(() => {});
+    // The last known texts first (no flash of the old wording), then the current ones.
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem("rsg_texts") || "null"); } catch (err) {}
+    if (cached) applyTexts(cached);
+    fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => {
+        if (!site) return;
+        applySiteSettings(site);
+        try { localStorage.setItem("rsg_texts", JSON.stringify(site.texts || {})); } catch (err) {}
+    }).catch(() => {});
 });

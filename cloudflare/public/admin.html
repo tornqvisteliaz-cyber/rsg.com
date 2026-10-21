@@ -100,6 +100,16 @@
         .keys-out { background: var(--bg); border: 1px solid var(--line); padding: 14px 16px; margin-top: 16px; display: none; }
         .keys-out pre { margin: 0 0 12px; font: 15px/1.8 ui-monospace, Consolas, monospace; color: var(--ink); white-space: pre-wrap; }
         .modal.wide { max-width: 620px; }
+        .gate { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .gate[hidden] { display: none; }
+        .gate form { background: var(--surface); border: 1px solid var(--line); padding: 30px; width: 100%; max-width: 380px; }
+        .gate h2 { font-size: 22px; margin: 18px 0 6px; }
+        .text-item { padding: 16px 0; border-top: 1px solid var(--line); }
+        .text-item:first-child { border-top: 0; padding-top: 0; }
+        .text-item .meta { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+        .text-item textarea { min-height: 0; resize: vertical; font-size: 15px; line-height: 1.5; }
+        .text-item.changed textarea { border-color: var(--accent); }
+        .tag-changed { font-size: 12px; color: var(--ink); background: rgba(var(--accent-rgb),.25); padding: 1px 8px; }
         @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } .compose, .two { grid-template-columns: 1fr; } }
         @media (max-width: 860px) {
             body { grid-template-columns: 1fr; }
@@ -121,6 +131,7 @@
     <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
     <div class="group">Website</div>
+    <button class="tab" data-tab="texts">Page texts</button>
     <button class="tab" data-tab="site">Site images &amp; banner</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
     <div class="group">Marketing</div>
@@ -133,6 +144,7 @@
     <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
     <div class="group">System</div>
     <button class="tab" data-tab="activity">Activity log</button>
+    <button class="tab" data-tab="security">Security</button>
     <div class="who"><div id="who-name" style="color:#fff;font-weight:500">…</div><div id="who-role" style="margin-bottom:10px"></div><a href="/">View site</a><button onclick="rsgLogout()">Log out</button></div>
 </aside>
 
@@ -162,6 +174,31 @@
             <div class="panel-head"><h2>All products</h2><input class="search" id="product-search" placeholder="Search products"></div>
             <div class="table-wrap"><table class="table"><thead><tr><th style="width:84px"></th><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div>
         </div>
+    </section>
+
+    <section class="pane" id="pane-texts" data-title="Page texts">
+        <div class="panel">
+            <div class="panel-head"><h2 id="t-title">Texts</h2><div class="actions"><select id="t-page" style="width:auto"></select><a class="btn btn-ghost btn-sm" id="t-view" target="_blank" rel="noopener">View page</a><button class="btn btn-sm" id="t-save" type="button">Save changes</button></div></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0">Change the headings and paragraphs on the website. A new line becomes a line break, and <strong>**words**</strong> between double stars become bold. Changes show on the site straight away; Reset puts the original text back.</p>
+                <div id="t-list"><p class="muted">Loading…</p></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-security" data-title="Security">
+        <form class="panel" id="gs-form">
+            <div class="panel-head"><h2>Admin page password</h2><span id="gs-state"></span></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0">An extra password that everyone must enter after logging in, before the admin page opens. So even if someone gets hold of a staff login, they cannot get in without it. Each unlock lasts 12 hours or until that person logs out. Forgotten it? Over SSH run <code>python3 rotaidem/strato/setup.py admin-password</code>.</p>
+                <div class="form-grid">
+                    <div class="field" id="gs-current-field"><label for="gs-current">Current admin password</label><input id="gs-current" type="password" autocomplete="off"></div>
+                    <div class="field"><label for="gs-new">New admin password (at least 8 characters)</label><input id="gs-new" type="password" autocomplete="new-password" minlength="8"></div>
+                    <div class="full actions" style="justify-content:flex-start"><button class="btn" id="gs-save">Save admin password</button><button class="btn btn-ghost" type="button" id="gs-off">Turn off</button></div>
+                </div>
+                <p class="msg" id="gs-msg"></p>
+            </div>
+        </form>
     </section>
 
     <section class="pane" id="pane-site" data-title="Site images & banner">
@@ -367,12 +404,44 @@
     <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
+<div class="gate" id="gate" hidden>
+    <form id="gate-form" autocomplete="off">
+        <img src="/logo.svg" alt="" style="height:26px">
+        <h2>Admin password</h2>
+        <p class="muted" style="margin:0 0 20px">The admin page has an extra password. Enter it to continue.</p>
+        <div class="field"><label for="gate-pass">Admin password</label><input id="gate-pass" type="password" autocomplete="off" required></div>
+        <button class="btn btn-block">Unlock</button>
+        <p class="msg" id="gate-msg"></p>
+        <p style="margin:18px 0 0;font-size:14px"><a href="/">Back to the site</a> · <button type="button" class="linkish" style="font-weight:400" onclick="rsgLogout()">Log out</button></p>
+    </form>
+</div>
 <div class="toast" id="toast"></div>
 
 <script src="/auth.js"></script>
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
 const H = { "content-type": "application/json", "X-Rotaidem-Token": localStorage.getItem("rsg_token") || "" };
+// The admin password unlock code lives only in this browser tab (sessionStorage).
+try { H["X-Rotaidem-Admin"] = sessionStorage.getItem("rsg_admin_unlock") || ""; } catch (err) {}
+function setUnlock(code) { H["X-Rotaidem-Admin"] = code || ""; try { sessionStorage.setItem("rsg_admin_unlock", code || ""); } catch (err) {} }
+let gateWait = null;
+function askGate() {
+    if (gateWait) return gateWait;
+    gateWait = new Promise(resolve => {
+        $("gate").hidden = false; $("gate-pass").value = ""; $("gate-msg").textContent = "";
+        setTimeout(() => $("gate-pass").focus(), 50);
+        $("gate-form").onsubmit = async e => {
+            e.preventDefault();
+            const msg = $("gate-msg"); msg.className = "msg"; msg.textContent = "Checking…";
+            const res = await fetch("/api/admin/unlock", { method: "POST", headers: H, body: JSON.stringify({ password: $("gate-pass").value }) }).catch(() => null);
+            const data = res ? await res.json().catch(() => ({})) : {};
+            if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Could not check the password right now."; $("gate-pass").select(); return; }
+            setUnlock(data.unlock);
+            $("gate").hidden = true; gateWait = null; resolve();
+        };
+    });
+    return gateWait;
+}
 const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
 const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
 const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -448,9 +517,10 @@ const $ = id => document.getElementById(id);
 const val = id => $(id).value.trim();
 const lines = id => $(id).value.split(/\n+/).map(s => s.trim()).filter(Boolean);
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, retried = false) {
     const res = await fetch(path, { headers: H, ...opts });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 403 && data.locked && !retried) { await askGate(); return api(path, opts, true); }
     if (res.status === 401 && path === "/api/admin/overview") rsgLogout();
     if (!res.ok) throw new Error(data.error || "Request failed");
     return data;
@@ -967,6 +1037,88 @@ $("media-grid").onclick = async e => {
     try { await api("/api/admin/media/" + d.dataset.mediaDel, { method: "DELETE" }); toast("Image deleted"); loadMedia(); } catch (err) { toast(err.message, true); }
 };
 
+// website: page texts. Each page marks its editable texts with data-text="page.key"; the original
+// wording is read from the page itself, the server only keeps the changed ones.
+const TEXT_PAGES = [["index", "/", "Home"], ["heavypro", "/heavypro", "HeavyPro"], ["about", "/about", "About"], ["compatibility", "/compatibility", "Compatibility"],
+    ["support", "/support", "Help and FAQ"], ["installation", "/installation", "Installation guide"], ["downloads", "/downloads", "Downloads"],
+    ["contact", "/contact", "Contact"], ["roadmap", "/roadmap", "Roadmap"], ["newsletter", "/newsletter", "News"], ["work-at-rsg", "/work-at-rsg", "Careers"],
+    ["addons", "/addons/", "All products"], ["product", "/addons/view", "Product page"], ["login", "/login", "Log in"], ["signup", "/signup", "Sign up"],
+    ["privacy", "/privacy", "Privacy policy"], ["terms", "/terms", "Terms of service"]];
+const TAG_NAME = { H1: "Page title", H2: "Heading", H3: "Small heading", P: "Paragraph", LI: "List item" };
+$("t-page").innerHTML = TEXT_PAGES.map(([k, , label]) => `<option value="${k}">${label}</option>`).join("");
+function plainText(el) {
+    let out = "";
+    el.childNodes.forEach(n => {
+        if (n.nodeType === 3) out += n.textContent.replace(/\s+/g, " ");
+        else if (n.nodeName === "BR") out += "\n";
+        else if (n.nodeName === "STRONG") out += "**" + n.textContent.replace(/\s+/g, " ").trim() + "**";
+        else out += n.textContent.replace(/\s+/g, " ");
+    });
+    return out.split("\n").map(l => l.trim()).join("\n").trim();
+}
+async function loadTexts() {
+    const [prefix, url, label] = TEXT_PAGES.find(p => p[0] === $("t-page").value) || TEXT_PAGES[0];
+    $("t-title").textContent = label; $("t-view").href = url;
+    $("t-list").innerHTML = '<p class="muted">Loading…</p>';
+    let doc;
+    try {
+        const r = await fetch(url, { cache: "no-store" });
+        doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    } catch (err) { $("t-list").innerHTML = '<p class="msg error">Could not open the page.</p>'; return; }
+    const saved = (state.site && state.site.texts) || {};
+    state.textDefaults = {};
+    const items = [...doc.querySelectorAll("[data-text]")].filter(el => el.dataset.text.startsWith(prefix + "."));
+    $("t-list").innerHTML = items.length ? items.map(el => {
+        const key = el.dataset.text, def = plainText(el), cur = saved[key] || def;
+        state.textDefaults[key] = def;
+        const rows = Math.min(10, Math.max(1, Math.ceil(cur.length / 90) + (cur.match(/\n/g) || []).length));
+        return `<div class="text-item${saved[key] ? " changed" : ""}" data-key="${esc(key)}"><div class="meta"><span>${TAG_NAME[el.tagName] || el.tagName}${saved[key] ? ' <span class="tag-changed">changed</span>' : ""}</span>` +
+            `${saved[key] ? `<button type="button" class="linkish" style="font-weight:400" data-reset="${esc(key)}">Reset to original</button>` : ""}</div>` +
+            `<textarea rows="${rows}" maxlength="5000">${esc(cur)}</textarea></div>`;
+    }).join("") : '<p class="muted">This page has no editable texts.</p>';
+}
+$("t-page").onchange = loadTexts;
+$("t-list").oninput = e => { const item = e.target.closest(".text-item"); if (item) item.classList.add("changed"); };
+async function saveTexts(changes) {
+    if (!Object.keys(changes).length) { toast("Nothing changed"); return; }
+    try { state.site = await post("/api/admin/settings", { texts: changes }); toast("Saved: the website shows the new text"); loadAudit(); loadTexts(); }
+    catch (err) { toast(err.message, true); }
+}
+$("t-save").onclick = () => {
+    const saved = (state.site && state.site.texts) || {}, changes = {};
+    document.querySelectorAll("#t-list .text-item").forEach(item => {
+        const key = item.dataset.key, value = item.querySelector("textarea").value.replace(/\r\n/g, "\n").trim();
+        const wanted = value === state.textDefaults[key] ? "" : value;
+        if (wanted !== (saved[key] || "")) changes[key] = wanted || null;
+    });
+    saveTexts(changes);
+};
+$("t-list").onclick = e => { const b = e.target.closest("[data-reset]"); if (b) saveTexts({ [b.dataset.reset]: null }); };
+
+// security: the admin page password
+async function loadGate() {
+    const g = await api("/api/admin/gate");
+    $("gs-state").innerHTML = g.enabled ? '<span class="badge published">On</span>' : '<span class="badge">Off</span>';
+    $("gs-current-field").hidden = !g.enabled;
+    $("gs-off").hidden = !g.enabled;
+    $("gs-save").textContent = g.enabled ? "Change admin password" : "Turn on admin password";
+    [...$("gs-form").querySelectorAll("input, button")].forEach(el => el.disabled = !g.can_change);
+    if (!g.can_change) { $("gs-msg").className = "msg"; $("gs-msg").textContent = "Only the Owner can change this."; }
+}
+async function saveGate(disable) {
+    const msg = $("gs-msg");
+    if (disable && !await confirmBox("Turn off the admin password?", "Staff will only need their own login to open the admin page.", "Turn off", true)) return;
+    try {
+        const r = await post("/api/admin/gate", { current_password: $("gs-current").value, new_password: disable ? "" : $("gs-new").value, disable });
+        if (r.unlock) setUnlock(r.unlock);
+        $("gs-current").value = $("gs-new").value = "";
+        msg.className = "msg ok"; msg.textContent = disable ? "The admin password is off." : "Saved. Everyone must enter the new admin password next time.";
+        loadGate(); loadAudit();
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+}
+$("gs-form").onsubmit = e => { e.preventDefault(); saveGate(false); };
+$("gs-off").onclick = () => saveGate(true);
+
 $("backup-btn").onclick = async () => {
     try {
         const r = await fetch("/api/admin/backup", { headers: H });
@@ -979,15 +1131,16 @@ $("backup-btn").onclick = async () => {
 };
 async function loadAudit() {
     const logs = (await api("/api/admin/audit")).logs || [];
-    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber" }[a] || a);
+    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password" }[a] || a);
     $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
     $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
 
 (async () => {
+    try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();
