@@ -415,6 +415,41 @@ class StratoCGITests:
         self.assertEqual(r.status, 502)
         self.assertIn("not verified", r.json()["error"])
 
+    def test_forgot_password(self):
+        import re
+        import urllib.parse
+        token, email = self.customer("forgetful")
+        self.resend.requests.clear()
+        # Unknown addresses get the same answer and no email.
+        same = self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "nobody@example.com"}))
+        self.assertEqual(self.resend.requests, [])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": email.upper()})), same)
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), ([email], "Reset your Rotaidem password"))
+        link = re.search(r'href="([^"]*/reset-password\?token=[^"]+)"', sent["html"]).group(1)
+        reset = urllib.parse.unquote(link.split("token=", 1)[1])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/check", {"token": reset}))["email"], "f••••••@example.com")
+        for bad in ("", "nonsense", reset[:-1] + ("0" if reset[-1] != "0" else "1"), "999." + reset.split(".", 1)[1]):
+            self.assertEqual(self.w.cgi("POST", "/api/password/check", {"token": bad}).status, 400, bad)
+        self.assertEqual(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "short"}).status, 400)
+        session = self.ok(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "brand-new-pass"}))
+        self.assertEqual((session["email"], session["is_admin"]), (email, False))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=session["token"]))["user"]["email"], email)
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=token).status, 401)  # other sessions are signed out
+        self.assertEqual(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "another-pass"}).status, 400)  # used once
+        self.assertEqual(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}).status, 401)
+        self.login(email, "brand-new-pass")
+        # At most 3 emails per account per hour; the answer stays the same.
+        self.resend.requests.clear()
+        for _ in range(4):
+            self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "forgetful"})), same)  # username works too
+        self.assertEqual(len(self.resend.requests), 2)  # 1 sent earlier this hour + 2 now = 3
+        # At most 10 requests per address per hour.
+        statuses = [self.w.cgi("POST", "/api/password/forgot", {"email": "x@example.com"}).status for _ in range(5)]
+        self.assertEqual(statuses[-1], 429)
+        logs = self.ok(self.w.cgi("GET", "/api/admin/audit", token=self.owner_token))["logs"]
+        self.assertIn("password_reset", [entry["action"] for entry in logs])
+
     def test_email_test_command(self):
         self.resend.requests.clear()
         out = self.w.setup_cmd("email-test", "me@example.com")

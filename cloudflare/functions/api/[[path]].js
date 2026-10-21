@@ -11,6 +11,9 @@ export async function onRequest(context) {
     if (method === "POST" && path === "/api/signup") return signup(request, env);
     if (method === "POST" && path === "/api/logout") return logout(request, env);
     if (method === "GET" && path === "/api/me") return me(request, env);
+    if (method === "POST" && path === "/api/password/forgot") return passwordForgot(request, env);
+    if (method === "POST" && path === "/api/password/check") return passwordCheck(request, env);
+    if (method === "POST" && path === "/api/password/reset") return passwordReset(request, env);
     if (method === "POST" && path === "/api/account/settings") return updateSettings(request, env);
     if (method === "GET" && path === "/api/account/orders") return customerOrders(request, env);
     if (method === "GET" && path === "/api/products") return products(request, env);
@@ -738,6 +741,104 @@ async function unsubscribeToken(env, email) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(email.toLowerCase()));
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
+
+// ---------- forgot password ----------
+// The reset link carries "user id.expiry.signature". The signature covers the current password
+// hash, so a link stops working once the password changes and nothing has to be stored.
+// Same format as server.py.
+const RESET_HOURS = 1, RESET_PER_ACCOUNT = 3, RESET_PER_IP = 10;
+const RESET_EXPIRED = "This link has expired or was already used. Ask for a new one.";
+const utcStamp = (secondsAgo = 0) => new Date(Date.now() - secondsAgo * 1000).toISOString().slice(0, 19).replace("T", " ");
+
+async function resetSignature(env, userId, expires, passwordHash) {
+  const secret = env.SECRET_KEY || env.ADMIN_PASSWORD || "rotaidem-dev-secret";
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`reset:${userId}:${expires}:${passwordHash || ""}`));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+}
+
+async function userForResetToken(env, token) {
+  const parts = String(token || "").trim().split(".");
+  if (parts.length !== 3 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+  const [userId, expires, signature] = [Number(parts[0]), Number(parts[1]), parts[2]];
+  if (expires < Date.now() / 1000) return null;
+  const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first();
+  if (!user || (await resetSignature(env, userId, expires, user.password_hash)) !== signature) return null;
+  return user;
+}
+
+function maskEmail(email) {
+  const [name, domain] = String(email || "").split("@");
+  return domain ? name.slice(0, 1) + "•".repeat(Math.max(1, Math.min(name.length - 1, 6))) + "@" + domain : "";
+}
+
+function resetEmailHtml(name, link) {
+  return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Reset your password</h1>
+<p style="margin:0 0 12px">Hi ${escHtml(name || "there")},</p>
+<p style="margin:0 0 20px">Someone (hopefully you) asked to reset the password of your Rotaidem account. Click the button to choose a new one. The link works for ${RESET_HOURS} hour and only once.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="${escHtml(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Choose a new password</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="${escHtml(link)}" style="color:#6d6f75;word-break:break-all">${escHtml(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not ask for this? Then you can ignore this email: your password stays the same. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>`;
+}
+
+// Always gives the same answer, so nobody can find out which addresses have an account.
+async function passwordForgot(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const ident = String(body.email || "").trim().toLowerCase();
+  if (!ident) return json({ error: "Enter the email address of your account" }, 400);
+  if (!resendKey(env)) return json({ error: "Password reset by email is not available right now. Please email Eliaz@rotaidem.com." }, 503);
+  const ip = request.headers.get("CF-Connecting-IP") || "";
+  const hourAgo = utcStamp(3600);
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND ip_address = ? AND created_at >= ?").bind(ip, hourAgo).first();
+  if (recent && recent.n >= RESET_PER_IP) return json({ error: "Too many requests. Please wait an hour and try again." }, 429);
+  const user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?").bind(ident, ident).first();
+  await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset_request', ?, ?, ?)")
+    .bind(user ? user.id : null, ident.slice(0, 200), ip, utcStamp()).run();
+  const answer = json({ ok: true, message: "If an account exists for that address, we have sent a link to reset the password. Check your inbox (and spam)." });
+  if (!user || !EMAIL_RE.test(user.email || "")) return answer;
+  const sentLately = await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND admin_id = ? AND created_at >= ?").bind(user.id, hourAgo).first();
+  if (sentLately && sentLately.n > RESET_PER_ACCOUNT) return answer; // enough emails for now; say the same thing
+  const expires = Math.floor(Date.now() / 1000) + RESET_HOURS * 3600;
+  const token = `${user.id}.${expires}.${await resetSignature(env, user.id, expires, user.password_hash)}`;
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const link = `${base}/reset-password?token=${encodeURIComponent(token)}`;
+  const res = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify([{ from: mailFrom(env), to: [user.email], subject: "Reset your Rotaidem password", html: resetEmailHtml(user.name, link) }]),
+  });
+  if (!res.ok) {
+    console.error("Password reset email failed:", explainResendError(env, res.status, await res.text()));
+    return json({ error: "The email could not be sent right now. Please try again later or email Eliaz@rotaidem.com." }, 502);
+  }
+  return answer;
+}
+
+async function passwordCheck(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const user = await userForResetToken(env, body.token);
+  if (!user) return json({ error: RESET_EXPIRED }, 400);
+  return json({ ok: true, email: maskEmail(user.email) });
+}
+
+async function passwordReset(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const user = await userForResetToken(env, body.token);
+  if (!user) return json({ error: RESET_EXPIRED }, 400);
+  const password = String(body.password || "");
+  if (password.length < 6) return json({ error: "The new password must be at least 6 characters" }, 400);
+  const token = crypto.randomUUID(); // signs out every other browser and signs this one in
+  await env.DB.prepare("UPDATE users SET password_hash = ?, token = ? WHERE id = ?").bind(await hashPassword(password), token, user.id).run();
+  await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)")
+    .bind(user.id, user.email || "", request.headers.get("CF-Connecting-IP") || "", utcStamp()).run();
+  return json({ token, name: user.name, email: user.email, role: user.role, is_admin: ["Owner", "Admin", "Support"].includes(user.role) });
 }
 
 async function subscribe(request, env) {

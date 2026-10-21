@@ -338,6 +338,121 @@ def me():
                              "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0}})
 
 
+# ---------- forgot password ----------
+# The reset link carries "user id.expiry.signature". The signature covers the current password
+# hash, so a link stops working as soon as the password changes (it can be used once) and nothing
+# has to be stored. Same format as the Cloudflare function.
+
+RESET_HOURS = 1
+RESET_PER_ACCOUNT, RESET_PER_IP = 3, 10  # requests per hour
+
+
+def utc_stamp(seconds_ago=0):
+    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def reset_signature(user_id, expires, password_hash):
+    message = f"reset:{user_id}:{expires}:{password_hash or ''}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def reset_token(user):
+    expires = int(time.time()) + RESET_HOURS * 3600
+    return f"{user['id']}.{expires}.{reset_signature(user['id'], expires, user['password_hash'])}"
+
+
+def user_for_reset_token(token):
+    """The user a reset link belongs to, or None when it is wrong, used or expired."""
+    try:
+        user_id, expires, signature = str(token or "").strip().split(".")
+        user_id, expires = int(user_id), int(expires)
+    except ValueError:
+        return None
+    if expires < time.time():
+        return None
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not user or not hmac.compare_digest(reset_signature(user_id, expires, user["password_hash"]), signature):
+        return None
+    return user
+
+
+def mask_email(email):
+    name, _, domain = str(email or "").partition("@")
+    return (name[:1] + "•" * max(1, min(len(name) - 1, 6)) + "@" + domain) if domain else ""
+
+
+def reset_email_html(name, link):
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Reset your password</h1>
+<p style="margin:0 0 12px">Hi {escape(name or "there")},</p>
+<p style="margin:0 0 20px">Someone (hopefully you) asked to reset the password of your Rotaidem account. Click the button to choose a new one. The link works for {RESET_HOURS} hour and only once.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="{escape(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Choose a new password</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="{escape(link)}" style="color:#6d6f75;word-break:break-all">{escape(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not ask for this? Then you can ignore this email: your password stays the same. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+@app.post("/api/password/forgot")
+def password_forgot():
+    """Always gives the same answer, so nobody can find out which addresses have an account."""
+    ident = str(body().get("email", "")).strip().lower()
+    if not ident:
+        return err("Enter the email address of your account", 400)
+    if not RESEND_API_KEY:
+        return err("Password reset by email is not available right now. Please email Eliaz@rotaidem.com.", 503)
+    ip = request.remote_addr or ""
+    hour_ago = utc_stamp(3600)
+    recent = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND ip_address = ? AND created_at >= ?",
+                        ip, hour_ago)
+    if recent and recent["n"] >= RESET_PER_IP:
+        return err("Too many requests. Please wait an hour and try again.", 429)
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", ident, ident)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset_request', ?, ?, ?)",
+             user["id"] if user else None, ident[:200], ip, utc_stamp())
+    answer = jsonify({"ok": True, "message": "If an account exists for that address, we have sent a link to reset the password. Check your inbox (and spam)."})
+    if not user or not EMAIL_RE.match(user["email"] or ""):
+        return answer
+    sent_lately = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND admin_id = ? AND created_at >= ?",
+                             user["id"], hour_ago)
+    if sent_lately and sent_lately["n"] > RESET_PER_ACCOUNT:
+        return answer  # enough emails for now; say the same thing
+    link = f"{site_url()}/reset-password?token={urllib.parse.quote(reset_token(user))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [user["email"]], "subject": "Reset your Rotaidem password",
+                                "html": reset_email_html(user["name"], link)}])
+    if error:
+        app.logger.error("Password reset email to user %s failed: %s", user["id"], error)
+        return err("The email could not be sent right now. Please try again later or email Eliaz@rotaidem.com.", 502)
+    return answer
+
+
+@app.post("/api/password/check")
+def password_check():
+    user = user_for_reset_token(body().get("token"))
+    if not user:
+        return err("This link has expired or was already used. Ask for a new one.", 400)
+    return jsonify({"ok": True, "email": mask_email(user["email"])})
+
+
+@app.post("/api/password/reset")
+def password_reset():
+    b = body()
+    user = user_for_reset_token(b.get("token"))
+    if not user:
+        return err("This link has expired or was already used. Ask for a new one.", 400)
+    password = str(b.get("password", ""))
+    if len(password) < 6:
+        return err("The new password must be at least 6 characters", 400)
+    token = uuid.uuid4().hex  # signs out every other browser and signs this one in
+    db().run("UPDATE users SET password_hash = ?, token = ? WHERE id = ?", hash_password(password), token, user["id"])
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)",
+             user["id"], user["email"] or "", request.remote_addr or "", utc_stamp())
+    return jsonify(session_payload(user, token))
+
+
 @app.post("/api/account/settings")
 def account_settings():
     user = current_user()

@@ -208,6 +208,9 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
 .auth-side p { color: #b8c1cc; }
 .auth-form { display: flex; align-items: center; justify-content: center; padding: 56px 24px; }
 .auth-form form { width: 100%; max-width: 400px; }
+.auth-form .forgot { text-align: right; font-size: 14px; margin: -8px 0 20px; }
+.auth-form .forgot a { color: var(--muted); }
+.auth-form .forgot a:hover { color: var(--ink); }
 .auth-form .alt-link { font-size: 14px; color: var(--muted); margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); }
 
 /* tables */
