@@ -1159,7 +1159,7 @@ def media_file(media_id, ext):
 # ---------- backup ----------
 
 BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
-                 "licenses", "license_activations", "media", "campaigns")
+                 "licenses", "license_activations", "media", "campaigns", "shared_profiles")
 
 
 def table_columns(d, table):
@@ -1405,7 +1405,13 @@ def api_not_found(_rest):
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True})
+    """For monitoring: says whether the database answers, nothing else."""
+    try:
+        db().first("SELECT 1 AS ok")
+        return jsonify({"ok": True, "database": "ok"})
+    except Exception:  # noqa: BLE001 - the reason goes to the log, not to visitors
+        app.logger.exception("Health check: database unavailable")
+        return jsonify({"ok": False, "database": "unavailable"}), 503
 
 
 @app.get("/")
@@ -1442,6 +1448,9 @@ def init_schema():
     """Create tables once. A database outage must not stop the site from serving pages."""
     global SCHEMA_READY
     if SCHEMA_READY:
+        return True
+    if os.environ.get("ROTAIDEM_NO_SCHEMA_UPDATE"):
+        SCHEMA_READY = True  # read-only diagnostics (strato/setup.py diagnose) must not change tables
         return True
     try:
         ensure_schema()

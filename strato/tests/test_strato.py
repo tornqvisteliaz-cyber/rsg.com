@@ -101,7 +101,8 @@ def empty_mysql(cfg):
 
 
 class Webspace:
-    """A temporary STRATO-like webspace: /rotaidem (the upload), /rotaidem-data, site files in /."""
+    """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
+    rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
     def __init__(self, db_values, resend_url):
         self.root = tempfile.mkdtemp(prefix="strato-")
@@ -112,6 +113,7 @@ class Webspace:
         shutil.copytree(os.path.join(REPO, "strato"), os.path.join(self.app, "strato"),
                         ignore=shutil.ignore_patterns("__pycache__", "installed.json", "tests"))
         self.data = os.path.join(self.root, "rotaidem-data")
+        self.public = os.path.join(self.root, "rotaidem-public")
         self.values = {"SECRET_KEY": "s" * 64, "CHECK_KEY": "checkkey123", "SITE_URL": "https://rotaidem.test",
                        "LICENSE_API_KEY": "generator-key-0123456789", "RESEND_API_KEY": "re_test", "RESEND_API_URL": resend_url,
                        "MAIL_FROM": "Rotaidem <no-reply@rotaidem.com>", **db_values}
@@ -119,7 +121,7 @@ class Webspace:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
                 "setup.install(sys.argv[2], sys.argv[3], __import__('json').loads(sys.argv[4]), tuple(sys.argv[5:8]))")
-        self.setup_out = self.run_python(["-c", code, os.path.join(self.app, "strato"), self.root, self.data,
+        self.setup_out = self.run_python(["-c", code, os.path.join(self.app, "strato"), self.public, self.data,
                                           json.dumps(self.values), *OWNER])
 
     def run_python(self, args, stdin=b""):
@@ -131,8 +133,14 @@ class Webspace:
     def setup_cmd(self, *args, stdin=""):
         return self.run_python([os.path.join(self.app, "strato", "setup.py"), *args], stdin.encode())
 
+    def setup_run(self, *args, stdin="", env=None):
+        """Like setup_cmd, but returns (exit code, output) instead of failing on a non-zero exit."""
+        p = subprocess.run([PY, os.path.join(self.app, "strato", "setup.py"), *args], input=stdin.encode(), capture_output=True,
+                           cwd=self.root, timeout=180, env={**os.environ, **(env or {})})
+        return p.returncode, p.stdout.decode() + p.stderr.decode()
+
     def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=()):
-        script_path = os.path.join(self.root, "cgi-bin", script)
+        script_path = os.path.join(self.public, "cgi-bin", script)
         env = {"PATH": "/usr/bin:/bin", "GATEWAY_INTERFACE": "CGI/1.1", "REQUEST_METHOD": method,
                "SCRIPT_NAME": "/cgi-bin/" + script, "SCRIPT_FILENAME": script_path, "PATH_INFO": path,
                "QUERY_STRING": query, "SERVER_NAME": "rotaidem.test", "SERVER_PORT": "443", "HTTPS": "on",
@@ -190,7 +198,7 @@ class StratoCGITests:
 
     def test_install_files_and_permissions(self):
         for name in ("rotaidem.py", "rotaidem-check.py"):
-            path = os.path.join(self.w.root, "cgi-bin", name)
+            path = os.path.join(self.w.public, "cgi-bin", name)
             with open(path, "rb") as fh:
                 raw = fh.read()
             self.assertTrue(raw.startswith(b"#!/usr/bin/python3\n"), "STRATO's interpreter path, LF line ends")
@@ -204,15 +212,22 @@ class StratoCGITests:
         db_file = os.path.join(self.w.data, "rotaidem.db")
         if os.path.exists(db_file):
             self.assertEqual(os.stat(db_file).st_mode & 0o777, 0o600)
-        with open(os.path.join(self.w.root, ".htaccess")) as fh:
+        with open(os.path.join(self.w.public, ".htaccess")) as fh:
             ht = fh.read()
         self.assertIn("E=HTTP_AUTHORIZATION", ht)
         self.assertIn("cgi-bin/rotaidem.py/$1", ht)
-        self.assertIn("RewriteRule ^(rotaidem|rotaidem\\-data)(/|$) - [F,L]", ht)
+        for risky in ("\nOptions", "\nDirectoryIndex"):  # hosts that forbid these answer 500 for the whole site
+            self.assertNotIn(risky, ht)
         for folder in (self.w.app, self.w.data):
             with open(os.path.join(folder, ".htaccess")) as fh:
                 self.assertIn("Require all denied", fh.read())
-        self.assertEqual(os.stat(os.path.join(self.w.root, "index.html")).st_mode & 0o777, 0o644)
+            self.assertFalse(folder.startswith(self.w.public + os.sep), "program and data stay outside the website folder")
+        for name in ("index.html", "login.html", "admin.html", "account.html", "site.css", "auth.js", "addons/index.html", "img/hero.jpg"):
+            self.assertEqual(os.stat(os.path.join(self.w.public, name)).st_mode & 0o777, 0o644, name)
+        for name in ("_routes.json", "server.py", "config.env", "rotaidem.db"):
+            self.assertFalse(os.path.exists(os.path.join(self.w.public, name)), f"{name} must not be public")
+        with open(os.path.join(self.w.public, "rotaidem-deploy.txt")) as fh:
+            self.assertRegex(fh.read(), r"^rotaidem [0-9a-f]{16}\n$")
 
     def test_permissions_command_never_opens_to_everyone(self):
         cfg = os.path.join(self.w.data, "config.env")
@@ -233,16 +248,16 @@ class StratoCGITests:
     def test_check_page(self):
         r = self.w.cgi("GET", "", script="rotaidem-check.py", query="key=checkkey123")
         html = self.ok(r).decode()
-        self.assertIn("Databasen kan läsas och skrivas", html)
-        server_rows = html.split("Från webbläsaren")[0]
+        self.assertIn("Database can be read and written", html)
+        server_rows = html.split("From your browser")[0]
         self.assertNotIn('class="bad"', server_rows, server_rows)
-        self.assertIn("ditt eget konto", server_rows)
+        self.assertIn("your own account", server_rows)
         self.assertEqual(self.w.cgi("GET", "", script="rotaidem-check.py", query="key=wrong").status, 404)
 
     # ---------- routing and login ----------
 
     def test_routing(self):
-        self.assertEqual(self.ok(self.w.cgi("GET", "/health")), {"ok": True})
+        self.assertEqual(self.ok(self.w.cgi("GET", "/health")), {"ok": True, "database": "ok"})
         self.assertEqual(self.w.cgi("GET", "/api/does-not-exist").status, 404)
         self.assertEqual(self.w.cgi("GET", "/api/does-not-exist").json(), {"error": "Not found"})
         self.assertEqual(self.w.cgi("GET", "/media/9999.jpg").status, 404)
@@ -405,20 +420,180 @@ class StratoCGITests:
         with open(path, "w") as fh:
             json.dump(data, fh)
 
-        out = self.w.setup_cmd("reset-catalog", stdin="nej\n")
-        self.assertIn("Avbrutet", out)
+        out = self.w.setup_cmd("reset-catalog", stdin="no\n")
+        self.assertIn("Cancelled", out)
         self.assertTrue(self.ok(self.w.cgi("GET", "/api/products"))["products"])
-        out = self.w.setup_cmd("reset-catalog", stdin="JA\n")
-        self.assertIn("En kopia sparades", out)
+        out = self.w.setup_cmd("reset-catalog", stdin="YES\n")
+        self.assertIn("A copy was saved", out)
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/products"))["products"], [])
         copies = [f for f in os.listdir(self.w.data) if f.startswith("products-before-reset-")]
         self.assertEqual(os.stat(os.path.join(self.w.data, copies[0])).st_mode & 0o777, 0o600)
 
-        self.assertIn("Avbrutet", self.w.setup_cmd("import", path, stdin="no\n"))
-        self.assertIn("Importen är klar", self.w.setup_cmd("import", path, stdin="JA\n"))
+        self.assertIn("Cancelled", self.w.setup_cmd("import", path, stdin="no\n"))
+        self.assertIn("Import finished", self.w.setup_cmd("import", path, stdin="YES\n"))
         names = [p["name"] for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]]
         self.assertIn("Backup Test", names)
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=self.owner_token))["user"]["role"], "Owner")
+
+
+    # ---------- deploy safety ----------
+
+    def test_refuses_unsafe_website_folders(self):
+        before = sorted(os.listdir(self.w.root))
+        for target in ("/", self.w.root, "rotaidem", "rotaidem/cloudflare/public", "rotaidem-data", "rotaidem-data/site"):
+            code, out = self.w.setup_run("deploy", "--public", target)
+            self.assertEqual(code, 2, f"{target}: {out}")
+            self.assertIn("Stopped:", out)
+        self.assertEqual(sorted(os.listdir(self.w.root)), before)
+        for folder in (self.w.root, self.w.app, self.w.data):
+            self.assertFalse(os.path.exists(os.path.join(folder, "index.html")), folder)
+
+    def test_redeploy_keeps_data_and_settings(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Redeploy Test", "status": "published"}, token=t))
+        ctoken, _email = self.customer("redeploy1")
+        with open(os.path.join(self.w.data, "config.env"), "rb") as fh:
+            config_before = fh.read()
+        with open(os.path.join(self.w.public, "rotaidem-deploy.txt")) as fh:
+            id_before = fh.read()
+        for _ in range(2):
+            out = self.w.setup_cmd("deploy")
+            self.assertIn("rotaidem-public", out)
+        with open(os.path.join(self.w.data, "config.env"), "rb") as fh:
+            self.assertEqual(fh.read(), config_before, "deploy must never rewrite the settings")
+        with open(os.path.join(self.w.public, "rotaidem-deploy.txt")) as fh:
+            self.assertNotEqual(fh.read(), id_before)
+        self.assertIn("Redeploy Test", [p["name"] for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=ctoken))["user"]["name"], "redeploy1")
+
+    def test_moves_the_old_root_layout_without_touching_it(self):
+        # What the earlier version produced: website files straight in the webspace root.
+        with open(os.path.join(self.w.root, "index.html"), "w") as fh:
+            fh.write("OLD COPY")
+        legacy = os.path.join(self.w.app, "strato", "installed.json")
+        with open(legacy, "w") as fh:
+            json.dump({"public_dir": self.w.root, "data_dir": self.w.data}, fh)
+        moved = os.path.join(self.w.data, "installed.json")
+        os.rename(moved, moved + ".hidden")
+        try:
+            users_before = len(self.ok(self.w.cgi("GET", "/api/admin/customers", token=self.owner_token))["customers"])
+            out = self.w.setup_cmd("deploy")
+            self.assertIn("Nothing in", out)
+            with open(os.path.join(self.w.root, "index.html")) as fh:
+                self.assertEqual(fh.read(), "OLD COPY", "the old copy is left alone")
+            with open(moved) as fh:
+                self.assertEqual(json.load(fh)["public_dir"], self.w.public)
+            self.assertEqual(len(self.ok(self.w.cgi("GET", "/api/admin/customers", token=self.owner_token))["customers"]), users_before)
+        finally:
+            os.remove(os.path.join(self.w.root, "index.html"))
+            os.remove(legacy)
+            if os.path.exists(moved + ".hidden"):
+                os.remove(moved + ".hidden")
+
+    def test_retires_old_rules_in_the_webspace_root(self):
+        root_ht = os.path.join(self.w.root, ".htaccess")
+        with open(root_ht, "w") as fh:
+            fh.write("# Rotaidem (written by rotaidem/strato/setup.py)\nOptions -Indexes\n")
+        code, out = self.w.setup_run("diagnose", "--offline")
+        self.assertEqual(code, 1)
+        self.assertIn("old Rotaidem rules", out)
+        out = self.w.setup_cmd("deploy")
+        self.assertFalse(os.path.exists(root_ht))
+        self.assertTrue(os.path.exists(root_ht + ".disabled-by-rotaidem"), out)
+        os.remove(root_ht + ".disabled-by-rotaidem")
+        with open(root_ht, "w") as fh:
+            fh.write("AddDefaultCharset UTF-8\n")  # someone else's file: never touched
+        try:
+            out = self.w.setup_cmd("deploy")
+            with open(root_ht) as fh:
+                self.assertEqual(fh.read(), "AddDefaultCharset UTF-8\n")
+            self.assertIn("was not written by setup.py", out)
+        finally:
+            os.remove(root_ht)
+
+    def test_diagnose_offline_is_read_only(self):
+        def snapshot():
+            modes = {}
+            for root, dirs, files in os.walk(self.w.data):
+                for name in dirs + files:
+                    path = os.path.join(root, name)
+                    modes[path] = (os.stat(path).st_mode & 0o777, os.path.getsize(path) if name == "config.env" else 0)
+            return modes
+        before = snapshot()
+        code, out = self.w.setup_run("diagnose", "--offline")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("[FAIL]", out)
+        self.assertIn("choose 'rotaidem-public' as the domain target", out)
+        self.assertIn("/health -> 200", out)
+        self.assertIn("Database (read-only)", out)
+        after = snapshot()
+        self.assertEqual({k: v for k, v in after.items() if "logs" not in k}, {k: v for k, v in before.items() if "logs" not in k})
+
+    def test_diagnose_finds_a_broken_cgi_script(self):
+        script = os.path.join(self.w.public, "cgi-bin", "rotaidem.py")
+        os.chmod(script, 0o644)
+        try:
+            code, out = self.w.setup_run("diagnose", "--offline")
+        finally:
+            os.chmod(script, 0o755)
+        self.assertEqual(code, 1)
+        self.assertIn("cgi-bin/rotaidem.py has mode 644; it must be 755", out)
+
+    def test_backup_command(self):
+        out = self.w.setup_cmd("backup")
+        backups = os.path.join(self.w.root, "rotaidem-backups")
+        newest = os.path.join(backups, sorted(d for d in os.listdir(backups) if not d.startswith("."))[-1])
+        self.assertEqual(os.stat(backups).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(newest).st_mode & 0o777, 0o700)
+        for name in ("rotaidem-data.tar.gz", "database.json"):
+            self.assertEqual(os.stat(os.path.join(newest, name)).st_mode & 0o777, 0o600, name)
+        with open(os.path.join(backups, ".htaccess")) as fh:
+            self.assertIn("Require all denied", fh.read())
+        with open(os.path.join(newest, "database.json")) as fh:
+            tables = json.load(fh)["tables"]
+        self.assertIn(OWNER[0], [u["name"] for u in tables["users"]])
+        self.assertIn("shared_profiles", tables)
+        self.assertIn("users:", out)
+        self.assertIn("Import finished", self.w.setup_cmd("import", os.path.join(newest, "database.json"), stdin="YES\n"))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=self.owner_token))["user"]["role"], "Owner")
+
+    # ---------- errors are safe ----------
+
+    def test_health_reports_the_database(self):
+        self.assertEqual(self.ok(self.w.cgi("GET", "/health")), {"ok": True, "database": "ok"})
+        cfg = os.path.join(self.w.data, "config.env")
+        with open(cfg, "rb") as fh:
+            original = fh.read()
+        broken = original.replace(b"MYSQL_PORT=", b"MYSQL_PORT=1#") if b"MYSQL_PORT=" in original else \
+            original.replace(b"DATA_DIR=", b"DATA_DIR=/proc/rotaidem-nope#")
+        with open(cfg, "wb") as fh:
+            fh.write(broken.replace(b"#", b"\nIGNORED="))
+        try:
+            r = self.w.cgi("GET", "/health")
+            self.assertEqual(r.status, 503)
+            self.assertEqual(r.json(), {"ok": False, "database": "unavailable"})
+            r = self.w.cgi("GET", "/api/site")
+            self.assertEqual(r.status, 503)
+            for leak in (b"Traceback", b"/proc", b"127.0.0.1", b"password"):
+                self.assertNotIn(leak, r.body)
+        finally:
+            with open(cfg, "wb") as fh:
+                fh.write(original)
+
+    def test_startup_failure_shows_no_details(self):
+        vendor = os.path.join(self.w.app, "strato", "vendor")
+        os.rename(vendor, vendor + ".away")
+        try:
+            r = self.w.cgi("GET", "/api/site", flags=("-S",))  # Flask cannot be imported
+        finally:
+            os.rename(vendor + ".away", vendor)
+        self.assertEqual(r.status, 503)
+        self.assertEqual(r.json(), {"error": "The service is temporarily unavailable. Please try again later."})
+        self.assertNotIn(self.w.app.encode(), r.body)
+        log = os.path.join(self.w.data, "logs", "cgi-error.log")
+        self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
+        with open(log) as fh:
+            self.assertIn("ModuleNotFoundError", fh.read())
 
 
 class SQLiteTests(StratoCGITests, unittest.TestCase):

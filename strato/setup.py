@@ -1,32 +1,58 @@
-"""Installs and maintains Rotaidem on STRATO Webhosting (or any Apache host with Python CGI).
+"""Installs, updates and diagnoses Rotaidem on STRATO Webhosting (Apache + Python CGI, no server process).
 
-Run over SSH from the webspace folder that contains the uploaded "rotaidem" folder:
+Layout in the webspace (STRATO's new platform: /home/www):
 
-    python3 rotaidem/strato/setup.py              first installation (asks questions)
-    python3 rotaidem/strato/setup.py update       after uploading a new version
-    python3 rotaidem/strato/setup.py check        tests the settings and the database
-    python3 rotaidem/strato/setup.py permissions  makes the settings and database private again
+    /home/www/rotaidem/          program source (this repository) - never served
+    /home/www/rotaidem-data/     settings (config.env), logs, SQLite file if used - never served
+    /home/www/rotaidem-public/   the website - select THIS folder as the domain target at STRATO
+    /home/www/rotaidem-backups/  made by the backup command - never served
+
+STRATO's new platform cannot use the webspace root (/home/www) as a domain target, and the program and
+data must not sit inside the folder the domain shows, so the website gets its own folder.
+
+Commands (run over SSH in /home/www):
+
+    python3 rotaidem/strato/setup.py deploy       install or update the website; keeps all data
+    python3 rotaidem/strato/setup.py diagnose     read-only checks: files, permissions, CGI, database, DNS, HTTP
+    python3 rotaidem/strato/setup.py backup       copies the settings and the whole database to rotaidem-backups
+    python3 rotaidem/strato/setup.py install      first installation: asks for the database and the admin account
     python3 rotaidem/strato/setup.py password     sets a new password for an account
-    python3 rotaidem/strato/setup.py import FILE  loads a backup downloaded from the old site
+    python3 rotaidem/strato/setup.py permissions [group]   makes the settings private again
+    python3 rotaidem/strato/setup.py import FILE  loads a backup (replaces the database contents; asks first)
     python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
+
+Options:  deploy --public FOLDER   use another website folder (relative to the webspace or absolute)
+          deploy --cgi-htaccess    also enable CGI with cgi-bin/.htaccess (only if diagnose says CGI does not run)
+          diagnose --offline       skip the DNS and HTTP tests;  diagnose DOMAIN   test another domain
 """
 import getpass
 import json
 import os
-import re
 import secrets
 import shutil
+import socket
+import ssl
+import subprocess
 import sys
+import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
 STRATO_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(STRATO_DIR)
+WEBSPACE = os.path.dirname(APP_DIR)
 PUBLIC_SRC = os.path.join(APP_DIR, "cloudflare", "public")
-DEFAULT_DATA_DIR = os.path.join(os.path.dirname(APP_DIR), "rotaidem-data")
+DEFAULT_DATA_DIR = os.path.join(WEBSPACE, "rotaidem-data")
+DEFAULT_PUBLIC_DIR = os.path.join(WEBSPACE, "rotaidem-public")
+BACKUP_DIR = os.path.join(WEBSPACE, "rotaidem-backups")
 CONFIG_NAME = "config.env"
-LOCATION_FILE = os.path.join(STRATO_DIR, "installed.json")  # remembers the folders for update/check
+LOCATION_NAME = "installed.json"  # in the data folder, so it survives replacing the program folder
+LEGACY_LOCATION = os.path.join(STRATO_DIR, LOCATION_NAME)
 SKIP_PUBLIC = {"_routes.json", "_headers", "_redirects"}  # Cloudflare-only files
+DEPLOY_ID_FILE = "rotaidem-deploy.txt"  # public; lets diagnose prove which folder the domain shows
+CGI_PYTHON = "/usr/bin/python3"  # STRATO's documented interpreter path
 MARK = "# Rotaidem (written by rotaidem/strato/setup.py)"
 
 sys.path.insert(0, STRATO_DIR)
@@ -46,19 +72,19 @@ def ask(question, default=""):
 
 
 def ask_yes(question, default=True):
-    hint = "J/n" if default else "j/N"
+    hint = "Y/n" if default else "y/N"
     answer = input(f"{question} ({hint}): ").strip().lower()
-    return default if not answer else answer in ("j", "ja", "y", "yes")
+    return default if not answer else answer in ("y", "yes", "j", "ja")
 
 
 def ask_secret(question, min_length=0, confirm=False):
     while True:
         value = getpass.getpass(f"{question}: ")
         if len(value) < min_length:
-            say(f"  Minst {min_length} tecken. Försök igen.")
+            say(f"  At least {min_length} characters. Try again.")
             continue
-        if confirm and getpass.getpass("Skriv samma igen: ") != value:
-            say("  De två var inte lika. Försök igen.")
+        if confirm and getpass.getpass("Type it again: ") != value:
+            say("  The two did not match. Try again.")
             continue
         return value
 
@@ -67,18 +93,6 @@ def write_file(path, text, mode=0o644):
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     os.chmod(path, mode)
-
-
-def load_location():
-    if not os.path.exists(LOCATION_FILE):
-        say("Rotaidem är inte installerat än. Kör först:  python3 rotaidem/strato/setup.py")
-        sys.exit(1)
-    with open(LOCATION_FILE, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def save_location(public_dir, data_dir):
-    write_file(LOCATION_FILE, json.dumps({"public_dir": public_dir, "data_dir": data_dir}, indent=2) + "\n")
 
 
 def config_path(data_dir):
@@ -92,26 +106,104 @@ def write_config(path, values):
     write_file(path, "\n".join(lines) + "\n", 0o600)
 
 
+def read_location():
+    """Where the last deploy put things. Older versions kept this file inside the program folder."""
+    for path in (os.path.join(DEFAULT_DATA_DIR, LOCATION_NAME), LEGACY_LOCATION):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def save_location(data_dir, info):
+    write_file(os.path.join(data_dir, LOCATION_NAME), json.dumps(info, indent=2) + "\n", 0o600)
+
+
+def current_data_dir():
+    return read_location().get("data_dir") or DEFAULT_DATA_DIR
+
+
+def require_config(data_dir):
+    cfg = config_path(data_dir)
+    if not os.path.isfile(cfg):
+        say(f"No settings found at {cfg}.")
+        say("For a first installation run:  python3 rotaidem/strato/setup.py install")
+        sys.exit(1)
+    return cgi_app.load_config(cfg)
+
+
 def connect(data_dir):
-    """Load the settings and return server.py's database class, as the website itself would."""
+    """Load the settings and return server.py, as the website itself would."""
     cgi_app.prepare(APP_DIR, config_path(data_dir))
     import server
     return server
 
 
-# ---------- installing the files ----------
+def inside(path, folder):
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
 
-def htaccess_public(public_dir, data_dir):
-    inside = []
-    for folder in (APP_DIR, data_dir):
-        rel = os.path.relpath(folder, public_dir)
-        if not rel.startswith(".."):
-            inside.append(re.escape(rel.replace(os.sep, "/")))
-    block_internal = f"RewriteRule ^({'|'.join(inside)})(/|$) - [F,L]\n" if inside else ""
+
+def public_dir_problem(public_dir, data_dir):
+    """Why a folder must not become the website folder, or None. The website folder is public:
+    it must not be, or contain, the program, the private data or the backups."""
+    for label, folder in (("the program folder", APP_DIR), ("the private data folder", data_dir), ("the backups folder", BACKUP_DIR)):
+        if inside(public_dir, folder):
+            return f"{public_dir} is inside {label} ({folder})."
+        if inside(folder, public_dir):
+            return (f"{public_dir} contains {label} ({folder}), which would put private files under the website. "
+                    "(STRATO's new platform also cannot show the webspace root.)")
+    if os.path.isdir(public_dir):
+        for marker in ("server.py", ".git", "strato", "website"):
+            if os.path.exists(os.path.join(public_dir, marker)):
+                return f"{public_dir} looks like a copy of the program source (it has '{marker}')."
+    return None
+
+
+def parent_htaccess_files(public_dir):
+    """.htaccess files in the folders above the website folder (inside the webspace). Apache applies
+    those to the website as well."""
+    found, folder = [], os.path.dirname(os.path.realpath(public_dir))
+    while inside(folder, WEBSPACE):
+        path = os.path.join(folder, ".htaccess")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                found.append((path, MARK in fh.read()))
+        if os.path.realpath(folder) == os.path.realpath(WEBSPACE):
+            break
+        folder = os.path.dirname(folder)
+    return found
+
+
+def retire_parent_htaccess(public_dir):
+    """An earlier version wrote its rules straight into the webspace root. Apache would still apply
+    them to the new website folder (and some hosts answer 500 to the 'Options' line in it), so that
+    file - and only a file this program wrote - is renamed, never deleted."""
+    for path, ours in parent_htaccess_files(public_dir):
+        if not ours:
+            say(f"  Note: {path} was not written by setup.py; it is left alone, but Apache applies it to the website too.")
+            continue
+        target = path + ".disabled-by-rotaidem"
+        if os.path.exists(target):
+            target += datetime.now().strftime("-%Y%m%d-%H%M%S")
+        os.rename(path, target)
+        say(f"  The old rules in {path} also applied to the website folder; renamed to {target}")
+
+
+def rel_name(path):
+    rel = os.path.relpath(path, WEBSPACE)
+    return path if rel.startswith("..") else rel
+
+
+# ---------- what gets installed ----------
+
+def htaccess_public():
     return f"""{MARK}
-# The website is plain files. Only /api/..., /media/... and /health go to the Python program.
-Options -Indexes
-DirectoryIndex index.html
+# The website is plain files. Only /api/..., /media/... and /health go to the Python program,
+# which Apache starts per request (CGI): no server process has to keep running.
+# No "Options" or "DirectoryIndex" lines on purpose: hosts that do not allow them answer 500.
 ErrorDocument 404 /404.html
 
 <IfModule mod_rewrite.c>
@@ -122,11 +214,17 @@ RewriteBase /
 RewriteCond %{{HTTP:Authorization}} .
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{{HTTP:Authorization}}]
 
-# Never serve the program folder or the settings and database folder.
-{block_internal}RewriteRule (^|/)\\.(?!well-known) - [F,L]
+# Hidden files, and file types that never belong to the public website.
+RewriteRule (^|/)\\.(?!well-known/) - [F,L]
+RewriteRule ^(?!cgi-bin/).*\\.(py|pyc|env|ini|cfg|sql|sqlite|sqlite3|db|log|bak)$ - [F,L]
 
-# The backend: Apache runs cgi-bin/rotaidem.py for each request; no server process has to keep running.
+# The backend.
 RewriteRule ^((api|media)/.*|health)$ cgi-bin/rotaidem.py/$1 [L,QSA]
+
+# No folder listings: a folder without index.html is refused.
+RewriteCond %{{REQUEST_FILENAME}} -d
+RewriteCond %{{REQUEST_FILENAME}}/index.html !-f
+RewriteRule ^ - [F,L]
 
 # Pretty addresses: /login serves login.html, /heavypro serves heavypro.html, and so on.
 RewriteCond %{{REQUEST_FILENAME}} !-f
@@ -146,6 +244,13 @@ Header set Cache-Control "private, no-store"
 """
 
 
+HTACCESS_CGI = f"""{MARK}
+# Written by: setup.py deploy --cgi-htaccess
+# Only needed where the host does not already run scripts in cgi-bin.
+Options +ExecCGI
+AddHandler cgi-script .py
+"""
+
 DENY_ALL = f"""{MARK}
 # Nothing in this folder may be downloaded from the web.
 <IfModule mod_authz_core.c>
@@ -159,7 +264,7 @@ Deny from all
 
 
 def cgi_script(target, data_dir):
-    return f"""#!/usr/bin/python3
+    return f"""#!{CGI_PYTHON}
 # Written by rotaidem/strato/setup.py. Runs the Rotaidem backend once per request (CGI).
 import sys
 sys.path.insert(0, {STRATO_DIR!r})
@@ -168,8 +273,12 @@ cgi_app.{target}({APP_DIR!r}, {config_path(data_dir)!r})
 """
 
 
-def install_files(public_dir, data_dir):
-    say("Kopierar webbplatsens filer ...")
+def install_files(public_dir, data_dir, cgi_htaccess, deploy_id):
+    """Copy the website into public_dir. Only writes inside public_dir, plus the deny-all
+    .htaccess files that keep the program and data folders private."""
+    say(f"Copying the website into {public_dir} ...")
+    os.makedirs(public_dir, exist_ok=True)
+    os.chmod(public_dir, 0o755)
     for name in os.listdir(PUBLIC_SRC):
         if name in SKIP_PUBLIC:
             continue
@@ -178,14 +287,10 @@ def install_files(public_dir, data_dir):
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
-    # The web server must be able to read the public pages, whatever modes the upload left behind.
-    for name in os.listdir(PUBLIC_SRC):
-        top = os.path.join(public_dir, name)
-        if name in SKIP_PUBLIC:
-            continue
-        if os.path.isfile(top):
-            os.chmod(top, 0o644)
-        for root, dirs, files in os.walk(top):
+        # The web server must be able to read the pages, whatever modes the upload left behind.
+        if os.path.isfile(dst):
+            os.chmod(dst, 0o644)
+        for root, _dirs, files in os.walk(dst):
             os.chmod(root, 0o755)
             for f in files:
                 os.chmod(os.path.join(root, f), 0o644)
@@ -197,8 +302,8 @@ def install_files(public_dir, data_dir):
         backup = htaccess + ".before-rotaidem"
         if MARK not in old and not os.path.exists(backup):
             shutil.copy2(htaccess, backup)
-            say(f"  Den gamla .htaccess sparades som {backup}")
-    write_file(htaccess, htaccess_public(public_dir, data_dir))
+            say(f"  The previous .htaccess was kept as {backup}")
+    write_file(htaccess, htaccess_public())
     write_file(os.path.join(APP_DIR, ".htaccess"), DENY_ALL)
     write_file(os.path.join(data_dir, ".htaccess"), DENY_ALL)
 
@@ -207,36 +312,47 @@ def install_files(public_dir, data_dir):
     os.chmod(cgi_bin, 0o755)
     for name, target in (("rotaidem.py", "run"), ("rotaidem-check.py", "run_check")):
         write_file(os.path.join(cgi_bin, name), cgi_script(target, data_dir), 0o755)
+    cgi_ht = os.path.join(cgi_bin, ".htaccess")
+    if cgi_htaccess:
+        write_file(cgi_ht, HTACCESS_CGI)
+    elif os.path.exists(cgi_ht):
+        with open(cgi_ht, encoding="utf-8", errors="replace") as fh:
+            if MARK in fh.read():
+                os.remove(cgi_ht)  # ours from an earlier --cgi-htaccess deploy; anything else is left alone
+    write_file(os.path.join(public_dir, DEPLOY_ID_FILE), f"rotaidem {deploy_id}\n")
 
 
 def prepare_database(data_dir):
-    say("Skapar tabellerna i databasen ...")
+    say("Checking the database tables (this never deletes anything) ...")
     server = connect(data_dir)
     server.ensure_schema()
     d = server.DB()
-    users = d.first("SELECT COUNT(*) AS n FROM users")["n"]
+    counts = {t: d.first(f"SELECT COUNT(*) AS n FROM {t}")["n"] for t in ("users", "products", "orders", "licenses")}
     d.close()
+    os.makedirs(os.path.join(data_dir, "logs"), exist_ok=True)
     secure_data(data_dir)
-    say(f"  Databasen fungerar. Konton just nu: {users}")
+    say("  Database OK: " + ", ".join(f"{n} {t}" for t, n in counts.items()))
 
 
 def secure_data(data_dir, group=False):
-    """Only your own account may open the settings and the SQLite database (with group=True also your
-    group). Never other users: on shared hosting those are other customers."""
+    """Only your own account may open the settings, logs and the SQLite database (with group=True
+    also your group). Never other users: on shared hosting those are other customers."""
     sqlite = not cgi_app.load_config(config_path(data_dir)).get("MYSQL_HOST")
-    # SQLite writes a journal file next to the database, so the folder itself must be writable.
+    # SQLite writes a journal next to the database and the program writes logs, so with group
+    # access those folders must be group-writable.
     dir_mode = (0o770 if sqlite else 0o750) if group else 0o700
     os.chmod(data_dir, dir_mode)
-    for name in os.listdir(data_dir):
-        path = os.path.join(data_dir, name)
-        if not os.path.isfile(path):
-            continue
-        if name == ".htaccess":
-            os.chmod(path, 0o644)  # holds no secrets; Apache may need to read it
-        elif name.startswith("rotaidem.db"):
-            os.chmod(path, 0o660 if group else 0o600)
-        else:
-            os.chmod(path, 0o640 if group else 0o600)
+    for root, dirs, files in os.walk(data_dir):
+        for name in dirs:
+            os.chmod(os.path.join(root, name), 0o770 if group else 0o700)
+        for name in files:
+            path = os.path.join(root, name)
+            if name == ".htaccess":
+                os.chmod(path, 0o644)  # holds no secrets; Apache may need to read it
+            elif name.startswith("rotaidem.db") or root != data_dir:
+                os.chmod(path, 0o660 if group else 0o600)
+            else:
+                os.chmod(path, 0o640 if group else 0o600)
 
 
 def ensure_owner(data_dir, name, email, password):
@@ -251,79 +367,122 @@ def ensure_owner(data_dir, name, email, password):
         d.run("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'Owner')",
               name, email, server.hash_password(password))
     d.close()
-    say(f"  Administratörskontot {name} är klart.")
+    say(f"  Admin account {name} is ready.")
 
 
-def install(public_dir, data_dir, values, owner=None):
+def deploy_to(public_dir, data_dir, cgi_htaccess=False):
+    problem = public_dir_problem(public_dir, data_dir)
+    if problem:
+        say("Stopped: " + problem)
+        say(f"Use the default website folder ({rel_name(DEFAULT_PUBLIC_DIR)}) or another empty folder.")
+        sys.exit(2)
+    old = read_location()
+    deploy_id = secrets.token_hex(8)
+    retire_parent_htaccess(public_dir)
+    install_files(public_dir, data_dir, cgi_htaccess, deploy_id)
+    prepare_database(data_dir)
+    save_location(data_dir, {"public_dir": public_dir, "data_dir": data_dir, "app_dir": APP_DIR,
+                             "cgi_htaccess": bool(cgi_htaccess), "deploy_id": deploy_id,
+                             "deployed_at": datetime.now().isoformat(timespec="seconds")})
+    if os.path.exists(LEGACY_LOCATION):
+        say(f"  (Older location file {LEGACY_LOCATION} is no longer used.)")
+    if old.get("public_dir") and os.path.realpath(old["public_dir"]) != os.path.realpath(public_dir):
+        say(f"  The previous website folder {old['public_dir']} was left untouched; it is no longer used.")
+
+
+def install(public_dir, data_dir, values, owner=None, cgi_htaccess=False):
     """Everything after the questions: used by cmd_install and by the automated tests."""
     os.makedirs(data_dir, exist_ok=True)
     os.chmod(data_dir, 0o700)
     cfg = config_path(data_dir)
     if not os.path.exists(cfg) or values != cgi_app.load_config(cfg):
         write_config(cfg, values)
-        say(f"Inställningarna sparades i {cfg}")
-    save_location(public_dir, data_dir)
-    install_files(public_dir, data_dir)
-    prepare_database(data_dir)
+        say(f"Settings saved in {cfg}")
+    deploy_to(public_dir, data_dir, cgi_htaccess)
     if owner:
         ensure_owner(data_dir, *owner)
 
 
-# ---------- commands ----------
+# ---------- deploy ----------
+
+def resolve_public_dir(arg, data_dir):
+    if arg:
+        return os.path.normpath(arg if os.path.isabs(arg) else os.path.join(WEBSPACE, arg.strip("/")))
+    previous = read_location().get("public_dir")
+    if previous:
+        if not public_dir_problem(previous, data_dir):
+            return previous
+        say(f"The previous installation put the website straight into {previous}.")
+        say("That folder cannot be a domain target on STRATO's new platform, and it also holds the program")
+        say(f"and its data. The website now gets its own folder: {DEFAULT_PUBLIC_DIR}")
+        say(f"Nothing in {previous} is deleted or changed.")
+        say()
+    return DEFAULT_PUBLIC_DIR
+
+
+def cmd_deploy(args):
+    data_dir = current_data_dir()
+    require_config(data_dir)
+    public_arg = None
+    if "--public" in args:
+        i = args.index("--public")
+        public_arg = args[i + 1] if i + 1 < len(args) else ""
+    cgi_htaccess = read_location().get("cgi_htaccess", False)
+    if "--cgi-htaccess" in args:
+        cgi_htaccess = True
+    if "--no-cgi-htaccess" in args:
+        cgi_htaccess = False
+    public_dir = resolve_public_dir(public_arg, data_dir)
+    say("=== Rotaidem deploy ===")
+    say(f"Program:        {APP_DIR}")
+    say(f"Private data:   {data_dir}  (kept as it is)")
+    say(f"Website folder: {public_dir}")
+    say()
+    deploy_to(public_dir, data_dir, cgi_htaccess)
+    say()
+    diagnose(offline=True, brief=True)
+    say()
+    say("=== Next step at STRATO ===")
+    say(f"Domains > rotaidem.com > target / Ziel: choose the folder  {rel_name(public_dir)}")
+    say("Do the same for www.rotaidem.com if it is listed separately. Do not change DNS or e-mail settings.")
+    say("Then run:  python3 rotaidem/strato/setup.py diagnose")
+
+
+# ---------- first installation ----------
 
 def ask_database():
     while True:
         say()
-        say("Var ska databasen ligga?")
-        say("  1 = MySQL-databas som ingår i ditt STRATO-paket (rekommenderas)")
-        say("  2 = En SQLite-fil i mappen rotaidem-data")
-        choice = ask("Välj 1 eller 2", "1")
-        if choice == "2":
+        say("Where should the database live?")
+        say("  1 = the MySQL database included in your STRATO package (recommended)")
+        say("  2 = a SQLite file in the rotaidem-data folder")
+        if ask("Choose 1 or 2", "1") == "2":
             return {}
-        say("Uppgifterna finns hos STRATO under Datenbanken / Databaser (Datenbankverwaltung).")
+        say("The details are in the STRATO login under Databases (Datenbankverwaltung).")
         values = {
-            "MYSQL_HOST": ask("Server (Host), t.ex. database-5012345678.webspace-host.com"),
+            "MYSQL_HOST": ask("Server (host), e.g. database-5012345678.webspace-host.com"),
             "MYSQL_PORT": ask("Port", "3306"),
-            "MYSQL_DATABASE": ask("Databasnamn, t.ex. dbs12345678"),
-            "MYSQL_USER": ask("Användarnamn, t.ex. dbu12345678"),
-            "MYSQL_PASSWORD": ask_secret("Databasens lösenord (syns inte när du skriver)"),
+            "MYSQL_DATABASE": ask("Database name, e.g. dbs12345678"),
+            "MYSQL_USER": ask("User name, e.g. dbu12345678"),
+            "MYSQL_PASSWORD": ask_secret("Database password (not shown while typing)"),
         }
         try:
-            sys.path.insert(0, os.path.join(STRATO_DIR, "vendor"))
-            import pymysql
-            options = dict(host=values["MYSQL_HOST"], port=int(values["MYSQL_PORT"]), user=values["MYSQL_USER"],
-                           password=values["MYSQL_PASSWORD"], database=values["MYSQL_DATABASE"], connect_timeout=10)
-            try:
-                pymysql.connect(ssl={"check_hostname": False}, **options).close()  # same as server.py
-            except Exception:  # noqa: BLE001
-                pymysql.connect(**options).close()
-            say("  Anslutningen till MySQL fungerar.")
+            raw_connect(values).close()
+            say("  The MySQL connection works.")
             return values
         except Exception as exc:  # noqa: BLE001
-            say(f"  Kunde inte ansluta: {exc}")
-            if not ask_yes("Försöka igen?"):
+            say(f"  Could not connect: {exc}")
+            if not ask_yes("Try again?"):
                 sys.exit(1)
 
 
 def cmd_install():
-    say("=== Installera Rotaidem på STRATO ===")
-    say(f"Programmet ligger i: {APP_DIR}")
-    say()
-    say("Vilken mapp visar STRATO för rotaidem.com? Det står hos STRATO under")
-    say("Domains > Domainverwaltung > rotaidem.com > Einstellungen (Ziel / Verzeichnis).")
-    say("Står det bara / är det mappen nedan. Ändra inget hos STRATO, skriv bara av mappen.")
-    webspace = os.path.dirname(APP_DIR)
-    while True:
-        folder = ask("Mappen för rotaidem.com", "/")
-        public_dir = os.path.normpath(os.path.join(webspace, folder.strip("/"))) if not folder.startswith(webspace) else folder
-        if os.path.isdir(public_dir):
-            break
-        say(f"  Hittar inte {public_dir}. Kontrollera stavningen.")
-    data_dir = DEFAULT_DATA_DIR
+    say("=== Install Rotaidem on STRATO ===")
+    say(f"Program folder: {APP_DIR}")
+    data_dir = current_data_dir()
     cfg = config_path(data_dir)
     owner = None
-
-    if os.path.exists(cfg) and ask_yes("Det finns redan inställningar. Behålla dem?"):
+    if os.path.exists(cfg) and ask_yes(f"Settings already exist in {cfg}. Keep them (recommended)?"):
         values = cgi_app.load_config(cfg)
     else:
         values = {"SECRET_KEY": secrets.token_hex(32), "CHECK_KEY": secrets.token_hex(8)}
@@ -331,133 +490,471 @@ def cmd_install():
         if "MYSQL_HOST" not in values:
             values["DATA_DIR"] = data_dir
         say()
-        say("Ditt administratörskonto (lösenordet sparas bara krypterat i databasen):")
-        owner = (ask("Användarnamn", "eliaz"), ask("E-post", "Eliaz@rotaidem.com"),
-                 ask_secret("Lösenord, minst 8 tecken (syns inte när du skriver)", 8, confirm=True))
+        say("Your admin account (the password is only stored hashed, in the database):")
+        owner = (ask("User name", "eliaz"), ask("E-mail", "Eliaz@rotaidem.com"),
+                 ask_secret("Password, at least 8 characters (not shown while typing)", 8, confirm=True))
         say()
-        values["SITE_URL"] = ask("Webbplatsens adress", "https://rotaidem.com")
+        values["SITE_URL"] = ask("Website address", "https://rotaidem.com")
         say()
-        say("E-post via Resend (för licensmejl och utskick). Tryck bara Enter för att hoppa över.")
-        key = ask("RESEND_API_KEY (börjar med re_)")
+        say("E-mail through Resend (licence e-mails and newsletters). Press Enter to skip.")
+        key = ask("RESEND_API_KEY (starts with re_)")
         if key:
             values["RESEND_API_KEY"] = key
-            values["MAIL_FROM"] = ask("Avsändare", "Rotaidem <no-reply@rotaidem.com>")
+            values["MAIL_FROM"] = ask("Sender", "Rotaidem <no-reply@rotaidem.com>")
         say()
-        say("Nyckeln som licensgeneratorn använder. Har du en från Render, klistra in samma.")
-        values["LICENSE_API_KEY"] = ask("LICENSE_API_KEY (Enter = skapa en ny)") or secrets.token_hex(24)
-
+        say("The key the licence generator uses. If you already have one, paste the same one.")
+        values["LICENSE_API_KEY"] = ask("LICENSE_API_KEY (Enter = create a new one)") or secrets.token_hex(24)
+    say()
+    folder = ask("Website folder inside the webspace", rel_name(resolve_public_dir(None, data_dir)))
+    public_dir = os.path.normpath(folder if os.path.isabs(folder) else os.path.join(WEBSPACE, folder.strip("/")))
     install(public_dir, data_dir, values, owner)
-    finish(values)
-
-
-def finish(values):
     site = values.get("SITE_URL", "https://rotaidem.com").rstrip("/")
     say()
-    say("=== Klart ===")
-    say("1. Öppna kontrollsidan i webbläsaren. Allt ska vara grönt:")
-    say(f"   {site}/cgi-bin/rotaidem-check.py?key={values.get('CHECK_KEY', '')}")
-    say(f"2. Logga in på {site}/login med ditt administratörskonto.")
-    if values.get("LICENSE_API_KEY"):
-        say(f"3. Licensgeneratorns nyckel (LICENSE_API_KEY): {values['LICENSE_API_KEY']}")
+    say("=== Done ===")
+    say(f"1. At STRATO, choose the folder {rel_name(public_dir)} as the target of rotaidem.com (and www).")
+    say("2. Run:  python3 rotaidem/strato/setup.py diagnose")
+    say(f"3. Check page in the browser:  {site}/cgi-bin/rotaidem-check.py?key=<CHECK_KEY from config.env>")
+    say(f"4. Log in at {site}/login")
 
 
-def cmd_update():
-    loc = load_location()
-    install_files(loc["public_dir"], loc["data_dir"])
-    prepare_database(loc["data_dir"])
-    say("Uppdateringen är klar.")
+# ---------- diagnose (read-only) ----------
+
+class Report:
+    def __init__(self):
+        self.fails, self.warns = [], []
+
+    def ok(self, text):
+        say(f"  [ OK ] {text}")
+
+    def warn(self, text, hint=""):
+        self.warns.append(text)
+        say(f"  [WARN] {text}" + (f"\n         -> {hint}" if hint else ""))
+
+    def fail(self, text, hint=""):
+        self.fails.append(text)
+        say(f"  [FAIL] {text}" + (f"\n         -> {hint}" if hint else ""))
 
 
-def cmd_check():
-    loc = load_location()
-    cfg = config_path(loc["data_dir"])
-    say(f"Webbplatsens mapp: {loc['public_dir']}")
-    say(f"Inställningar:     {cfg}")
-    values = cgi_app.load_config(cfg)
-    say("Databas:           " + ("MySQL " + values["MYSQL_HOST"] if values.get("MYSQL_HOST") else "SQLite i " + values.get("DATA_DIR", "")))
-    cgi_app.prepare(APP_DIR, cfg)  # also puts strato/vendor on the path, as the website does
+def mode_of(path):
+    return os.stat(path).st_mode & 0o777
+
+
+def tail(path, lines=15):
     try:
-        import flask
-        from importlib.metadata import version
-        say(f"Flask:             {version('flask')} ({os.path.dirname(flask.__file__)})")
-    except ImportError:
-        say("Flask:             SAKNAS. Se felsökning i STRATO.md.")
-    prepare_database(loc["data_dir"])
-    site = values.get("SITE_URL", "https://rotaidem.com").rstrip("/")
-    try:
-        with urllib.request.urlopen(site + "/api/site", timeout=20) as resp:
-            json.load(resp)
-        say(f"Webbplatsen svarar på {site}/api/site")
-    except Exception as exc:  # noqa: BLE001 - SSH may not be allowed to reach the web; the check page covers it
-        say(f"Kunde inte testa {site}/api/site härifrån ({exc}). Öppna kontrollsidan i webbläsaren i stället.")
-    say(f"Kontrollsida: {site}/cgi-bin/rotaidem-check.py?key={values.get('CHECK_KEY', '')}")
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-lines:])
+    except OSError:
+        return ""
 
+
+def run_cgi(script, path, extra_env=None):
+    """Run a CGI entry point the way Apache would, but from SSH. Returns (status, headers, body)."""
+    env = {"PATH": "/usr/bin:/bin", "GATEWAY_INTERFACE": "CGI/1.1", "REQUEST_METHOD": "GET", "PATH_INFO": path,
+           "QUERY_STRING": "", "SCRIPT_NAME": "/cgi-bin/" + os.path.basename(script), "SCRIPT_FILENAME": script,
+           "SERVER_NAME": "localhost", "SERVER_PORT": "443", "HTTPS": "on", "SERVER_PROTOCOL": "HTTP/1.1",
+           "REMOTE_ADDR": "127.0.0.1", "ROTAIDEM_NO_SCHEMA_UPDATE": "1", **(extra_env or {})}
+    python = CGI_PYTHON if os.path.exists(CGI_PYTHON) else sys.executable
+    p = subprocess.run([python, script], env=env, capture_output=True, timeout=90)
+    head, _, body = p.stdout.partition(b"\r\n\r\n")
+    headers = {}
+    for line in head.decode("latin-1").split("\r\n"):
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    status = int(headers.get("status", "200").split()[0]) if p.stdout else 0
+    return status, headers, body.decode("utf-8", "replace")
+
+
+def check_layout(r, loc, data_dir, values):
+    say("Program and settings")
+    if sys.version_info >= (3, 9):
+        r.ok(f"Python {sys.version.split()[0]} for SSH")
+    else:
+        r.fail(f"Python {sys.version.split()[0]} is too old", "Run with python3 (3.9 or newer).")
+    if os.path.exists(CGI_PYTHON):
+        version = subprocess.run([CGI_PYTHON, "--version"], capture_output=True, text=True).stdout.strip()
+        r.ok(f"{CGI_PYTHON} exists ({version}): the CGI scripts use it")
+    else:
+        r.fail(f"{CGI_PYTHON} does not exist", "The CGI scripts cannot start. Tell me what `which python3` prints.")
+    if os.path.isdir(os.path.join(STRATO_DIR, "vendor", "flask")):
+        r.ok("Bundled packages (strato/vendor) are present")
+    else:
+        r.fail("strato/vendor/flask is missing", "The program folder is incomplete: fetch the code again.")
+    cfg = config_path(data_dir)
+    if values is None:
+        r.fail(f"No settings at {cfg}", "Run:  python3 rotaidem/strato/setup.py install")
+        return
+    r.ok(f"Settings: {cfg} (mode {mode_of(cfg):o})")
+    if mode_of(cfg) & 0o007:
+        r.fail("The settings file is readable by other users", "Run:  python3 rotaidem/strato/setup.py permissions")
+    if mode_of(data_dir) & 0o007:
+        r.fail(f"{data_dir} is open to other users", "Run:  python3 rotaidem/strato/setup.py permissions")
+    missing = [k for k in ("SECRET_KEY",) if not values.get(k)]
+    if not values.get("MYSQL_HOST") and not values.get("DATA_DIR"):
+        missing.append("MYSQL_HOST or DATA_DIR")
+    if missing:
+        r.fail("Settings are missing: " + ", ".join(missing))
+
+    say()
+    say("Website folder")
+    public_dir = loc.get("public_dir")
+    if not public_dir:
+        r.fail("No deploy recorded yet", "Run:  python3 rotaidem/strato/setup.py deploy")
+        return
+    problem = public_dir_problem(public_dir, data_dir)
+    if problem:
+        r.fail(problem, "Run:  python3 rotaidem/strato/setup.py deploy   (moves the website to its own folder)")
+        return
+    if not os.path.isdir(public_dir):
+        r.fail(f"{public_dir} does not exist", "Run:  python3 rotaidem/strato/setup.py deploy")
+        return
+    r.ok(f"{public_dir}  <- choose '{rel_name(public_dir)}' as the domain target at STRATO")
+    for name in ("index.html", "login.html", "admin.html", "site.css", "auth.js", ".htaccess", DEPLOY_ID_FILE):
+        path = os.path.join(public_dir, name)
+        if not os.path.isfile(path):
+            r.fail(f"{name} is missing in the website folder", "Run:  python3 rotaidem/strato/setup.py deploy")
+        elif not mode_of(path) & 0o004:
+            r.warn(f"{name} is not readable by other users (mode {mode_of(path):o})", "Run deploy again; it sets 644.")
+    htaccess = os.path.join(public_dir, ".htaccess")
+    if os.path.isfile(htaccess):
+        with open(htaccess, encoding="utf-8", errors="replace") as fh:
+            if MARK not in fh.read():
+                r.warn(".htaccess in the website folder was not written by setup.py", "Run deploy again.")
+    for name in ("rotaidem.py", "rotaidem-check.py"):
+        path = os.path.join(public_dir, "cgi-bin", name)
+        if not os.path.isfile(path):
+            r.fail(f"cgi-bin/{name} is missing", "Run:  python3 rotaidem/strato/setup.py deploy")
+            continue
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        if not raw.startswith(f"#!{CGI_PYTHON}\n".encode()) or b"\r" in raw:
+            r.fail(f"cgi-bin/{name} has a wrong first line or Windows line endings", "Run deploy again.")
+        elif mode_of(path) != 0o755:
+            r.fail(f"cgi-bin/{name} has mode {mode_of(path):o}; it must be 755", "Run deploy again.")
+        elif APP_DIR.encode() not in raw:
+            r.warn(f"cgi-bin/{name} points to another program folder", "Run deploy again from this folder.")
+        else:
+            r.ok(f"cgi-bin/{name}: correct first line, mode 755")
+    for path, ours in parent_htaccess_files(public_dir):
+        if ours:
+            r.fail(f"{path} holds old Rotaidem rules that also apply to the website folder",
+                   "Run:  python3 rotaidem/strato/setup.py deploy   (renames it; deletes nothing)")
+        else:
+            r.warn(f"{path} also applies to the website folder",
+                   "If the site answers 500 Internal Server Error, this file is the first suspect.")
+    # Apache (or whoever serves the static files) must be able to walk into the folder.
+    for path in (WEBSPACE, public_dir, os.path.join(public_dir, "cgi-bin")):
+        m = mode_of(path)
+        if not m & 0o001:
+            r.warn(f"{path} has mode {m:o}: other users cannot enter it",
+                   "If the web server is not your own account, this gives 403 Forbidden. "
+                   "STRATO sets the webspace mode; the website folders should be 755.")
+    # Copies of the source next to the website: never choose these as the domain target.
+    risky = []
+    for name in sorted(os.listdir(WEBSPACE)):
+        path = os.path.join(WEBSPACE, name)
+        if not os.path.isdir(path) or inside(path, public_dir) or name in ("rotaidem-data", "rotaidem-backups"):
+            continue
+        if any(os.path.exists(os.path.join(path, m)) for m in ("server.py", "strato", "functions", "templates", "README.md")) \
+                or name in (".github", "__pycache__", "cloudflare", "licensing", "website", "strato"):
+            risky.append(name)
+    if risky:
+        r.warn("These folders hold program files and must NEVER be chosen as the domain target: " + ", ".join(risky),
+               f"Only '{rel_name(public_dir)}' is the website. The others can be deleted later, after a backup.")
+    if os.path.exists(os.path.join(WEBSPACE, "server.py")) or os.path.exists(os.path.join(WEBSPACE, "index.html")):
+        r.warn(f"Old copies of files lie directly in {WEBSPACE}", "They are not used (STRATO cannot show the webspace root). Leave them for now.")
+
+
+def check_program(r, loc, data_dir, values):
+    say()
+    say("Program test (runs the CGI script from SSH, like Apache would)")
+    public_dir = loc.get("public_dir")
+    script = os.path.join(public_dir or "", "cgi-bin", "rotaidem.py")
+    if not public_dir or not os.path.isfile(script) or values is None:
+        r.fail("Skipped: no deployed CGI script")
+        return
+    logs = os.path.join(data_dir, "logs")
+    for path, expect in (("/health", '"database":"ok"'), ("/api/site", '"announcement"'), ("/api/products", '"products"')):
+        try:
+            status, headers, body = run_cgi(script, path)
+        except subprocess.TimeoutExpired:
+            r.fail(f"{path}: no answer within 90 seconds")
+            continue
+        if status == 200 and expect in body:
+            r.ok(f"{path} -> 200 {headers.get('content-type', '')}")
+        else:
+            r.fail(f"{path} -> {status or 'no output'}: {body[:160].strip()}",
+                   "Details from the private log follow below." if status else "The script printed nothing.")
+    for name in ("cgi-error.log", "app-error.log"):
+        text = tail(os.path.join(logs, name))
+        if text:
+            say(f"  Last lines of {os.path.join(logs, name)} (private, do not share publicly):")
+            say("    " + text.strip().replace("\n", "\n    "))
+
+    say()
+    say("Database (read-only)")
+    try:
+        os.environ["ROTAIDEM_NO_SCHEMA_UPDATE"] = "1"
+        server = connect(data_dir)
+        d = server.DB()
+        counts = {}
+        for t in ("users", "products", "orders", "licenses", "shared_profiles"):
+            try:
+                counts[t] = d.first(f"SELECT COUNT(*) AS n FROM {t}")["n"]
+            except Exception:  # noqa: BLE001 - e.g. a table a newer version adds
+                counts[t] = "missing"
+        try:
+            stored = (d.first("SELECT value FROM meta WHERE key = 'schema_version'") or {}).get("value")
+        except Exception:  # noqa: BLE001
+            stored = None
+        d.close()
+        kind = f"MySQL on {values['MYSQL_HOST']}" if values.get("MYSQL_HOST") else f"SQLite in {server.DATA_DIR}"
+        r.ok(f"{kind}: " + ", ".join(f"{n} {t}" for t, n in counts.items()))
+        if stored != server.SCHEMA_VERSION:
+            r.warn(f"Tables are at version {stored}, the program expects {server.SCHEMA_VERSION}",
+                   "Run:  python3 rotaidem/strato/setup.py deploy   (adds missing tables, deletes nothing)")
+    except Exception as exc:  # noqa: BLE001
+        r.fail(f"Cannot use the database: {type(exc).__name__}: {exc}",
+               "Check MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER and MYSQL_PASSWORD in config.env.")
+
+
+def fetch(url, timeout=15):
+    req = urllib.request.Request(url, headers={"User-Agent": "rotaidem-diagnose/1", "Cache-Control": "no-cache"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(65536).decode("utf-8", "replace"), resp.geturl(), None
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(4096).decode("utf-8", "replace"), url, None
+    except Exception as exc:  # noqa: BLE001
+        return None, "", url, getattr(exc, "reason", exc)
+
+
+def check_domain(r, loc, values, domain):
+    say()
+    say(f"Domain {domain} (from this server; your own computer can give different answers)")
+    scheme = os.environ.get("ROTAIDEM_DIAGNOSE_SCHEME", "https")  # http only for local tests
+    name, _, port = domain.partition(":")
+    plain = name.replace(".", "").isdigit() or port  # an IP address or host:port: no www variant
+    hosts = [domain] if plain or name.startswith("www.") else [domain, "www." + domain]
+    ports = (int(port),) if port else (443, 80)
+    deploy_id = loc.get("deploy_id", "")
+    for host in hosts:
+        hostname = host.partition(":")[0]
+        try:
+            addrs = sorted({a[4][0] for a in socket.getaddrinfo(hostname, ports[0], proto=socket.IPPROTO_TCP)})
+        except socket.gaierror as exc:
+            r.fail(f"{host}: the name does not resolve ({exc})",
+                   "DNS problem: the browser shows ERR_NAME_NOT_RESOLVED or a timeout. Check the domain at STRATO.")
+            continue
+        r.ok(f"{host} resolves to " + ", ".join(addrs))
+        for ip in addrs[:4]:
+            for p in ports:
+                try:
+                    socket.create_connection((ip, p), timeout=8).close()
+                    r.ok(f"{ip} port {p} answers")
+                except socket.timeout:
+                    r.fail(f"{ip} port {p} does not answer (timeout)",
+                           "This is what ERR_TIMED_OUT means. Usually the domain still points to an old address "
+                           "(wait up to 24 h after changing the target) or an IPv6 (AAAA) entry is wrong.")
+                except OSError as exc:
+                    if ":" in ip and getattr(exc, "errno", None) in (101, 99):
+                        r.warn(f"{ip} (IPv6) cannot be tested from this server ({exc})")
+                    else:
+                        r.fail(f"{ip} port {p}: {exc}")
+        base = f"{scheme}://{host}"
+        status, body, final, err = fetch(f"{base}/{DEPLOY_ID_FILE}")
+        if err is not None:
+            if isinstance(err, ssl.SSLError) or "CERTIFICATE" in str(err).upper():
+                r.fail(f"{base}: certificate problem ({err})",
+                       "Activate the SSL certificate for this name in the STRATO login (SSL settings).")
+            else:
+                r.fail(f"{base}: {err}", "No answer: see the port tests above.")
+            continue
+        if status == 200 and deploy_id and deploy_id in body:
+            r.ok(f"{base} shows the folder {rel_name(loc.get('public_dir', ''))} (deploy id matches)")
+        elif status == 200:
+            r.fail(f"{base} shows another copy of the website (deploy id differs)",
+                   f"At STRATO choose the folder {rel_name(loc.get('public_dir', ''))} for {host}.")
+        else:
+            r.fail(f"{base}/{DEPLOY_ID_FILE} -> {status}: {host} does not show the folder {rel_name(loc.get('public_dir', ''))}",
+                   f"At STRATO set the target of {host} to the folder {rel_name(loc.get('public_dir', ''))}. "
+                   "403 here usually means the domain points to 'rotaidem' (private) or a folder without index.html.")
+            continue
+        for path, expect, label in (("/", "Rotaidem", "home page"), ("/login", "<form", "login page"),
+                                    ("/site.css", "", "stylesheet"), ("/health", '"database":"ok"', "health check"),
+                                    ("/api/site", '"announcement"', "API")):
+            status, body, final, err = fetch(f"{base}{path}")
+            if status == 200 and expect in body:
+                r.ok(f"{base}{path} -> 200 ({label})")
+            else:
+                hint = ""
+                if path in ("/health", "/api/site"):
+                    hint = ("The pages load but the program does not: CGI is not running in cgi-bin. "
+                            "Run  python3 rotaidem/strato/setup.py deploy --cgi-htaccess  (if that gives 500, "
+                            "undo it with  deploy --no-cgi-htaccess  and ask STRATO whether Python CGI is enabled)")
+                r.fail(f"{base}{path} -> {status or err} ({label})", hint)
+        for path in ("/.htaccess", "/cgi-bin/", "/rotaidem-data/config.env", "/rotaidem/server.py"):
+            status, _body, _final, _err = fetch(f"{base}{path}")
+            if status == 200:
+                r.fail(f"{base}{path} can be downloaded", "This must never happen: tell me immediately.")
+            else:
+                r.ok(f"{base}{path} is not downloadable ({status or 'no answer'})")
+
+
+def diagnose(offline=False, brief=False, domain=None):
+    r = Report()
+    loc = read_location()
+    data_dir = loc.get("data_dir") or DEFAULT_DATA_DIR
+    try:
+        values = cgi_app.load_config(config_path(data_dir))
+    except OSError:
+        values = None
+    say("=== Rotaidem diagnose (read-only: changes nothing) ===")
+    check_layout(r, loc, data_dir, values)
+    check_program(r, loc, data_dir, values)
+    if not offline and values is not None:
+        site = domain or urllib.parse.urlparse(values.get("SITE_URL") or "https://rotaidem.com").hostname
+        check_domain(r, loc, values, site)
+    say()
+    if r.fails:
+        say(f"Result: {len(r.fails)} problem(s), {len(r.warns)} warning(s). Fix the first [FAIL] first.")
+    else:
+        say(f"Result: no problems found ({len(r.warns)} warning(s))." + ("" if offline or brief else " The live site answered correctly."))
+    return r
+
+
+# ---------- backup ----------
+
+def raw_connect(values):
+    """A plain database connection that never changes anything (no table updates)."""
+    sys.path.insert(0, os.path.join(STRATO_DIR, "vendor"))
+    import pymysql
+    options = dict(host=values["MYSQL_HOST"], port=int(values.get("MYSQL_PORT") or 3306), user=values.get("MYSQL_USER", ""),
+                   password=values.get("MYSQL_PASSWORD", ""), database=values.get("MYSQL_DATABASE", ""),
+                   charset="utf8mb4", connect_timeout=10, cursorclass=pymysql.cursors.DictCursor)
+    try:
+        return pymysql.connect(ssl={"check_hostname": False}, **options)  # same as server.py
+    except Exception:  # noqa: BLE001
+        return pymysql.connect(**options)
+
+
+def dump_database(values, data_dir):
+    tables = {}
+    if values.get("MYSQL_HOST"):
+        conn = raw_connect(values)
+        with conn.cursor() as cur:
+            cur.execute("SHOW TABLES")
+            for name in [list(row.values())[0] for row in cur.fetchall()]:
+                cur.execute(f"SELECT * FROM `{name}`")
+                tables[name] = list(cur.fetchall())
+        conn.close()
+    else:
+        import sqlite3
+        path = os.path.join(values.get("DATA_DIR") or data_dir, "rotaidem.db")
+        if not os.path.exists(path):
+            return tables
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchall():
+            tables[name] = [dict(row) for row in conn.execute(f'SELECT * FROM "{name}"').fetchall()]
+        conn.close()
+    return tables
+
+
+def cmd_backup():
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    target = os.path.join(BACKUP_DIR, datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(target, exist_ok=True)
+    os.chmod(BACKUP_DIR, 0o700)
+    os.chmod(target, 0o700)
+    write_file(os.path.join(BACKUP_DIR, ".htaccess"), DENY_ALL)
+    say(f"Backing up into {target} (private, never served) ...")
+    archive = os.path.join(target, "rotaidem-data.tar.gz")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(data_dir, arcname="rotaidem-data")
+    os.chmod(archive, 0o600)
+    say("  Settings and data folder: " + archive)
+    tables = dump_database(values, data_dir)
+    dump = os.path.join(target, "database.json")
+    write_file(dump, json.dumps({"format": "rotaidem-backup-1", "created_at": datetime.now().isoformat(timespec="seconds"),
+                                 "tables": tables}, default=str) + "\n", 0o600)
+    say("  Database: " + dump)
+    say("  " + ", ".join(f"{t}: {len(rows)}" for t, rows in sorted(tables.items())))
+    say("Restore later with:  python3 rotaidem/strato/setup.py import " + dump)
+
+
+# ---------- other commands ----------
 
 def cmd_permissions(mode):
-    loc = load_location()
+    data_dir = current_data_dir()
+    require_config(data_dir)
     if mode == "group":
-        secure_data(loc["data_dir"], group=True)
-        say("Ditt konto och din grupp får läsa inställningarna. Andra användare får det inte.")
-        say("Använd bara detta om kontrollsidan säger att webbservern är med i din grupp.")
+        secure_data(data_dir, group=True)
+        say("Your account and your group may read the settings. Other users may not.")
+        say("Use this only if the check page says the web server is in your group.")
     else:
-        secure_data(loc["data_dir"])
-        say("Bara ditt eget konto får läsa inställningarna och databasfilen (700/600).")
-    say("Filerna görs aldrig läsbara för alla: på ett delat webbhotell vore det andra kunder.")
+        secure_data(data_dir)
+        say("Only your own account may read the settings, logs and database file (700/600).")
+    say("The files are never made readable for everyone: on shared hosting that would be other customers.")
 
 
 def cmd_reset_catalog():
-    loc = load_location()
-    server = connect(loc["data_dir"])
+    data_dir = current_data_dir()
+    require_config(data_dir)
+    server = connect(data_dir)
     server.ensure_schema()
     d = server.DB()
     products = d.all("SELECT * FROM products")
     if not products:
-        say("Produktkatalogen är redan tom. Inget ändrades.")
+        say("The product catalogue is already empty. Nothing changed.")
         return
-    say(f"Detta tar bort alla {len(products)} produkter från webbplatsen: " + ", ".join(p["name"] or p["id"] for p in products))
-    say("Konton, beställningar, licenser och bilder påverkas inte.")
-    if input("Skriv JA för att ta bort produkterna: ").strip() != "JA":
-        say("Avbrutet. Inget ändrades.")
+    say(f"This removes all {len(products)} products from the website: " + ", ".join(p["name"] or p["id"] for p in products))
+    say("Accounts, orders, licences and images are not affected.")
+    if input("Type YES to remove the products: ").strip() not in ("YES", "JA"):
+        say("Cancelled. Nothing changed.")
         return
-    copy = os.path.join(loc["data_dir"], f"products-before-reset-{datetime.now():%Y%m%d-%H%M%S}.json")
+    copy = os.path.join(data_dir, f"products-before-reset-{datetime.now():%Y%m%d-%H%M%S}.json")
     write_file(copy, json.dumps(products, indent=2, default=str) + "\n", 0o600)
     d.run("DELETE FROM products")
     d.close()
-    say(f"Produkterna är borttagna. En kopia sparades i {copy}")
+    say(f"The products are removed. A copy was saved in {copy}")
 
 
 def cmd_password():
-    loc = load_location()
-    server = connect(loc["data_dir"])
+    data_dir = current_data_dir()
+    require_config(data_dir)
+    server = connect(data_dir)
     server.ensure_schema()
     d = server.DB()
-    who = ask("E-post eller användarnamn för kontot").lower()
+    who = ask("E-mail or user name of the account").lower()
     user = d.first("SELECT id, name FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", who, who)
     if not user:
-        say("Hittar inget sådant konto.")
+        say("No such account.")
         return
-    password = ask_secret("Nytt lösenord, minst 8 tecken", 8, confirm=True)
+    password = ask_secret("New password, at least 8 characters", 8, confirm=True)
     d.run("UPDATE users SET password_hash = ?, token = NULL WHERE id = ?", server.hash_password(password), user["id"])
     d.close()
-    say(f"Lösenordet för {user['name']} är ändrat.")
+    say(f"The password for {user['name']} has been changed.")
 
 
-TIMESTAMP_COLUMNS = {"created_at", "first_seen", "last_seen"}
+TIMESTAMP_COLUMNS = {"created_at", "updated_at", "first_seen", "last_seen"}
 
 
 def cmd_import(path):
-    loc = load_location()
+    data_dir = current_data_dir()
+    require_config(data_dir)
     if not os.path.isfile(path):
-        say(f"Hittar inte filen {path}. Ladda upp den med SFTP till samma mapp som rotaidem-mappen.")
+        say(f"File not found: {path}")
         return
     with open(path, encoding="utf-8") as fh:
         backup = json.load(fh)
     tables = backup.get("tables") or {}
-    say("Säkerhetskopian innehåller: " + ", ".join(f"{t} ({len(r)})" for t, r in tables.items()))
-    if input("Allt som redan finns i den nya databasen ersätts. Skriv JA för att fortsätta: ").strip() != "JA":
-        say("Avbrutet. Inget ändrades.")
+    say("The backup contains: " + ", ".join(f"{t} ({len(r)})" for t, r in tables.items()))
+    if input("Everything now in the database is replaced. Type YES to continue: ").strip() not in ("YES", "JA"):
+        say("Cancelled. Nothing changed.")
         return
-    server = connect(loc["data_dir"])
+    server = connect(data_dir)
     server.ensure_schema()
     d = server.DB()
     for table, rows in tables.items():
@@ -474,24 +971,33 @@ def cmd_import(path):
                     row[k] = row[k][:19].replace("T", " ")  # PostgreSQL adds fractions and a time zone
             names = ", ".join(row)
             d.run(f"INSERT INTO {table} ({names}) VALUES ({', '.join('?' for _ in row)})", *row.values())
-        say(f"  {table}: {len(rows)} rader")
+        say(f"  {table}: {len(rows)} rows")
     d.close()
-    say("Importen är klar. Logga in med samma konton och lösenord som på den gamla webbplatsen.")
+    say("Import finished. Log in with the accounts and passwords from the backup.")
 
 
 def main():
-    if sys.version_info < (3, 8):
-        say("Python 3.8 eller nyare behövs. Skriv python3, inte python.")
+    if sys.version_info < (3, 9):
+        say("Python 3.9 or newer is needed. Type python3, not python.")
+        sys.exit(1)
+    if not os.access(WEBSPACE, os.W_OK):
+        say(f"This copy of the program is in {APP_DIR}, but its parent folder {WEBSPACE} is not writable.")
+        say("Run the setup from the program folder inside your webspace, for example:")
+        say("    cd /home/www && python3 rotaidem/strato/setup.py deploy")
         sys.exit(1)
     os.umask(0o077)  # anything this program creates is private unless chmod'ed on purpose
     args = sys.argv[1:]
-    command = args[0] if args else "install"
-    if command == "install":
+    command = args[0] if args else "help"
+    if command in ("deploy", "update"):
+        cmd_deploy(args[1:])
+    elif command in ("diagnose", "check"):
+        rest = [a for a in args[1:] if not a.startswith("--")]
+        report = diagnose(offline="--offline" in args, domain=rest[0] if rest else None)
+        sys.exit(1 if report.fails else 0)
+    elif command == "backup":
+        cmd_backup()
+    elif command == "install":
         cmd_install()
-    elif command == "update":
-        cmd_update()
-    elif command == "check":
-        cmd_check()
     elif command == "permissions":
         cmd_permissions(args[1] if len(args) > 1 else "strict")
     elif command == "reset-catalog":
@@ -508,4 +1014,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        say("\nAvbrutet.")
+        say("\nCancelled.")
