@@ -415,6 +415,19 @@ class StratoCGITests:
         self.assertEqual(r.status, 502)
         self.assertIn("not verified", r.json()["error"])
 
+    def test_email_test_command(self):
+        self.resend.requests.clear()
+        out = self.w.setup_cmd("email-test", "me@example.com")
+        self.assertIn("Resend accepted the e-mail to me@example.com", out)
+        self.assertNotIn("re_test", out.replace("starts with 're_'", ""), "the key itself is never printed")
+        self.assertEqual(self.resend.requests[-1]["body"][0]["to"], ["me@example.com"])
+        self.resend.fail_with = (401, {"message": "API key is invalid"})
+        try:
+            out = self.w.setup_cmd("email-test", "me@example.com")
+        finally:
+            self.resend.fail_with = None
+        self.assertIn("Resend rejected the API key", out)
+
     # ---------- backup, import, explicit catalogue reset ----------
 
     def test_backup_import_and_reset_catalog(self):

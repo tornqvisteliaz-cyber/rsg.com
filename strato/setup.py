@@ -20,6 +20,7 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py permissions [group]   makes the settings private again
     python3 rotaidem/strato/setup.py import FILE  loads a backup (replaces the database contents; asks first)
     python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
+    python3 rotaidem/strato/setup.py email-test ADDRESS  sends a test e-mail and shows what Resend answers
 
 Options:  deploy --public FOLDER   use another website folder (relative to the webspace or absolute)
           deploy --cgi-htaccess    also enable CGI with cgi-bin/.htaccess (only if diagnose says CGI does not run)
@@ -1009,6 +1010,35 @@ def cmd_password():
     say(f"The password for {user['name']} has been changed.")
 
 
+def cmd_email_test(address):
+    """Send one e-mail through Resend exactly as the website does, and say why it fails. Never prints the key."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    key = values.get("RESEND_API_KEY", "")
+    say(f"Settings: {config_path(data_dir)}")
+    if not key:
+        say("  RESEND_API_KEY is missing. Add the line  RESEND_API_KEY=re_...  to config.env.")
+        return
+    problems = []
+    if not key.startswith("re_"):
+        problems.append("it does not start with re_")
+    if any(c.isspace() for c in key) or any(c in key for c in "\"'<>"):
+        problems.append("it contains spaces, quotes or < > (copy only the key itself)")
+    if len(key) < 30:
+        problems.append(f"it is only {len(key)} characters long (Resend keys are about 36)")
+    say(f"  RESEND_API_KEY: set, {len(key)} characters, starts with {key[:3]!r}" + ("" if not problems else " - looks wrong: " + "; ".join(problems)))
+    say(f"  MAIL_FROM: {values.get('MAIL_FROM') or 'Rotaidem <no-reply@rotaidem.com> (default)'}")
+    os.environ["ROTAIDEM_NO_SCHEMA_UPDATE"] = "1"
+    server = connect(data_dir)
+    sent, error = server.send_batch([{"from": server.MAIL_FROM, "to": [address], "subject": "Rotaidem test e-mail",
+                                      "html": "<p>This is a test from rotaidem.com. If you can read this, e-mail works.</p>"}])
+    if sent:
+        say(f"Resend accepted the e-mail to {address}. It should arrive within a minute (check spam too).")
+    else:
+        say("Resend did not send it:")
+        say("  " + error)
+
+
 TIMESTAMP_COLUMNS = {"created_at", "updated_at", "first_seen", "last_seen"}
 
 
@@ -1077,11 +1107,14 @@ def main():
         cmd_password()
     elif command == "import" and len(args) == 2:
         cmd_import(args[1])
+    elif command == "email-test" and len(args) == 2:
+        cmd_email_test(args[1])
     elif command in ("help", "-h", "--help"):
         say(__doc__)
     else:
         import difflib
-        known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update", "check"]
+        known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
+                 "check", "email-test"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")
