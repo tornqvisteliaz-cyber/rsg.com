@@ -22,12 +22,15 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
     python3 rotaidem/strato/setup.py email-test ADDRESS  sends a test e-mail and shows what Resend answers
     python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
+    python3 rotaidem/strato/setup.py fetch-installer [URL]  copies the newest HeavyPro installer from GitHub onto
+                                                  rotaidem.com/files/ and points the Download buttons at it
 
 Options:  deploy --public FOLDER   use another website folder (relative to the webspace or absolute)
           deploy --cgi-htaccess    also enable CGI with cgi-bin/.htaccess (only if diagnose says CGI does not run)
           diagnose --offline       skip the DNS and HTTP tests;  diagnose DOMAIN   test another domain
 """
 import getpass
+import hashlib
 import json
 import os
 import secrets
@@ -36,6 +39,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import re
 import tarfile
 import urllib.error
 import urllib.parse
@@ -1067,6 +1071,105 @@ def cmd_admin_password():
     d.close()
 
 
+# Where fetch-installer copies from: the "beta" release, which every build of HeavyPro's main updates.
+INSTALLER_SOURCE = "https://github.com/tornqvisteliaz-cyber/heavypro/releases/download/beta/HeavyProSetup.exe"
+INSTALLER_MAX = 1024 * 1024 * 1024
+
+
+def download_file(url, target):
+    """Download url to target in chunks (no size limit in memory). Returns the size."""
+    req = urllib.request.Request(url, headers={"User-Agent": "rotaidem-setup/1"})
+    size = 0
+    with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as out:
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > INSTALLER_MAX:
+                raise ValueError("the file is larger than 1 GB")
+            out.write(chunk)
+            if size % (10 * 1024 * 1024) < len(chunk):
+                say(f"  {size // (1024 * 1024)} MB ...")
+    return size
+
+
+def cmd_fetch_installer(args):
+    """Host the installer on rotaidem.com itself: rotaidem-public/files/NAME, plus a .zip and a .sha256.
+    Testers then download from your own domain instead of GitHub, and the Download buttons point there."""
+    import zipfile
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    public_dir = read_location().get("public_dir")
+    if not public_dir or not os.path.isdir(public_dir):
+        say(f"The website folder is not set up yet. Run first:  python3 rotaidem/strato/setup.py deploy")
+        sys.exit(1)
+    rest = [a for a in args if not a.startswith("--")]
+    source = rest[0] if rest else INSTALLER_SOURCE
+    product_id = rest[1] if len(rest) > 1 else "heavypro"
+    name = os.path.basename(urllib.parse.urlparse(source).path)
+    local_test = source.startswith("http://127.0.0.1:")  # only for the automated tests
+    if not (source.startswith("https://") or local_test) or not re.match(r"^[A-Za-z0-9._-]+\.(exe|msi|zip)$", name):
+        say("Give a https:// link that ends in a file name like HeavyProSetup.exe, .msi or .zip.")
+        sys.exit(1)
+    files = os.path.join(public_dir, "files")
+    os.makedirs(files, exist_ok=True)
+    os.chmod(files, 0o755)
+    temp = os.path.join(data_dir, name + ".download")  # private until it is checked
+    say(f"Downloading {source} ...")
+    try:
+        size = download_file(source, temp)
+    except urllib.error.HTTPError as exc:
+        say(f"GitHub answered {exc.code}. " + ("The release has no file with that name yet: check that the HeavyPro build "
+            "ran on main (Actions tab) and that the beta release lists HeavyProSetup.exe." if exc.code == 404 else ""))
+        sys.exit(1)
+    except (OSError, ValueError) as exc:
+        say(f"The download failed: {exc}")
+        sys.exit(1)
+    with open(temp, "rb") as fh:
+        head = fh.read(2)
+    expected = b"PK" if name.endswith(".zip") else (b"MZ" if name.endswith(".exe") else b"")
+    if size < 100 * 1024 or (expected and head != expected):
+        os.remove(temp)
+        say(f"That is not an installer ({size} bytes). Nothing on the website was changed.")
+        sys.exit(1)
+    digest = hashlib.sha256()
+    with open(temp, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    sha = digest.hexdigest()
+    target = os.path.join(files, name)
+    os.chmod(temp, 0o644)
+    os.replace(temp, target)  # one step, so a download that is running never gets half a file
+    write_file(target + ".sha256", f"{sha}  {name}\n")
+    made = [name, name + ".sha256"]
+    if name.endswith(".exe"):
+        # Some browsers, mail filters and company networks block bare .exe files; a zip gets through.
+        zip_name = name[:-4] + ".zip"
+        temp_zip = os.path.join(data_dir, zip_name + ".download")
+        with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(target, name)
+        os.chmod(temp_zip, 0o644)
+        os.replace(temp_zip, os.path.join(files, zip_name))
+        made.append(zip_name)
+    say(f"  {size / (1024 * 1024):.1f} MB, SHA-256 {sha}")
+    say("  Saved in " + files + ": " + ", ".join(made))
+    link = f"{site_url(values.get('SITE_URL'))}/files/{name}?v={sha[:10]}"  # ?v= makes browsers fetch a new build
+    os.environ["ROTAIDEM_NO_SCHEMA_UPDATE"] = "1"
+    server = connect(data_dir)
+    d = server.DB()
+    row = d.first("SELECT id, download_url FROM products WHERE id = ?", product_id)
+    if row:
+        d.run("UPDATE products SET download_url = ? WHERE id = ?", link, product_id)
+        say(f"The Download buttons for '{product_id}' now point to:  {link}")
+        if row.get("download_url") and not str(row["download_url"]).startswith(link.split("?")[0]):
+            say(f"  (Before: {row['download_url']})")
+    else:
+        say(f"There is no product '{product_id}' in the catalogue. Put this link in Admin > Products > Installer download link:")
+        say("  " + link)
+    d.close()
+
+
 TIMESTAMP_COLUMNS = {"created_at", "updated_at", "first_seen", "last_seen"}
 
 
@@ -1139,12 +1242,14 @@ def main():
         cmd_email_test(args[1])
     elif command == "admin-password":
         cmd_admin_password()
+    elif command == "fetch-installer":
+        cmd_fetch_installer(args[1:])
     elif command in ("help", "-h", "--help"):
         say(__doc__)
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test", "admin-password"]
+                 "check", "email-test", "admin-password", "fetch-installer"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")

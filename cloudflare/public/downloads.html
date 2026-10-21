@@ -17,16 +17,43 @@
     </table></div></div>
     <p class="muted" style="margin-top:20px">You need a licence key to activate the installer. Your keys are in the email you received and under <a href="/account">My account</a>. Need help? See the <a href="/installation">installation guide</a>.</p>
 </div></section>
+<section class="section alt" id="help"><div class="wrap">
+    <h2 data-text="downloads.trouble-downloading-or-installing">Trouble downloading or installing?</h2>
+    <div class="grid grid-3" style="margin-top:28px">
+        <div class="box"><h3 data-text="downloads.windows-protected-your-pc">"Windows protected your PC"</h3><p class="muted" data-text="downloads.windows-shows-this-for">Windows shows this for new programs that are not code-signed yet. Click <strong>More info</strong>, then <strong>Run anyway</strong>. The installer is safe: you can compare its SHA-256 checksum with the one listed here.</p></div>
+        <div class="box"><h3 data-text="downloads.the-browser-blocks-the">The browser blocks the file</h3><p class="muted" data-text="downloads.chrome-or-edge-may">Chrome or Edge may say the file "isn't commonly downloaded". Open the downloads list (Ctrl+J), click the file's <strong>⋯</strong> menu and choose <strong>Keep</strong> (Edge: <strong>Keep anyway</strong>). Or use the .zip download instead.</p></div>
+        <div class="box"><h3 data-text="downloads.antivirus-or-company-network">Antivirus or company network</h3><p class="muted" data-text="downloads.some-antivirus-programs-and">Some antivirus programs and work networks remove .exe files. Download the .zip, right-click it and choose <strong>Extract all</strong>, then run HeavyProSetup.exe. Still stuck? Email Eliaz@rotaidem.com and we send you a link.</p></div>
+    </div>
+</div></section>
 <script src="/auth.js"></script>
 <script>
 const fallback = '<tr><td><strong>HeavyPro</strong></td><td class="muted">Not yet released</td><td>Windows 11</td><td style="text-align:right"><a class="btn btn-ghost btn-sm" href="/roadmap">See roadmap</a></td></tr>';
+// An installer hosted on this site (/files/Name.exe, put there by setup.py fetch-installer) also has a
+// .zip and a .sha256 next to it; those are shown when they exist.
+function localFile(url) {
+    try { const u = new URL(url, location.href); return u.origin === location.origin && /^\/files\/[\w.-]+\.exe$/.test(u.pathname) ? u.pathname : ""; } catch (err) { return ""; }
+}
+async function extras(p, row) {
+    const path = localFile(p.download_url);
+    if (!path) return;
+    const zip = path.replace(/\.exe$/, ".zip");
+    const [z, sum] = await Promise.all([fetch(zip, { method: "HEAD" }).catch(() => null), fetch(path + ".sha256", { cache: "no-store" }).catch(() => null)]);
+    const cell = row.querySelector(".dl-extra");
+    if (z && z.ok) cell.insertAdjacentHTML("beforeend", ` <a class="btn btn-ghost btn-sm" href="${esc(zip)}">.zip</a>`);
+    if (sum && sum.ok) {
+        const hash = ((await sum.text()).match(/[0-9a-f]{64}/) || [""])[0];
+        if (hash) row.insertAdjacentHTML("afterend", `<tr><td colspan="4" class="muted" style="font-size:12px;border-top:0;padding-top:0">SHA-256: <code style="word-break:break-all">${esc(hash)}</code></td></tr>`);
+    }
+}
 fetch("/api/products").then(r => r.json()).then(d => {
     const items = d.products || [];
-    document.getElementById("downloads").innerHTML = items.length ? items.map(p => {
+    const body = document.getElementById("downloads");
+    body.innerHTML = items.length ? items.map((p, i) => {
         const ready = /^https:\/\//.test(p.download_url || "");
-        const action = ready ? `<a class="btn btn-sm" href="${esc(p.download_url)}" rel="noopener">Download</a>` : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
-        return `<tr><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right">${action}</td></tr>`;
+        const action = ready ? `<span class="dl-extra"><a class="btn btn-sm" href="${esc(p.download_url)}" rel="noopener">Download</a></span>` : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
+        return `<tr data-i="${i}"><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right;white-space:nowrap">${action}</td></tr>`;
     }).join("") : fallback;
+    items.forEach((p, i) => { const row = body.querySelector(`tr[data-i="${i}"]`); if (row && p.download_url) extras(p, row).catch(() => {}); });
 }).catch(() => { document.getElementById("downloads").innerHTML = fallback; });
 </script>
 </body>

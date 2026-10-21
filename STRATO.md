@@ -148,6 +148,7 @@ python3 rotaidem/strato/setup.py backup          settings + full database into r
 python3 rotaidem/strato/setup.py password        new password for an account
 python3 rotaidem/strato/setup.py permissions     make settings and logs private (700/600) again
 python3 rotaidem/strato/setup.py admin-password  set, change or remove the extra admin page password (also when forgotten)
+python3 rotaidem/strato/setup.py fetch-installer  copy the newest HeavyPro installer from GitHub to rotaidem.com/files/ (Download buttons follow)
 python3 rotaidem/strato/setup.py import FILE     restore a backup (replaces the database; asks first)
 python3 rotaidem/strato/setup.py reset-catalog   remove all products (asks first, keeps a copy)
 python3 rotaidem/strato/setup.py install         first installation on a new webspace (asks questions)

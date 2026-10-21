@@ -521,6 +521,53 @@ class StratoCGITests:
         self.assertIn("removed", out)
         self.ok(self.w.cgi("GET", "/api/admin/overview", token=self.owner_token))
 
+    def test_fetch_installer(self):
+        files = {"/HeavyProSetup.exe": b"MZ" + os.urandom(300 * 1024), "/broken.exe": b"<html>Not Found</html>" * 10000}
+
+        class Files(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = files.get(self.path)
+                self.send_response(200 if data else 404)
+                self.send_header("Content-Length", str(len(data or b"")))
+                self.end_headers()
+                self.wfile.write(data or b"")
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Files)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            t = self.owner_token
+            self.ok(self.w.cgi("POST", "/api/save-product", {"id": "heavypro", "name": "HeavyPro", "status": "published"}, token=t))
+            code, out = self.w.setup_run("fetch-installer", base + "/missing.exe")
+            self.assertEqual(code, 1, out)
+            self.assertIn("404", out)
+            code, out = self.w.setup_run("fetch-installer", base + "/broken.exe")
+            self.assertIn("not an installer", out)
+            self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "broken.exe")))
+            self.assertEqual(self.w.setup_run("fetch-installer", "ftp://example.com/x.exe")[0], 1)
+            out = self.w.setup_cmd("fetch-installer", base + "/HeavyProSetup.exe")
+        finally:
+            server.shutdown()
+        import hashlib
+        import zipfile
+        folder = os.path.join(self.w.public, "files")
+        with open(os.path.join(folder, "HeavyProSetup.exe"), "rb") as fh:
+            self.assertEqual(fh.read(), files["/HeavyProSetup.exe"])
+        sha = hashlib.sha256(files["/HeavyProSetup.exe"]).hexdigest()
+        with open(os.path.join(folder, "HeavyProSetup.exe.sha256")) as fh:
+            self.assertEqual(fh.read(), f"{sha}  HeavyProSetup.exe\n")
+        with zipfile.ZipFile(os.path.join(folder, "HeavyProSetup.zip")) as z:
+            self.assertEqual(z.read("HeavyProSetup.exe"), files["/HeavyProSetup.exe"])
+        for name in os.listdir(folder):
+            self.assertEqual(os.stat(os.path.join(folder, name)).st_mode & 0o777, 0o644, name)
+        self.assertEqual(os.listdir(self.w.data).count("HeavyProSetup.exe.download"), 0)
+        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]}
+        self.assertEqual(products["heavypro"]["download_url"], f"https://rotaidem.test/files/HeavyProSetup.exe?v={sha[:10]}")
+        self.assertIn("now point to", out)
+
     def test_email_test_command(self):
         self.resend.requests.clear()
         out = self.w.setup_cmd("email-test", "me@example.com")
