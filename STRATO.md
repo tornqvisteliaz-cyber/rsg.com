@@ -1,226 +1,169 @@
-# Rotaidem på STRATO Webhosting Basic
+# Rotaidem on STRATO Webhosting
 
-Den här guiden flyttar hela Rotaidem (webbplats, konton, admin, beställningar, licenser, bilder) till ditt befintliga STRATO-webbhotell. Ingen extra hosting, ingen Gunicorn, inga ändringar i DNS, domän eller e-post.
+The website runs on STRATO Webhosting Basic without any server process: Apache serves the pages as
+plain files and starts the Python backend (`server.py`, Flask) once per request through CGI. Your
+domain, DNS and e-mail stay exactly as they are at STRATO.
 
----
+## Why the site showed 403 Forbidden
 
-## 1. Kort sammanfattning
+- STRATO's new platform (home folder `/home/www`) **cannot use `/home/www` itself as a domain
+  target**: you must pick a subfolder ([STRATO FAQ](https://www.strato.de/faq/domains/alles-zur-domainumleitung/)).
+- The earlier setup copied the website straight into `/home/www`. So none of the subfolders STRATO
+  offered (`rotaidem`, `cloudflare`, `website`, `strato`, `licensing`, `.github`, `__pycache__`,
+  `rsg.com-claude-lucid-tesla-liazv2`) contains the website's `index.html`:
+  - `rotaidem` is the private program folder. Its `.htaccess` denies everything, which gives exactly
+    "403 Forbidden - You don't have permission to access this resource".
+  - The others have no `index.html`, which also gives 403. `rsg.com-claude-lucid-tesla-liazv2` would
+    even let anyone download the source code. **Never choose any of these.**
+- The old `/home/www/.htaccess` also applied to every subfolder. `deploy` renames it (nothing is deleted).
 
-| Fråga | Svar |
-|---|---|
-| Kan STRATO Basic köra en serverprocess (Gunicorn, `python server.py`) dygnet runt? | **Nej.** Webbhotellet är delat. SSH är till för att hantera filer och köra kommandon, inte för program som ska fortsätta köra efter utloggning. Det finns inget sätt att låta webbservern skicka trafik till en egen port. |
-| Stöder STRATO Python på något officiellt sätt? | **Ja, som CGI.** STRATO anger att Python (och Perl, Ruby) kan köras som CGI-skript från paketet Basic, med `/usr/bin/python3`. WSGI-modul (mod_wsgi) eller Passenger finns inte. |
-| Fungerar Flask utan Gunicorn? | **Ja.** Flask kan köras som CGI med Pythons inbyggda `wsgiref`. Apache startar programmet för varje anrop till `/api/...` och programmet avslutas när svaret är skickat. |
-| Fungerar inloggning, sessioner, databas, formulär och API då? | **Ja.** Inloggningen bygger redan på en slumpad nyckel (token) som sparas i databasen, inte i serverns minne. Därför spelar det ingen roll att varje anrop är en ny process. Allt är testat i en kopia av STRATO-miljön (se avsnitt 9). |
-| Behövs en omskrivning till PHP? | **Nej.** Flask via CGI uppfyller kraven, så backend behålls i Python och alla funktioner finns kvar. |
-| Dygnet runt? | **Ja, så länge STRATO:s webbserver är uppe.** Det finns ingen egen process som kan krascha eller somna (till skillnad från Render free, som somnar). Varje anrop tar cirka 0,2 till 0,5 sekunder extra eftersom Python startas. |
+**ERR_TIMED_OUT** is a different problem: the browser could not connect at all. It cannot come from
+`.htaccess` or file permissions. Usual causes are DNS still pointing to an old address shortly after a
+change, a wrong IPv6 (AAAA) entry, or the `www` name not being connected. `diagnose` tests this
+(see below).
 
----
-
-## 2. Vad jag har undersökt
-
-**STRATO Webhosting Basic** innehåller (enligt STRATO och oberoende tester): PHP, Perl, Python och Ruby som CGI, MySQL-databaser, SSH och SFTP, `.htaccess` och SSL. Du har själv bekräftat SSH, Python 3.11.2 och Flask 2.2.2.
-
-**Begränsningar som styr lösningen:**
-
-1. **Inga permanenta processer.** Ett program som startas via SSH (till exempel Gunicorn eller `flask run`) stoppas när du loggar ut eller när STRATO städar processer. Det kan inte heller ta emot trafik från rotaidem.com, eftersom webbservern inte kan skicka trafik vidare till en egen port. Därför fungerar varken Gunicorn, `waitress` eller `python main.py` här.
-2. **Ingen WSGI-modul eller Passenger.** Python körs bara som CGI, alltså ett skript i mappen `cgi-bin`.
-3. **CGI startar en ny process per anrop.** Allt som programmet håller i minnet försvinner mellan anropen. Rotaidem sparar allt viktigt i databasen, så det är inget problem.
-4. **Apache skickar inte `Authorization`-headern till CGI-skript** om man inte konfigurerar det. Det löses i `.htaccess`, och sidan skickar dessutom en reservkopia av inloggningsnyckeln i en egen header (`X-Rotaidem-Token`).
-5. **Filsystemet** på delade webbhotell kan vara ett nätverksfilsystem, där SQLite:s fillåsning inte är pålitlig. Därför rekommenderas **STRATO:s MySQL-databas**, som ingår i paketet.
-
-Källor: [STRATO: Vad är ett CGI](https://www.strato.de/faq/hosting/was-ist-ein-cgi/), [STRATO: När kan ett Perl-skript startas](https://www.strato.de/faq/hosting/wann-ist-ein-perl-script-startfaehig/), [STRATO: tekniska funktioner](https://www.strato.de/faq/hosting/wie-finde-ich-heraus-welche-technische-unterstuetzungen-zb-php-version-ich-fuer-meine-webinhalte-bei-strato-brauche/), [webhostingvergleich.eu: STRATO](https://www.webhostingvergleich.eu/strato/), [netzsieger.de: STRATO-test](https://www.netzsieger.de/p/strato-webhosting), [Flask: CGI-driftsättning](https://flask-dev.readthedocs.io/en/stable/deploying/cgi.html), [SQLite-forum om NFS-låsning](https://sqlite.org/forum/forumpost/89c52cdf661b77d6?raw).
-
-**Det jag inte kunnat kontrollera direkt på din server** (det gör kontrollsidan i steg 6 åt dig):
-- att Flask 2.2.2 också finns för webbservern (inte bara i SSH),
-- att `cgi-bin` i din domänmapp får köra Python,
-- att webbservern kan nå Resend för e-post.
-
----
-
-## 3. Så fungerar lösningen
+## Layout
 
 ```
-Besökare ──> rotaidem.com (STRATO Apache)
-               ├─ /, /login, /heavypro, bilder, CSS ... ──> vanliga filer (snabbt)
-               └─ /api/..., /media/...  ──.htaccess──> cgi-bin/rotaidem.py
-                                                        └─ startar Flask-appen (server.py)
-                                                             └─ STRATO MySQL
+/home/www/rotaidem/           program source (this repository)          - private
+/home/www/rotaidem-data/      config.env (secrets), logs, installed.json - private
+/home/www/rotaidem-public/    the website                                 <- domain target
+/home/www/rotaidem-backups/   made by the backup command                  - private
 ```
 
-Mappar på ditt webbutrymme efter installationen:
+`rotaidem-public` contains only the website files from `cloudflare/public`, a `.htaccess` and two
+small CGI entry points in `cgi-bin/`. The program, the settings and the database are outside it, so
+they cannot be reached through the domain at all. They also keep their deny-all `.htaccess` files.
+
+## Deploy (do this once now)
+
+Log in with SSH (your password is asked; it is not shown while typing):
 
 ```
-/                         ← mappen som rotaidem.com visar (oftast roten)
-├─ index.html, login.html, admin.html, ...   webbplatsens sidor (kopieras dit av setup)
-├─ .htaccess              styr adresser och skyddar mappar
-├─ cgi-bin/rotaidem.py    startar backend vid varje anrop
-├─ rotaidem/              programmet (server.py, strato/ ...) – spärrat från webben
-└─ rotaidem-data/         inställningar (config.env) – spärrat från webben
+ssh su929110@5021693289.ssh.w2.strato.hosting
 ```
 
----
-
-## 4. Databas, lösenord, sessioner och hemligheter
-
-- **Databas:** STRATO MySQL (rekommenderas). Den ingår i Basic, ligger kvar oberoende av filerna och säkerhetskopieras av STRATO. Alternativt en SQLite-fil i `rotaidem-data/`.
-- **Lösenord:** sparas aldrig i klartext. De hashas med PBKDF2-SHA256 (100 000 varv, unikt salt per konto), samma som tidigare.
-- **Sessioner:** vid inloggning skapas en slumpad 128-bitars nyckel som sparas på kontot i databasen och i webbläsaren. Utloggning tar bort den. Inget ligger i serverns minne, så det fungerar med CGI.
-- **Hemligheter** (`SECRET_KEY`, databaslösenord, `LICENSE_API_KEY`, `RESEND_API_KEY`) ligger i `rotaidem-data/config.env`:
-  - filen kan bara läsas av ditt eget konto (behörighet 600),
-  - mappen spärras för webben med en egen `.htaccess`,
-  - huvud-`.htaccess` blockerar dessutom adresserna till `rotaidem/` och `rotaidem-data/`,
-  - kontrollsidan visar att de är spärrade (svar 403).
-- **Inget av detta sparas i GitHub.** `config.env` skapas på servern av installationsprogrammet.
-
----
-
-## 5. Det här behöver du
-
-1. **SFTP-programmet FileZilla** (gratis): https://filezilla-project.org
-2. **SSH-uppgifter och SFTP-uppgifter** från STRATO-inloggningen: *Hosting > SFTP/SSH* (server, användarnamn, lösenord).
-3. **En MySQL-databas** från STRATO-inloggningen: *Datenbanken > Datenbank anlegen*. Skriv upp:
-   - server (Host), till exempel `database-5012345678.webspace-host.com`
-   - databasnamn, till exempel `dbs12345678`
-   - användare, till exempel `dbu12345678`
-   - lösenordet du väljer
-
-   Att skapa en databas ändrar inte domän, DNS eller e-post.
-4. **Vilken mapp rotaidem.com visar.** Titta, men ändra inget: *Domains > Domainverwaltung > rotaidem.com > Einstellungen*. Där står målet (Ziel), oftast `/`.
-
-> **Viktigt om domänen:** om rotaidem.com i dag pekar på Render (eller någon annan tjänst) i stället för på STRATO-webbutrymmet, måste domänens mål ändras för att besökarna ska komma till STRATO-versionen. Det är en domäninställning som jag **inte** ändrar. Du bestämmer själv om och när du vill göra det.
-
----
-
-## 6. Installation steg för steg
-
-### Steg 1: Ladda ner filerna
-1. Öppna https://github.com/tornqvisteliaz-cyber/rsg.com/tree/claude/lucid-tesla-liazv2
-2. Klicka på den gröna knappen **Code** och sedan **Download ZIP**.
-3. Packa upp ZIP-filen på datorn.
-4. Byt namn på den uppackade mappen till exakt **`rotaidem`**.
-
-### Steg 2: Ladda upp med SFTP (FileZilla)
-1. Öppna FileZilla. Fyll i *Värd* `sftp://` + SFTP-servern från STRATO, ditt användarnamn, lösenord och port `22`. Klicka på **Snabbanslut**.
-2. Till höger visas webbutrymmet. Stanna i översta mappen (`/`).
-3. Dra mappen **`rotaidem`** från vänster sida till höger sida. Vänta tills allt är uppladdat.
-
-### Steg 3: Logga in med SSH
-- **Windows:** öppna *Terminal* eller *PowerShell*. **Mac:** öppna *Terminal*.
-- Skriv (byt ut mot dina uppgifter från STRATO):
-
-  ```
-  ssh ANVÄNDARNAMN@SSH-SERVER
-  ```
-- Svara `yes` första gången och skriv lösenordet. Det syns inte när du skriver, det är normalt.
-
-### Steg 4: Kör installationsprogrammet
-Skriv:
+Then run these lines one by one:
 
 ```
-python3 rotaidem/strato/setup.py
+cd /home/www
+git clone --depth 1 -b claude/lucid-tesla-liazv2 https://github.com/tornqvisteliaz-cyber/rsg.com.git rotaidem-new
+python3 rotaidem-new/strato/setup.py backup
+mv -T rotaidem rotaidem-old
+mv -T rotaidem-new rotaidem
+python3 rotaidem/strato/setup.py deploy
 ```
 
-Programmet frågar en sak i taget. Tryck **Enter** för att välja förslaget inom hakparentes.
+What each line does:
 
-1. **Mappen för rotaidem.com:** det du såg i steg 5.4 (oftast bara Enter för `/`).
-2. **Databas:** `1` för MySQL, sedan uppgifterna från steg 5.3. Programmet testar anslutningen direkt.
-3. **Administratörskonto:** användarnamn, e-post och ett lösenord (minst 8 tecken).
-4. **Webbplatsens adress:** Enter för `https://rotaidem.com`.
-5. **RESEND_API_KEY:** klistra in din Resend-nyckel (samma som på Render), eller Enter för att hoppa över.
-6. **LICENSE_API_KEY:** klistra in samma nyckel som licensgeneratorn använder i dag, eller Enter för att skapa en ny.
+1. Goes to your webspace.
+2. Downloads the fixed version into a new folder. Your current folder is not touched.
+3. Copies your settings and your whole database into `rotaidem-backups/<date>/` (private).
+4. Keeps the old program folder as `rotaidem-old`. If it says "Directory not empty", a
+   `rotaidem-old` already exists: use `rotaidem-old2` instead.
+5. Puts the new version in its place.
+6. Creates `rotaidem-public` with the website, checks the database tables (adds missing ones, never
+   deletes anything) and runs the checks. It must end with `Result: no problems found`.
 
-Till sist skriver programmet ut adressen till **kontrollsidan**.
+`deploy` never changes `config.env`, never empties the database and never deletes or overwrites the
+old files in `/home/www`.
 
-### Steg 5: Öppna kontrollsidan
-Öppna adressen som programmet skrev ut (`https://rotaidem.com/cgi-bin/rotaidem-check.py?key=...`). Alla rader ska vara **gröna (OK)**. Är något rött, ta en skärmbild och skicka den till mig.
+## Point the domain at the website folder (STRATO login)
 
-### Steg 6: Logga in
-Gå till `https://rotaidem.com/login` och logga in med administratörskontot. Du kommer till `/admin`.
+1. **Domains > Domainverwaltung > rotaidem.com > Einstellungen / Umleitung.**
+2. Choose the internal target (Verzeichnis) **`rotaidem-public`** and save.
+3. If `www.rotaidem.com` is listed separately, give it the same target `rotaidem-public`.
+4. Under **SSL**, check that the certificate covers `rotaidem.com` (and `www.rotaidem.com`).
 
----
+Do **not** change DNS records, nameservers or e-mail settings: they are not needed.
 
-## 7. Flytta data från Render (konton, licenser, produkter, bilder)
-
-Gör detta om du har riktiga konton eller licenser på Render-sidan.
-
-1. Logga in på den **gamla** sidan (`https://rotaidem.onrender.com/admin`).
-2. Gå till **Activity log** och klicka på **Download backup**. En fil `rotaidem-backup-....json` laddas ner.
-3. Ladda upp filen med FileZilla till översta mappen (samma ställe som `rotaidem`).
-4. Skriv i SSH (byt filnamnet mot ditt):
-
-   ```
-   python3 rotaidem/strato/setup.py import rotaidem-backup-2026-10-20.json
-   ```
-5. Skriv `JA` när programmet frågar. Allt i den nya databasen ersätts med innehållet i backupen.
-6. Logga in med samma konton och lösenord som på Render.
-7. Ta bort backupfilen från servern med FileZilla när du är klar, eftersom den innehåller kunddata.
-
-**Licensgeneratorn och HeavyPro-appen** pratar i dag med `https://rotaidem.onrender.com`. När STRATO-sidan fungerar och domänen visar den, säg till, så byter jag adressen till `https://rotaidem.com` i appen och generatorn. Fram till dess fortsätter de att fungera mot Render.
-
----
-
-## 8. Senare: uppdatera, byta lösenord, felsöka
-
-**Uppdatera till en ny version:** ladda ner ZIP:en igen (steg 1), ladda upp mappen `rotaidem` och låt FileZilla skriva över filerna. Kör sedan:
+Wait a few minutes, then run:
 
 ```
-python3 rotaidem/strato/setup.py update
+python3 /home/www/rotaidem/strato/setup.py diagnose
 ```
 
-Inställningar och data i `rotaidem-data` och i MySQL påverkas inte.
+`diagnose` only reads; it changes nothing. It checks the folders and permissions, runs the backend
+once like Apache would, reads the database, and then tests the real domain: DNS, the connection,
+that `https://rotaidem.com` shows **this** `rotaidem-public` (through `rotaidem-deploy.txt`), the
+pages, `/health`, `/api/site`, and that private files cannot be downloaded.
 
-**Glömt lösenord:**
+Finally, open `https://rotaidem.com`, log in at `/login`, and open `/admin`.
+
+## Updating later
 
 ```
-python3 rotaidem/strato/setup.py password
+cd /home/www
+git -C rotaidem pull
+python3 rotaidem/strato/setup.py deploy
 ```
 
-**Kontrollera allt från SSH:**
+## When diagnose reports a problem
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `https://rotaidem.com/rotaidem-deploy.txt -> 403` or `404` | The domain points to another folder (for example `rotaidem` or `cloudflare`) | Set the domain target to `rotaidem-public` (above) |
+| `port 443 does not answer (timeout)` | DNS still has an old address, or IPv6 is wrong | Wait up to 24 h after changing the target. If it stays, send STRATO support the addresses diagnose prints |
+| `the name does not resolve` | The domain or `www` has no address | Check that `www.rotaidem.com` exists and has the same target at STRATO |
+| `certificate problem` | SSL not active for this name | Activate the SSL certificate for the domain at STRATO |
+| `/health` or `/api/site` -> 404 or 500 while the pages load | Python CGI does not run in `cgi-bin` | `python3 rotaidem/strato/setup.py deploy --cgi-htaccess`. If that gives 500, undo it with `deploy --no-cgi-htaccess` and ask STRATO whether Python CGI is enabled for your package |
+| `/health` -> 503 `database unavailable` | MySQL not reachable or wrong login | Check the `MYSQL_*` lines in `rotaidem-data/config.env` against STRATO's database page |
+| `old Rotaidem rules ... also apply to the website folder` | The old `/home/www/.htaccess` | Run `deploy` (it renames the file) |
+| `The web server runs as user ...` (check page) | CGI does not run as your account | `python3 rotaidem/strato/setup.py permissions group` if you share a group; otherwise ask STRATO. Never make the files readable for everyone |
+
+On your own computer you can test the connection too (Windows PowerShell):
 
 ```
-python3 rotaidem/strato/setup.py check
+Resolve-DnsName rotaidem.com
+Test-NetConnection rotaidem.com -Port 443
 ```
 
-**Ändra en inställning** (till exempel Resend-nyckeln): öppna `rotaidem-data/config.env` i FileZilla (högerklicka och välj *Visa/Redigera*), ändra raden och spara. Ändringen gäller från nästa sidvisning.
+`ipconfig /flushdns` clears your computer's DNS cache after a change.
 
-**Felsökning**
+Visitors never see error details. They are written to `rotaidem-data/logs/` (private), and
+`diagnose` prints the last lines.
 
-| Det som syns | Gör så här |
-|---|---|
-| Kontrollsidan visar *500 Internal Server Error* eller laddar ner filen i stället för att visa den | Python-CGI körs inte i `cgi-bin`. Kör `python3 rotaidem/strato/setup.py update` (sätter rätt behörigheter) och försök igen. Hjälper det inte, kontakta STRATO-supporten och fråga: *"Kann ich Python-3-CGI-Skripte im Ordner cgi-bin meiner Domain ausführen?"* |
-| *Kan inte läsa inställningarna* | `python3 rotaidem/strato/setup.py permissions` |
-| *Flask* är rött | Flask finns bara i SSH, inte för webbservern. Kör `python3 -m pip install --target rotaidem/strato/vendor flask==2.2.5` och ladda om kontrollsidan. |
-| *Backend via /api* är rött | `.htaccess` saknas eller är fel mapp. Kontrollera att du angav rätt mapp i steg 4 och kör `update`. |
-| *E-post (Resend)* är rött | Webbservern får inte nå internet. Allt annat fungerar, men licensmejl och utskick går inte att skicka. Säg till, så lägger jag till utskick via STRATO:s egen e-postserver (SMTP) i stället. |
-| Den gamla startsidan syns fortfarande | Domänen visar en annan mapp än den du angav. Kör setup igen med rätt mapp. |
+## Commands
 
----
+```
+python3 rotaidem/strato/setup.py deploy          install or update the website (keeps all data)
+python3 rotaidem/strato/setup.py diagnose        read-only checks, including the live domain
+python3 rotaidem/strato/setup.py diagnose --offline   only the checks on the server itself
+python3 rotaidem/strato/setup.py backup          settings + full database into rotaidem-backups
+python3 rotaidem/strato/setup.py password        new password for an account
+python3 rotaidem/strato/setup.py permissions     make settings and logs private (700/600) again
+python3 rotaidem/strato/setup.py import FILE     restore a backup (replaces the database; asks first)
+python3 rotaidem/strato/setup.py reset-catalog   remove all products (asks first, keeps a copy)
+python3 rotaidem/strato/setup.py install         first installation on a new webspace (asks questions)
+```
 
-## 9. Hur lösningen är testad
+There is also a check page in the browser:
+`https://rotaidem.com/cgi-bin/rotaidem-check.py?key=<CHECK_KEY>`. The key is the `CHECK_KEY` line
+in `rotaidem-data/config.env`; don't share screenshots that show it.
 
-Jag har byggt en kopia av STRATO-miljön och kört allt mot den:
-- Apache med CGI i `cgi-bin` och `.htaccess`, där CGI körs som webbutrymmets användare,
-- Python 3.11 och Flask 2.2.2 (samma versioner som hos dig),
-- MariaDB i strikt läge och med TLS, samt SQLite.
+## Security
 
-Följande fungerade:
-- installationen,
-- kontrollsidan (alla gröna),
-- inloggning och utloggning,
-- adminpanelen: produkter, bilduppladdning, banner, licenser, beställningar med belopp och backup,
-- registrering och kontaktformulär (å, ä, ö),
-- licens-API:t som HeavyPro använder (aktivera, validera, import med generatorns nyckel),
-- import av en backup från PostgreSQL (som Render använder) till MySQL,
-- att programmappen, inställningsfilen och `.htaccess` ger svar 403 från webben.
+- **Settings:** `config.env` holds the secrets (database password, `SECRET_KEY`, `LICENSE_API_KEY`,
+  `RESEND_API_KEY`). It lives outside the website folder and is mode 600 (folder 700). It is never
+  in Git and never printed by `diagnose` or `backup`.
+- **Passwords:** stored only as PBKDF2 hashes. The admin password is never written to a file.
+- **Website folder:** `.htaccess` refuses hidden files, `.py/.env/.sql/.db/.log/.bak/...` outside
+  `cgi-bin`, and folder listings. It contains no `Options` line, so hosts that forbid it cannot answer
+  500 for the whole site.
+- **Backups:** written to `rotaidem-backups/` (mode 700, files 600, deny-all `.htaccess`).
+- **Cleaning up later:** once everything works, the old copies (`/home/www/index.html` etc.,
+  `cgi-bin`, `cloudflare`, `website`, `strato`, `licensing`, `.github`, `__pycache__`,
+  `rsg.com-claude-lucid-tesla-liazv2`, `rotaidem-old`) can be deleted. Make a backup first. They are
+  not used, but there is no hurry.
 
-Render-versionen fungerar som förut.
+## Tests
 
----
+`python3.11 -m unittest discover -s strato/tests -v` runs every request as a separate CGI process,
+exactly as Apache does. It covers SQLite, and MySQL/MariaDB when `ROTAIDEM_TEST_MYSQL` is set (see
+the file). It checks:
 
-## 10. Ärlig bedömning av "dygnet runt"
-
-- Det finns **ingen process som måste hållas igång**. Apache startar backend vid varje anrop. Webbplatsen och backend är därför tillgängliga när STRATO:s webbserver är det, dygnet runt, utan att somna som Render free.
-- Varje API-anrop tar **0,2 till 0,5 sekunder** längre än med en ständigt körande server. Det märks knappt för den här webbplatsen.
-- Det som kan stoppa sidan är saker i STRATO:s drift, som underhåll eller driftstörningar, och de ligger utanför vad koden kan påverka.
-- STRATO kan begränsa hur många CGI-processer som körs samtidigt. Vid mycket hög trafik (många hundra samtidiga besökare på admin- eller API-sidor) kan det bli långsamt. Vanliga sidor och bilder påverkas inte, eftersom de är vanliga filer.
+- installation and deploy safety: no install into unsafe folders, redeploy keeps data and settings,
+  moving away from the old root layout, retiring old root rules;
+- read-only `diagnose`, `backup` and import;
+- login and roles, orders, licences, shared profiles, uploads, e-mail (fake Resend);
+- `/health`, and that visitors see no error details.

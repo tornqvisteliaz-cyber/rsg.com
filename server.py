@@ -38,6 +38,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent / "in
 STAFF = ("Owner", "Admin", "Support")
 SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or "rotaidem-dev-secret"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_API_URL = os.environ.get("RESEND_API_URL", "https://api.resend.com").rstrip("/")  # override only for tests
 MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
@@ -144,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-20"
+SCHEMA_VERSION = "2026-10-21-profiles"
 
 
 def ensure_schema():
@@ -157,26 +158,28 @@ def ensure_schema():
     except Exception:  # noqa: BLE001 - first run: the meta table does not exist yet
         pass
     if USE_MYSQL:
-        # MySQL needs a length on keys, a real DATETIME for defaults, LONGTEXT for images and 2 decimals for money.
-        pk, ts, ident, big, money = "INT AUTO_INCREMENT PRIMARY KEY", "DATETIME DEFAULT CURRENT_TIMESTAMP", "VARCHAR(191)", "LONGTEXT", "DECIMAL(10,2)"
-        tail = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        # MySQL 8 allows no plain default on TEXT columns, so short values with a default are VARCHAR.
+        # Keys need a length, defaults on timestamps need DATETIME, images LONGTEXT, money 2 decimals.
+        pk, ts, ident, word = "INT AUTO_INCREMENT PRIMARY KEY", "DATETIME DEFAULT CURRENT_TIMESTAMP", "VARCHAR(191)", "VARCHAR(64)"
+        big, money, tail = "LONGTEXT", "DECIMAL(10,2)", " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     else:
         pk = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-        ts, ident, big, money, tail = "TEXT DEFAULT CURRENT_TIMESTAMP", "TEXT", "TEXT", "NUMERIC", ""
+        ts, ident, word, big, money, tail = "TEXT DEFAULT CURRENT_TIMESTAMP", "TEXT", "TEXT", "TEXT", "NUMERIC", ""
     for sql in (
-        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email {ident} UNIQUE, password_hash TEXT, role TEXT DEFAULT 'Customer', token TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS users (id {pk}, name TEXT, email {ident} UNIQUE, password_hash TEXT, role {word} DEFAULT 'Customer', token TEXT, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS products (id {ident} PRIMARY KEY, name TEXT, simulator TEXT, version TEXT, folder_name TEXT, download_url TEXT, image_url TEXT, price TEXT, description TEXT, buy_url TEXT, status TEXT, images TEXT, tagline TEXT, features TEXT, sort_order INTEGER DEFAULT 0)",
         f"CREATE TABLE IF NOT EXISTS liveries (id {ident} PRIMARY KEY, name TEXT, aircraft TEXT, folder_name TEXT, download_url TEXT, image_url TEXT)",
         f"CREATE TABLE IF NOT EXISTS posts (id {pk}, title TEXT, content TEXT, image_url TEXT, date TEXT)",
         f"CREATE TABLE IF NOT EXISTS messages (id {pk}, name TEXT, email TEXT, message TEXT, created_at {ts})",
-        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount {money} DEFAULT 0, invoice_file TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS orders (id {pk}, customer_id INTEGER, product_id TEXT, status {word} DEFAULT 'Completed', payment_status {word} DEFAULT 'Paid', amount {money} DEFAULT 0, invoice_file TEXT, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS meta (key {ident} PRIMARY KEY, value TEXT)",
         f"CREATE TABLE IF NOT EXISTS subscribers (id {pk}, email {ident} UNIQUE, source TEXT, unsubscribed INTEGER DEFAULT 0, created_at {ts})",
-        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key {ident} UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS licenses (id {pk}, license_key {ident} UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status {word} DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id {ident}, machine_name TEXT, first_seen {ts}, last_seen {ts}, UNIQUE (license_id, machine_id))",
         f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -185,10 +188,8 @@ def ensure_schema():
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
             pass
-    # One-time wipe of the old catalog for the HeavyPro relaunch.
-    if not d.first("SELECT value FROM meta WHERE key = 'catalog_reset_heavypro'"):
-        d.run("DELETE FROM products")
-        d.run("INSERT INTO meta (key, value) VALUES ('catalog_reset_heavypro', ?)", today())
+    # Never delete data here: this runs on every install, update and migration.
+    # Emptying the catalog is an explicit command (strato/setup.py reset-catalog).
     d.run("DELETE FROM meta WHERE key = 'schema_version'")
     d.run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", SCHEMA_VERSION)
     d.close()
@@ -922,6 +923,87 @@ def license_deactivate():
     return jsonify({"ok": True})
 
 
+# ---------- shared feel profiles (HeavyPro) ----------
+# HeavyPro owners can publish a feel profile under a name and anyone else with the program can fetch
+# it by that name. Both need a licence key activated on the calling computer. A name belongs to the
+# licence that published it first; only that licence can update or delete it.
+
+PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-]{1,39}$")
+PROFILE_MAX_BYTES = 4000
+
+
+def profile_name():
+    return " ".join(str(body().get("name") or "").split())
+
+
+def profile_key(name):
+    return name.lower()
+
+
+def licensed_computer():
+    lic, machine, error = license_for_request()
+    if error:
+        return None, error
+    if not db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine):
+        return None, (jsonify({"ok": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403)
+    return lic, None
+
+
+@app.post("/api/profiles/publish")
+def profile_publish():
+    lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    if not PROFILE_NAME.match(name):
+        return jsonify({"ok": False, "reason": "invalid_name",
+                        "error": "Use 2 to 40 letters, digits, spaces, dots, dashes or underscores for the name."}), 400
+    data = body().get("profile")
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "reason": "invalid_profile", "error": "The profile is missing."}), 400
+    text = json.dumps(data, separators=(",", ":"))
+    if len(text) > PROFILE_MAX_BYTES:
+        return jsonify({"ok": False, "reason": "too_large", "error": "That profile is too large to share."}), 400
+    existing = db().first("SELECT id, license_id FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if existing and existing["license_id"] != lic["id"]:
+        return jsonify({"ok": False, "reason": "name_taken",
+                        "error": f'Someone else already shares a profile called "{name}". Pick another name.'}), 409
+    if existing:
+        db().run("UPDATE shared_profiles SET name = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", name, text, existing["id"])
+    else:
+        db().run("INSERT INTO shared_profiles (name_key, name, data, license_id) VALUES (?, ?, ?, ?)",
+                 profile_key(name), name, text, lic["id"])
+    return jsonify({"ok": True, "name": name, "updated": bool(existing)})
+
+
+@app.post("/api/profiles/get")
+def profile_get():
+    _lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    row = db().first("SELECT id, name, data FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if not row:
+        return jsonify({"ok": False, "reason": "not_found", "error": f'No shared profile is called "{name}". Check the spelling.'}), 404
+    db().run("UPDATE shared_profiles SET downloads = downloads + 1 WHERE id = ?", row["id"])
+    return jsonify({"ok": True, "name": row["name"], "profile": json.loads(row["data"])})
+
+
+@app.post("/api/profiles/delete")
+def profile_delete():
+    lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    row = db().first("SELECT id, license_id FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if not row:
+        return jsonify({"ok": False, "reason": "not_found", "error": f'No shared profile is called "{name}".'}), 404
+    if row["license_id"] != lic["id"]:
+        return jsonify({"ok": False, "reason": "not_owner", "error": "Only whoever shared this profile can remove it."}), 403
+    db().run("DELETE FROM shared_profiles WHERE id = ?", row["id"])
+    return jsonify({"ok": True})
+
+
 @app.get("/api/account/licenses")
 def account_licenses():
     user = current_user()
@@ -1077,7 +1159,7 @@ def media_file(media_id, ext):
 # ---------- backup ----------
 
 BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
-                 "licenses", "license_activations", "media", "campaigns")
+                 "licenses", "license_activations", "media", "campaigns", "shared_profiles")
 
 
 def table_columns(d, table):
@@ -1217,7 +1299,7 @@ def explain_resend_error(status, raw):
 
 def send_batch(messages):
     """Send up to 100 emails through Resend's batch API. Returns (sent, error)."""
-    req = urllib.request.Request("https://api.resend.com/emails/batch", data=json.dumps(messages).encode(), method="POST",
+    req = urllib.request.Request(f"{RESEND_API_URL}/emails/batch", data=json.dumps(messages).encode(), method="POST",
                                  headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json",
                                           "Accept": "application/json", "User-Agent": "Rotaidem-Website/1.0"})
     try:
@@ -1323,7 +1405,13 @@ def api_not_found(_rest):
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True})
+    """For monitoring: says whether the database answers, nothing else."""
+    try:
+        db().first("SELECT 1 AS ok")
+        return jsonify({"ok": True, "database": "ok"})
+    except Exception:  # noqa: BLE001 - the reason goes to the log, not to visitors
+        app.logger.exception("Health check: database unavailable")
+        return jsonify({"ok": False, "database": "unavailable"}), 503
 
 
 @app.get("/")
@@ -1360,6 +1448,9 @@ def init_schema():
     """Create tables once. A database outage must not stop the site from serving pages."""
     global SCHEMA_READY
     if SCHEMA_READY:
+        return True
+    if os.environ.get("ROTAIDEM_NO_SCHEMA_UPDATE"):
+        SCHEMA_READY = True  # read-only diagnostics (strato/setup.py diagnose) must not change tables
         return True
     try:
         ensure_schema()

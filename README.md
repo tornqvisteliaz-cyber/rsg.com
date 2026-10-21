@@ -33,7 +33,7 @@ HeavyPro keys (`HPRO-XXXX-XXXX-XXXX`) are created with the licence generator pro
 
 ## Deploy on STRATO Webhosting
 
-No Gunicorn and no server process: Apache runs the Flask app as a CGI script per request, with STRATO's MySQL database. Step-by-step guide in Swedish: [STRATO.md](STRATO.md). The files are in `strato/`.
+No Gunicorn and no server process: Apache runs the Flask app as a CGI script per request, with STRATO's MySQL database. The website is installed into its own folder (`/home/www/rotaidem-public`, the domain target); program and data stay private. Exact commands: [STRATO.md](STRATO.md). The tooling is in `strato/` (`setup.py deploy`, `diagnose`, `backup`).
 
 ## Deploy on a Python host with Gunicorn
 
@@ -50,7 +50,7 @@ No Gunicorn and no server process: Apache runs the Flask app as a CGI script per
    - `DATA_DIR`: only for SQLite; point it at a persistent volume, never the ephemeral container disk.
 4. Health check path: `/health`.
 
-The schema is created automatically on start. On first start the old product catalog is cleared once so the HeavyPro catalog starts empty; add products from **/admin → Products**.
+The schema is created automatically on start and never deletes data. Add products from **/admin → Products**.
 
 ## Admin panel
 

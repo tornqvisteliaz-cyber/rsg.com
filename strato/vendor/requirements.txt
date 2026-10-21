@@ -1,0 +1,15 @@
+# Pure-Python copies of everything server.py needs on STRATO, so the site does not depend on
+# packages installed on the web server. Same Flask and Werkzeug versions as ../../requirements.txt.
+# cgi_app.py puts this folder first on sys.path, ahead of any globally installed Flask.
+#
+# To refresh: download these wheels (pip download --no-deps), unzip the package folders and the
+# *.dist-info licence files here. MarkupSafe comes from the source archive without _speedups.c:
+# it then uses its built-in pure-Python version, which works on any CPU.
+flask==3.1.1
+werkzeug==3.1.3
+jinja2==3.1.6
+markupsafe==3.0.2
+itsdangerous==2.2.0
+click==8.1.8
+blinker==1.9.0
+pymysql==1.1.1
