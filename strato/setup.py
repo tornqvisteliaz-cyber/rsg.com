@@ -282,9 +282,11 @@ def cgi_script(wsgi_target, cgi_target, data_dir):
 # Written by rotaidem/strato/setup.py: the entry point of the Rotaidem backend.
 # STRATO's new platform imports this file into a FastCGI process and calls `application` (WSGI).
 # Classic CGI hosts run it as a program, once per request (the __main__ part).
+import importlib
 import sys
 sys.path.insert(0, {STRATO_DIR!r})
 import cgi_app
+cgi_app = importlib.reload(cgi_app)  # a process that stays loaded may still hold an older copy
 
 application = cgi_app.{wsgi_target}({APP_DIR!r}, {config_path(data_dir)!r})
 
@@ -762,8 +764,8 @@ def check_program(r, loc, data_dir, values):
                "Check MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER and MYSQL_PASSWORD in config.env.")
 
 
-def fetch(url, timeout=15, data=None):
-    headers = {"User-Agent": "rotaidem-diagnose/1", "Cache-Control": "no-cache"}
+def fetch(url, timeout=15, data=None, extra_headers=None):
+    headers = {"User-Agent": "rotaidem-diagnose/1", "Cache-Control": "no-cache", **(extra_headers or {})}
     if data is not None:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers)
@@ -840,6 +842,19 @@ def check_domain(r, loc, values, domain):
                             "Run  python3 rotaidem/strato/setup.py deploy --cgi-htaccess  (if that gives 500, "
                             "undo it with  deploy --no-cgi-htaccess  and ask STRATO whether Python CGI is enabled)")
                 r.fail(f"{base}{path} -> {status or err} ({label})", hint)
+        # The admin and account pages send the login token in a header. Both kinds must reach the
+        # program, which answers a made-up token with 401 JSON.
+        for label, extra in (("X-Rotaidem-Token header (used by the site)", {"X-Rotaidem-Token": "diagnose-test"}),
+                             ("Authorization header", {"Authorization": "Bearer diagnose-test"})):
+            status, body, _final, err = fetch(f"{base}/api/me", extra_headers=extra)
+            if status == 401 and '"error"' in body:
+                r.ok(f"{base}/api/me with the {label} reaches the program")
+            elif "X-Rotaidem" in label:
+                r.fail(f"{base}/api/me with the {label} -> {status or err}: {body[:120].strip()}",
+                       "Logged-in pages (account, admin) will stay on 'Loading'. Tell me this line.")
+            else:
+                r.warn(f"{base}/api/me with the {label} -> {status or err}",
+                       "The host interferes with Authorization headers; the site does not need them.")
         # Image uploads in the admin are sent as one request of up to a few MB. Without a login the
         # program answers 403; anything else means the host stopped the request before the program.
         big = json.dumps({"mime": "image/jpeg", "data": "A" * 1_500_000}).encode()

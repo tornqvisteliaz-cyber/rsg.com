@@ -481,6 +481,32 @@ class StratoCGITests:
         self.assertNotIn('class="bad"', check[0]["body"].split("From your browser")[0])
         self.assertTrue(json.loads(check[2]["body"])["REDIRECT_HTTP_AUTHORIZATION"])
 
+    def test_strato_fastcgi_process_with_an_older_copy_loaded(self):
+        """A FastCGI process that ran an older version still holds the old cgi_app and server modules.
+        Loading the new entry script in that process must use the new code (no restart needed)."""
+        code = f"""
+import json, sys
+sys.path.insert(0, {os.path.join(self.w.app, "strato")!r})
+import cgi_app, wsgi_probe
+del cgi_app.wsgi_app          # what an older cgi_app looked like: no wsgi_app
+cgi_app.prepare({self.w.app!r}, {os.path.join(self.w.data, "config.env")!r})
+import server
+server.SCHEMA_VERSION = "old"  # mark the server module loaded before the update (reload redefines it)
+script = {os.path.join(self.w.public, "cgi-bin", "rotaidem.py")!r}
+app = wsgi_probe.load(script)
+print(json.dumps([wsgi_probe.call(app, script, {{"path": "/health"}})["status"], sys.modules["server"].SCHEMA_VERSION == "old"]))
+"""
+        p = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), [200, False])
+
+    def test_site_sends_the_token_in_its_own_header(self):
+        for name in ("admin.html", "account.html", "auth.js"):
+            with open(os.path.join(self.w.public, name)) as fh:
+                text = fh.read()
+            self.assertIn("X-Rotaidem-Token", text, name)
+            self.assertNotIn("Authorization:", text, name)
+
     def test_strato_fastcgi_picks_up_changed_settings(self):
         """The FastCGI process stays loaded: an edited config.env must apply without a restart."""
         cfg = os.path.join(self.w.data, "config.env")

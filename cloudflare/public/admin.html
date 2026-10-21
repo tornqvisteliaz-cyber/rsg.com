@@ -372,7 +372,7 @@
 <script src="/auth.js"></script>
 <script>
 if (localStorage.getItem("rsg_admin") !== "true") location.href = "/login";
-const H = { "content-type": "application/json", Authorization: "Bearer " + (localStorage.getItem("rsg_token") || ""), "X-Rotaidem-Token": localStorage.getItem("rsg_token") || "" };
+const H = { "content-type": "application/json", "X-Rotaidem-Token": localStorage.getItem("rsg_token") || "" };
 const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
 const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
 const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");

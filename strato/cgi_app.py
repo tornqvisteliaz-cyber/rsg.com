@@ -136,7 +136,11 @@ def load_app(app_dir, config_path, env):
     os.umask(0o077)  # files the program creates (logs, SQLite journal) stay private
     try:
         prepare(app_dir, config_path)
-        from server import app
+        if "server" in sys.modules:  # loaded earlier in this process, maybe an older version
+            import importlib
+            app = importlib.reload(sys.modules["server"]).app
+        else:
+            from server import app
     except PermissionError:
         log_error(config_path, "The settings file cannot be read.\n" + web_user_report(config_path)[1] + "\n" + traceback.format_exc(), env)
         return None

@@ -866,7 +866,10 @@ function listImages(value) {
   } catch (err) {}
   return String(value).split(/\n+/).map(s => s.trim()).filter(Boolean);
 }
-function bearerToken(request) { return (request.headers.get("Authorization") || "").replace("Bearer ", "").trim(); }
+function bearerToken(request) {
+  // X-Rotaidem-Token is what the site sends; Authorization stays supported for other clients.
+  return (request.headers.get("Authorization") || "").replace("Bearer ", "").trim() || (request.headers.get("X-Rotaidem-Token") || "").trim();
+}
 async function currentUser(request, env) {
   const token = bearerToken(request);
   if (!token || !env.DB) return null;
