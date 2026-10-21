@@ -321,6 +321,32 @@ class StratoCGITests:
         r = self.w.cgi("POST", "/api/licenses/import", {"licenses": [{"key": imported}]}, headers={"X-License-Api-Key": "wrong"})
         self.assertEqual(r.status, 403)
 
+    def test_shared_profiles_by_name(self):
+        t = self.owner_token
+        alice, bob = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 2}, token=t))["keys"]
+        for key, pc in ((alice, "PC-A"), (bob, "PC-B")):
+            self.ok(self.w.cgi("POST", "/api/licenses/activate", {"key": key, "machine_id": pc, "product": "heavypro"}))
+        call = lambda action, key, pc, **extra: self.w.cgi("POST", f"/api/profiles/{action}",
+                                                            {"key": key, "machine_id": pc, "product": "heavypro", **extra})
+        profile = {"Inertia": 81, "PitchDamping": 64, "InputCurve": "Expo"}
+        self.assertFalse(self.ok(call("publish", alice, "PC-A", name="777  Heavy", profile=profile))["updated"])
+        # Anyone with the program gets it by name, case and spacing ignored
+        got = self.ok(call("get", bob, "PC-B", name="777 heavy"))
+        self.assertEqual(got["name"], "777 Heavy")
+        self.assertEqual(got["profile"], profile)
+        # The name belongs to whoever shared it first
+        self.assertEqual(call("publish", bob, "PC-B", name="777 heavy", profile={"Inertia": 1}).status, 409)
+        self.assertTrue(self.ok(call("publish", alice, "PC-A", name="777 Heavy", profile={"Inertia": 90}))["updated"])
+        self.assertEqual(self.ok(call("get", bob, "PC-B", name="777 Heavy"))["profile"], {"Inertia": 90})
+        self.assertEqual(call("delete", bob, "PC-B", name="777 Heavy").status, 403)
+        # A computer that is not activated cannot use it, nor can a made-up name
+        self.assertEqual(call("get", bob, "PC-X", name="777 Heavy").json()["reason"], "not_activated")
+        self.assertEqual(call("get", bob, "PC-B", name="nope").status, 404)
+        self.assertEqual(call("publish", alice, "PC-A", name="x", profile=profile).json()["reason"], "invalid_name")
+        self.assertEqual(call("publish", alice, "PC-A", name="big", profile={"x": "y" * 5000}).json()["reason"], "too_large")
+        self.ok(call("delete", alice, "PC-A", name="777 Heavy"))
+        self.assertEqual(call("get", bob, "PC-B", name="777 Heavy").status, 404)
+
     # ---------- uploads ----------
 
     def test_image_upload_serve_and_delete(self):

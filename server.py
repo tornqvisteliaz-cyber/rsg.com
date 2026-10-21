@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-21"
+SCHEMA_VERSION = "2026-10-21-profiles"
 
 
 def ensure_schema():
@@ -179,6 +179,7 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS license_activations (id {pk}, license_id INTEGER, machine_id {ident}, machine_name TEXT, first_seen {ts}, last_seen {ts}, UNIQUE (license_id, machine_id))",
         f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -919,6 +920,87 @@ def license_deactivate():
     if error:
         return error
     db().run("DELETE FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+    return jsonify({"ok": True})
+
+
+# ---------- shared feel profiles (HeavyPro) ----------
+# HeavyPro owners can publish a feel profile under a name and anyone else with the program can fetch
+# it by that name. Both need a licence key activated on the calling computer. A name belongs to the
+# licence that published it first; only that licence can update or delete it.
+
+PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-]{1,39}$")
+PROFILE_MAX_BYTES = 4000
+
+
+def profile_name():
+    return " ".join(str(body().get("name") or "").split())
+
+
+def profile_key(name):
+    return name.lower()
+
+
+def licensed_computer():
+    lic, machine, error = license_for_request()
+    if error:
+        return None, error
+    if not db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine):
+        return None, (jsonify({"ok": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403)
+    return lic, None
+
+
+@app.post("/api/profiles/publish")
+def profile_publish():
+    lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    if not PROFILE_NAME.match(name):
+        return jsonify({"ok": False, "reason": "invalid_name",
+                        "error": "Use 2 to 40 letters, digits, spaces, dots, dashes or underscores for the name."}), 400
+    data = body().get("profile")
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "reason": "invalid_profile", "error": "The profile is missing."}), 400
+    text = json.dumps(data, separators=(",", ":"))
+    if len(text) > PROFILE_MAX_BYTES:
+        return jsonify({"ok": False, "reason": "too_large", "error": "That profile is too large to share."}), 400
+    existing = db().first("SELECT id, license_id FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if existing and existing["license_id"] != lic["id"]:
+        return jsonify({"ok": False, "reason": "name_taken",
+                        "error": f'Someone else already shares a profile called "{name}". Pick another name.'}), 409
+    if existing:
+        db().run("UPDATE shared_profiles SET name = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", name, text, existing["id"])
+    else:
+        db().run("INSERT INTO shared_profiles (name_key, name, data, license_id) VALUES (?, ?, ?, ?)",
+                 profile_key(name), name, text, lic["id"])
+    return jsonify({"ok": True, "name": name, "updated": bool(existing)})
+
+
+@app.post("/api/profiles/get")
+def profile_get():
+    _lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    row = db().first("SELECT id, name, data FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if not row:
+        return jsonify({"ok": False, "reason": "not_found", "error": f'No shared profile is called "{name}". Check the spelling.'}), 404
+    db().run("UPDATE shared_profiles SET downloads = downloads + 1 WHERE id = ?", row["id"])
+    return jsonify({"ok": True, "name": row["name"], "profile": json.loads(row["data"])})
+
+
+@app.post("/api/profiles/delete")
+def profile_delete():
+    lic, error = licensed_computer()
+    if error:
+        return error
+    name = profile_name()
+    row = db().first("SELECT id, license_id FROM shared_profiles WHERE name_key = ?", profile_key(name))
+    if not row:
+        return jsonify({"ok": False, "reason": "not_found", "error": f'No shared profile is called "{name}".'}), 404
+    if row["license_id"] != lic["id"]:
+        return jsonify({"ok": False, "reason": "not_owner", "error": "Only whoever shared this profile can remove it."}), 403
+    db().run("DELETE FROM shared_profiles WHERE id = ?", row["id"])
     return jsonify({"ok": True})
 
 
