@@ -2,7 +2,7 @@
 // <body data-layout="off"> skips the layout, data-footer="off" skips only the footer.
 const LOGO = "/logo.svg";
 const MENU = [
-    ["Products", "/addons/", [["/heavypro", "HeavyPro", "Airliner control feel for MSFS 2024"], ["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
+    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
     ["Support", "/support", [["/support", "Help and FAQ", "Answers to common questions"], ["/installation", "Installation guide", "Set up HeavyPro step by step"], ["/downloads", "Downloads", "Installers and updates"], ["/contact", "Contact us", "Email and contact form"]]],
     ["News", "/newsletter", null],
     ["Company", "/about", [["/about", "About us", "Who we are"], ["/work-at-rsg", "Careers", "Work with us"], ["/contact", "Contact", "Get in touch"]]],
