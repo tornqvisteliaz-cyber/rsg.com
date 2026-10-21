@@ -1289,8 +1289,9 @@ def explain_resend_error(status, raw):
         return (f"The sender domain in MAIL_FROM ({MAIL_FROM}) is not verified in Resend yet. Finish the DNS setup at "
                 "resend.com/domains, or remove MAIL_FROM to use Resend's test sender.")
     if status in (401, 403) and ("api key" in text or "unauthorized" in text or "restricted" in text):
-        return ("Resend rejected the API key. Check RESEND_API_KEY in Render (it starts with re_ and must have "
-                "sending access), save, and let the service redeploy.")
+        return ("Resend rejected the API key. Create a key with sending access at resend.com/api-keys and put it in "
+                "RESEND_API_KEY (on STRATO: rotaidem-data/config.env, picked up automatically; on Render: the "
+                "service's environment). It starts with re_.")
     if "error code: 1010" in text or "<html" in text:
         return "Resend's firewall blocked the request. Try again in a minute; if it keeps happening, contact Resend support."
     if "from" in text and ("invalid" in text or "format" in text):
@@ -1333,7 +1334,7 @@ def admin_broadcast():
     if not user:
         return err("Only the Owner or an Admin can send emails", 403)
     if not RESEND_API_KEY:
-        return err("Email is not set up. Add RESEND_API_KEY to the server environment and redeploy.", 400)
+        return err("Email is not set up. Add RESEND_API_KEY to the settings (on STRATO: rotaidem-data/config.env).", 400)
     b = body()
     subject = str(b.get("subject", "")).strip()
     message = str(b.get("message", "")).strip()
