@@ -1245,7 +1245,8 @@ def collect_recipients(groups, extra):
 
 
 def site_url():
-    return (os.environ.get("SITE_URL") or request.host_url).rstrip("/")
+    base = (os.environ.get("SITE_URL") or request.host_url).strip().rstrip("/")
+    return base if "://" in base else "https://" + base.lower()  # "Rotaidem.com" still gives working links
 
 
 def product_email_html(product, message, email):

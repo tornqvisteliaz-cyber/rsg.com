@@ -192,6 +192,17 @@ def retire_parent_htaccess(public_dir):
         say(f"  The old rules in {path} also applied to the website folder; renamed to {target}")
 
 
+def site_url(value):
+    """'Rotaidem.com' or 'http://rotaidem.com/' -> 'https://rotaidem.com' (used for links in e-mails)."""
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return "https://rotaidem.com"
+    if "://" not in value:
+        value = "https://" + value
+    parts = urllib.parse.urlparse(value)
+    return f"{parts.scheme}://{(parts.hostname or 'rotaidem.com')}{':' + str(parts.port) if parts.port else ''}"
+
+
 def rel_name(path):
     rel = os.path.relpath(path, WEBSPACE)
     return path if rel.startswith("..") else rel
@@ -494,7 +505,7 @@ def cmd_install():
         owner = (ask("User name", "eliaz"), ask("E-mail", "Eliaz@rotaidem.com"),
                  ask_secret("Password, at least 8 characters (not shown while typing)", 8, confirm=True))
         say()
-        values["SITE_URL"] = ask("Website address", "https://rotaidem.com")
+        values["SITE_URL"] = site_url(ask("Website address", "https://rotaidem.com"))
         say()
         say("E-mail through Resend (licence e-mails and newsletters). Press Enter to skip.")
         key = ask("RESEND_API_KEY (starts with re_)")
@@ -813,7 +824,7 @@ def diagnose(offline=False, brief=False, domain=None):
     check_layout(r, loc, data_dir, values)
     check_program(r, loc, data_dir, values)
     if not offline and values is not None:
-        site = domain or urllib.parse.urlparse(values.get("SITE_URL") or "https://rotaidem.com").hostname
+        site = domain or urllib.parse.urlparse(site_url(values.get("SITE_URL"))).hostname
         check_domain(r, loc, values, site)
     say()
     if r.fails:
