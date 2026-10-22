@@ -20,7 +20,8 @@ HeavyPro ──────────(every start: CheckAsync)─────�
 
 * **Key format.** 4-letter product prefix, then 11 random characters and 1 check character from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no I, O, 0 or 1). The check character catches typos without contacting the server. A key only works once the website knows it, so a correctly formed but made-up key is rejected.
 * **Activations.** Each key works on `max_activations` computers (default 2). A computer is identified by a hash of the Windows MachineGuid, so reinstalling HeavyPro does not use another activation. Admins can remove a computer from a key in the panel.
-* **Offline use.** HeavyPro remembers when the key was last confirmed and keeps working offline for a grace period you choose (14 days in the example below).
+* **Signed answers.** A "valid" from the website counts only with a token signed by the website's private key (RS256). The client holds the public key (`https://rotaidem.com/api/licenses/jwks.json`) and checks that the token names this computer, this key and the random nonce it just sent. So a fake licence server, an edited `license.json`, a licence copied to another PC and a replayed old answer are all refused (`LicenseStatus.Unverified`). Pass the public key as the 4th argument of `LicenseClient`; without it nothing is trusted.
+* **Offline use.** The signed answer is saved next to the key. Without internet HeavyPro starts on it until its lease runs out (`LICENSE_LEASE_DAYS` on the website, default 14) and within the grace period you choose; then it must reach the website again. A clock turned back is noticed (`ClockTampered`).
 
 ## The generator
 
@@ -58,7 +59,7 @@ if (!LicenseKey.IsWellFormed(keyTextBox.Text, LicenseKey.HeavyProPrefix))
 var result = await client.ActivateAsync(keyTextBox.Text);
 if (result.IsValid)
 {
-    store.Save(keyTextBox.Text, DateTimeOffset.UtcNow);
+    store.Save(keyTextBox.Text, DateTimeOffset.UtcNow, result.Token);   // the token lets the app start offline
     ContinueInstall();
 }
 else
@@ -72,7 +73,9 @@ else
 At start-up:
 
 ```csharp
-var result = await new LicenseClient().CheckAsync(new LicenseStore("heavypro"), TimeSpan.FromDays(14));
+var client = new LicenseClient(LicenseClient.DefaultBaseUrl, "heavypro", null, publicKeyJwk);
+var quick = client.CheckOffline(new LicenseStore("heavypro"), TimeSpan.FromDays(14));   // instant start if the saved answer is still good
+var result = await client.CheckAsync(new LicenseStore("heavypro"), TimeSpan.FromDays(14));
 switch (result.Status)
 {
     case LicenseStatus.Valid:

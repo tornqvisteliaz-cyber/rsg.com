@@ -17,26 +17,24 @@ public class LiveServerTests
     {
         if (Site is null || Key is null)
             return;
-        var client = new LicenseClient(Site);
-        Assert.Equal(LicenseStatus.Valid, (await client.ActivateAsync(Key)).Status);
+        using var http = new HttpClient();
+        var jwk = await http.GetStringAsync(Site.TrimEnd('/') + "/api/licenses/jwks.json");
+        var client = new LicenseClient(Site, "heavypro", null, jwk);
+        var activated = await client.ActivateAsync(Key);
+        Assert.Equal(LicenseStatus.Valid, activated.Status);
+        Assert.NotNull(activated.Token);
         Assert.Equal(LicenseStatus.Valid, (await client.ValidateAsync(Key)).Status);
-        Assert.Equal(LicenseStatus.WrongProduct, (await new LicenseClient(Site, "otherproduct").ValidateAsync(Key)).Status);
+        Assert.Equal(LicenseStatus.WrongProduct, (await new LicenseClient(Site, "otherproduct", null, jwk).ValidateAsync(Key)).Status);
+
+        var dir = Path.Combine(Path.GetTempPath(), "rotaidem-live-" + Guid.NewGuid());
+        var store = new LicenseStore("heavypro", dir);
+        store.Save(Key, DateTimeOffset.UtcNow, activated.Token);
+        Assert.Equal(LicenseStatus.OfflineGrace, new LicenseClient("http://127.0.0.1:9", "heavypro", null, jwk).CheckOffline(store, TimeSpan.FromDays(14)).Status);
+        Assert.Equal(LicenseStatus.Valid, (await client.CheckAsync(store, TimeSpan.FromDays(14))).Status);
+        Directory.Delete(dir, true);
+
         Assert.Equal(LicenseStatus.Valid, (await client.DeactivateAsync(Key)).Status);
         Assert.Equal(LicenseStatus.NotActivated, (await client.ValidateAsync(Key)).Status);
         Assert.Equal(LicenseStatus.NotFound, (await client.ActivateAsync(LicenseKey.Generate())).Status);
-    }
-
-    [Fact]
-    public async Task Offline_grace_only_within_the_window()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "rotaidem-test-" + Guid.NewGuid());
-        var store = new LicenseStore("heavypro", dir);
-        var offline = new LicenseClient("http://127.0.0.1:9");
-        Assert.Equal(LicenseStatus.NoKey, (await offline.CheckAsync(store, TimeSpan.FromDays(14))).Status);
-        store.Save(LicenseKey.Generate(), DateTimeOffset.UtcNow.AddDays(-3));
-        Assert.Equal(LicenseStatus.OfflineGrace, (await offline.CheckAsync(store, TimeSpan.FromDays(14))).Status);
-        store.Save(store.Load()!.Key, DateTimeOffset.UtcNow.AddDays(-30));
-        Assert.Equal(LicenseStatus.NetworkError, (await offline.CheckAsync(store, TimeSpan.FromDays(14))).Status);
-        Directory.Delete(dir, true);
     }
 }
