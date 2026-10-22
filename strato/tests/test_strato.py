@@ -139,12 +139,12 @@ class Webspace:
                            cwd=self.root, timeout=180, env={**os.environ, **(env or {})})
         return p.returncode, p.stdout.decode() + p.stderr.decode()
 
-    def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=()):
+    def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=(), remote_addr="203.0.113.5"):
         script_path = os.path.join(self.public, "cgi-bin", script)
         env = {"PATH": "/usr/bin:/bin", "GATEWAY_INTERFACE": "CGI/1.1", "REQUEST_METHOD": method,
                "SCRIPT_NAME": "/cgi-bin/" + script, "SCRIPT_FILENAME": script_path, "PATH_INFO": path,
                "QUERY_STRING": query, "SERVER_NAME": "rotaidem.test", "SERVER_PORT": "443", "HTTPS": "on",
-               "SERVER_PROTOCOL": "HTTP/1.1", "REMOTE_ADDR": "203.0.113.5", "HTTP_HOST": "rotaidem.test"}
+               "SERVER_PROTOCOL": "HTTP/1.1", "REMOTE_ADDR": remote_addr, "HTTP_HOST": "rotaidem.test"}
         data = json.dumps(body).encode() if isinstance(body, (dict, list)) else (body or b"")
         if data:
             env.update(CONTENT_TYPE="application/json", CONTENT_LENGTH=str(len(data)))
@@ -344,6 +344,52 @@ class StratoCGITests:
         self.assertEqual(self.ok(r)["skipped"], [imported])
         r = self.w.cgi("POST", "/api/licenses/import", {"licenses": [{"key": imported}]}, headers={"X-License-Api-Key": "wrong"})
         self.assertEqual(r.status, 403)
+
+    def test_signed_licence_answers(self):
+        """HeavyPro trusts only answers signed by this server: a fake server cannot say "valid"."""
+        import hashlib
+        import hmac
+        t = self.owner_token
+        key = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "max_activations": 2}, token=t))["keys"][0]
+        jwk = self.ok(self.w.cgi("GET", "/api/licenses/jwks.json"))["keys"][0]
+        self.assertEqual((jwk["kty"], jwk["alg"], jwk["e"]), ("RSA", "RS256", "AQAB"))
+        self.assertIn(b"BEGIN PUBLIC KEY", self.w.cgi("GET", "/api/licenses/public-key").body)
+        b64 = lambda text: base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))  # noqa: E731
+        n, e = int.from_bytes(b64(jwk["n"]), "big"), int.from_bytes(b64(jwk["e"]), "big")
+
+        def verified(token):
+            head, body, sig = token.split(".")
+            size = (n.bit_length() + 7) // 8
+            digest = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(f"{head}.{body}".encode()).digest()
+            expected = b"\x00\x01" + b"\xff" * (size - len(digest) - 3) + b"\x00" + digest
+            ok = hmac.compare_digest(pow(int.from_bytes(b64(sig), "big"), e, n).to_bytes(size, "big"), expected)
+            return json.loads(b64(body)) if ok else None
+
+        r = self.ok(self.w.cgi("POST", "/api/licenses/activate", {"key": key, "machine_id": "pc-hash", "machine_name": "PC",
+                                                                  "product": "heavypro", "nonce": "abc123"}))
+        claims = verified(r["token"])
+        self.assertIsNotNone(claims, "the token verifies with the published key")
+        self.assertEqual((claims["key"], claims["mid"], claims["nonce"], claims["max_activations"]), (key, "pc-hash", "abc123", 2))
+        self.assertEqual(claims["exp"] - claims["iat"], 14 * 86400)
+        self.assertTrue(r["lease_until"].endswith("Z"))
+        head, body, sig = r["token"].split(".")
+        edited = json.loads(b64(body))
+        edited["exp"] += 86400 * 365
+        forged = head + "." + base64.urlsafe_b64encode(json.dumps(edited).encode()).rstrip(b"=").decode() + "." + sig
+        self.assertIsNone(verified(forged), "an edited token does not verify")
+        again = self.ok(self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "pc-hash"}))
+        self.assertNotIn("nonce", verified(again["token"]))
+        self.assertEqual(verified(again["token"])["iat"] >= claims["iat"], True)
+        # Refusals carry no token; guessing keys from one address is cut off after 30 tries an hour.
+        self.assertNotIn("token", self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "other"}).json())
+        guesses = [self.w.cgi("POST", "/api/licenses/activate", {"key": "HPRO-AAAA-BBBB-CCCC", "machine_id": "x"},
+                              remote_addr="198.51.100.77").status for _ in range(31)]
+        self.assertEqual((guesses[0], guesses[-1]), (400, 429))
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "pc-hash"}))["valid"],
+                        "other addresses are not affected")
+        out = self.w.setup_cmd("signing-key")
+        self.assertIn(jwk["kid"], out)
+        self.assertNotIn('"d"', out)
 
     def test_shared_profiles_by_name(self):
         t = self.owner_token

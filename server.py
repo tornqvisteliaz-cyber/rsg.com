@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-21-profiles"
+SCHEMA_VERSION = "2026-10-22-license-tokens"
 
 
 def ensure_schema():
@@ -180,6 +180,7 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS license_failures (id {pk}, ip_address {ident}, created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -1088,15 +1089,190 @@ def admin_reset_activation(license_id, activation_id):
     return jsonify({"ok": True})
 
 
+# ---------- signed licence answers ----------
+# Every valid activate/validate answer carries a token (an RS256 JSON Web Token) signed with this
+# server's private key. HeavyPro checks it with the public key built into it, so a fake licence
+# server, an edited answer or an activation copied to another PC is refused. The token also repeats
+# the random "nonce" the app sent (no replays) and runs out after LICENSE_LEASE_DAYS, after which
+# the app must reach this server again. The key pair is made once and kept in the database (meta
+# "license_signing_key"), so it moves with backups. Same scheme as KeyForge.
+
+LICENSE_LEASE_DAYS = 14
+LICENSE_FAILURES_PER_HOUR = 30
+SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64url_decode(text):
+    return base64.urlsafe_b64decode(str(text) + "=" * (-len(str(text)) % 4))
+
+
+def _probably_prime(n, rounds=40):
+    for p in (3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47):
+        if n % p == 0:
+            return n == p
+    d, r = n - 1, 0
+    while d % 2 == 0:
+        d, r = d // 2, r + 1
+    for _ in range(rounds):
+        x = pow(secrets.randbelow(n - 3) + 2, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(r - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def generate_signing_key(bits=2048):
+    def prime(size):
+        while True:
+            c = secrets.randbits(size) | (3 << (size - 2)) | 1
+            if c % 65537 != 1 and _probably_prime(c):
+                return c
+    while True:
+        p, q = prime(bits // 2), prime(bits // 2)
+        if p != q and (p * q).bit_length() == bits:
+            return {"n": p * q, "e": 65537, "d": pow(65537, -1, (p - 1) * (q - 1)), "p": p, "q": q}
+
+
+def _pkcs1(message, length):
+    digest = SHA256_DIGEST_INFO + hashlib.sha256(message).digest()
+    return b"\x00\x01" + b"\xff" * (length - len(digest) - 3) + b"\x00" + digest
+
+
+def rsa_sign(key, message):
+    length = (key["n"].bit_length() + 7) // 8
+    m = int.from_bytes(_pkcs1(message, length), "big")
+    p, q, d = key["p"], key["q"], key["d"]
+    m1, m2 = pow(m, d % (p - 1), p), pow(m, d % (q - 1), q)
+    s = m2 + ((pow(q, -1, p) * (m1 - m2)) % p) * q
+    if pow(s, key["e"], key["n"]) != m:
+        raise ValueError("signature check failed")
+    return s.to_bytes(length, "big")
+
+
+def rsa_verify(key, message, signature):
+    length = (key["n"].bit_length() + 7) // 8
+    if len(signature) != length or int.from_bytes(signature, "big") >= key["n"]:
+        return False
+    return hmac.compare_digest(pow(int.from_bytes(signature, "big"), key["e"], key["n"]).to_bytes(length, "big"), _pkcs1(message, length))
+
+
+def signing_key_id(key):
+    return hashlib.sha256(key["n"].to_bytes((key["n"].bit_length() + 7) // 8, "big")).hexdigest()[:16]
+
+
+def signing_jwk(key):
+    return {"kty": "RSA", "alg": "RS256", "use": "sig", "kid": signing_key_id(key),
+            "n": b64url(key["n"].to_bytes((key["n"].bit_length() + 7) // 8, "big")), "e": b64url((65537).to_bytes(3, "big"))}
+
+
+def signing_pem(key):
+    def der(tag, body):
+        n = len(body)
+        size = bytes([n]) if n < 0x80 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+        return bytes([tag]) + size + body
+
+    def der_int(v):
+        raw = v.to_bytes((v.bit_length() + 7) // 8, "big")
+        return der(0x02, b"\x00" + raw if raw[0] & 0x80 else raw)
+    rsa_key = der(0x30, der_int(key["n"]) + der_int(key["e"]))
+    spki = der(0x30, der(0x30, der(0x06, bytes.fromhex("2a864886f70d010101")) + b"\x05\x00") + der(0x03, b"\x00" + rsa_key))
+    text = base64.b64encode(spki).decode()
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(text[i:i + 64] for i in range(0, len(text), 64)) + "\n-----END PUBLIC KEY-----\n"
+
+
+_SIGNING_KEY = {}
+
+
+def signing_key():
+    """The RSA key for licence tokens: made on first use (normally by setup.py deploy), kept in the database."""
+    if "key" in _SIGNING_KEY:
+        return _SIGNING_KEY["key"]
+    d = DB()
+    try:
+        row = d.first("SELECT value FROM meta WHERE key = 'license_signing_key'")
+        if not row:
+            made = json.dumps({k: format(v, "x") for k, v in generate_signing_key().items()})
+            try:
+                d.run("INSERT INTO meta (key, value) VALUES ('license_signing_key', ?)", made)
+            except Exception:  # noqa: BLE001 - made at the same moment by another request: use that one
+                pass
+            row = d.first("SELECT value FROM meta WHERE key = 'license_signing_key'")
+    finally:
+        d.close()
+    _SIGNING_KEY["key"] = {k: int(v, 16) for k, v in json.loads(row["value"]).items()}
+    return _SIGNING_KEY["key"]
+
+
+def make_license_token(claims):
+    key = signing_key()
+    head = b64url(json.dumps({"alg": "RS256", "typ": "JWT", "kid": signing_key_id(key)}, separators=(",", ":")).encode())
+    data = head + "." + b64url(json.dumps(claims, separators=(",", ":"), sort_keys=True).encode())
+    return data + "." + b64url(rsa_sign(key, data.encode()))
+
+
+def read_license_token(token):
+    """The claims of a token this server signed, or None (signature only)."""
+    try:
+        head, claims, sig = str(token).split(".")
+        if not rsa_verify(signing_key(), f"{head}.{claims}".encode(), b64url_decode(sig)):
+            return None
+        return json.loads(b64url_decode(claims))
+    except (ValueError, TypeError):
+        return None
+
+
+def lease_days():
+    try:
+        return max(1, min(365, int(os.environ.get("LICENSE_LEASE_DAYS") or LICENSE_LEASE_DAYS)))
+    except ValueError:
+        return LICENSE_LEASE_DAYS
+
+
+def license_failed(reply, status):
+    db().run("INSERT INTO license_failures (ip_address, created_at) VALUES (?, ?)", request.remote_addr or "",
+             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    return reply, status
+
+
+def too_many_license_failures():
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    row = db().first("SELECT COUNT(*) AS n FROM license_failures WHERE ip_address = ? AND created_at >= ?", request.remote_addr or "", cutoff)
+    return (row or {}).get("n", 0) >= LICENSE_FAILURES_PER_HOUR
+
+
+@app.get("/api/licenses/jwks.json")
+def license_jwks():
+    resp = jsonify({"keys": [signing_jwk(signing_key())]})
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+
+@app.get("/api/licenses/public-key")
+def license_public_key():
+    return app.response_class(signing_pem(signing_key()), mimetype="application/x-pem-file")
+
+
 def license_for_request():
     """Shared checks for the public activation endpoints. Returns (licence, machine_id, error_response)."""
     b = body()
+    if too_many_license_failures():
+        return None, "", (jsonify({"valid": False, "reason": "rate_limited",
+                                   "error": "Too many wrong licence keys from this address. Try again in an hour."}), 429)
     key = normalize_key(b.get("key"))
     if not key:
-        return None, "", (jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
+        return None, "", license_failed(jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
     lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
     if not lic:
-        return None, "", (jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
+        return None, "", license_failed(jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
     if lic["status"] != "active":
         return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
     product = str(b.get("product") or "").strip()
@@ -1108,9 +1284,17 @@ def license_for_request():
     return lic, machine, None
 
 
-def license_reply(lic, used):
-    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used,
-                    "max_activations": lic["max_activations"], "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+def license_reply(lic, used, machine):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    until = now + timedelta(days=lease_days())
+    claims = {"iss": site_url(), "sub": f"license:{lic['id']}", "aud": lic["product_id"], "key": lic["license_key"], "mid": machine,
+              "iat": int(now.timestamp()), "exp": int(until.timestamp()), "activations_used": used, "max_activations": lic["max_activations"]}
+    nonce = str(body().get("nonce") or "")[:128]
+    if nonce:
+        claims["nonce"] = nonce
+    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used, "max_activations": lic["max_activations"],
+                    "checked_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "lease_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "token": make_license_token(claims)})
 
 
 @app.post("/api/licenses/activate")
@@ -1129,7 +1313,7 @@ def license_activate():
     else:
         db().run("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)", lic["id"], machine, name)
         used += 1
-    return license_reply(lic, used)
+    return license_reply(lic, used, machine)
 
 
 @app.post("/api/licenses/validate")
@@ -1142,7 +1326,7 @@ def license_validate():
         return jsonify({"valid": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403
     db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", existing["id"])
     used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
-    return license_reply(lic, used)
+    return license_reply(lic, used, machine)
 
 
 @app.post("/api/licenses/deactivate")

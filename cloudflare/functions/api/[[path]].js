@@ -47,6 +47,8 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/audit") return adminAudit(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/licenses/import") return licensesImport(request, env);
+    if (method === "GET" && path === "/api/licenses/jwks.json") return json({ keys: [await signingPublicJwk(env)] });
+    if (method === "GET" && path === "/api/licenses/public-key") return licensePublicKeyPem(env);
     if (method === "POST" && path === "/api/licenses/activate") return licenseActivate(request, env);
     if (method === "POST" && path === "/api/licenses/validate") return licenseValidate(request, env);
     if (method === "POST" && path === "/api/licenses/deactivate") return licenseDeactivate(request, env);
@@ -88,6 +90,7 @@ async function ensure(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, message TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, status TEXT DEFAULT 'Completed', payment_status TEXT DEFAULT 'Paid', amount NUMERIC DEFAULT 29.99, invoice_file TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, ip_address TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, ip_address TEXT, created_at TEXT)").run();
 
   for (const col of ["tagline TEXT", "features TEXT", "sort_order INTEGER DEFAULT 0"]) {
     try { await env.DB.prepare("ALTER TABLE products ADD COLUMN " + col).run(); } catch (err) {}
@@ -679,12 +682,68 @@ async function adminResetActivation(request, env, licenseId, activationId) {
   return json({ ok: true });
 }
 
+// ---------- signed licence answers (same scheme as server.py) ----------
+// Valid answers carry an RS256 token signed with the key in meta "license_signing_key" (hex JSON
+// {n, e, d, p, q}, the same format server.py uses, so the key moves with backups).
+const LICENSE_LEASE_DAYS = 14, LICENSE_FAILURES_PER_HOUR = 30;
+const b64urlBytes = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64urlText = text => b64urlBytes(new TextEncoder().encode(text));
+const bytesFromB64url = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
+const bigFromBytes = bytes => BigInt("0x" + ([...bytes].map(b => b.toString(16).padStart(2, "0")).join("") || "0"));
+const bytesFromBig = n => { let h = n.toString(16); if (h.length % 2) h = "0" + h; return Uint8Array.from(h.match(/../g), x => parseInt(x, 16)); };
+function modInverse(a, m) {
+  let [r0, r1, s0, s1] = [m, ((a % m) + m) % m, 0n, 1n];
+  while (r1) { const q = r0 / r1; [r0, r1] = [r1, r0 - q * r1]; [s0, s1] = [s1, s0 - q * s1]; }
+  return ((s0 % m) + m) % m;
+}
+async function signingKeyParts(env) {
+  let row = await env.DB.prepare("SELECT value FROM meta WHERE key = 'license_signing_key'").first();
+  if (!row) {
+    const pair = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+    const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+    const hex = {}; for (const k of ["n", "e", "d", "p", "q"]) hex[k] = bigFromBytes(bytesFromB64url(jwk[k])).toString(16);
+    await env.DB.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('license_signing_key', ?)").bind(JSON.stringify(hex)).run();
+    row = await env.DB.prepare("SELECT value FROM meta WHERE key = 'license_signing_key'").first();
+  }
+  const parts = {}; for (const [k, v] of Object.entries(JSON.parse(row.value))) parts[k] = BigInt("0x" + v);
+  return parts;
+}
+async function signingKeyId(parts) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytesFromBig(parts.n)));
+  return [...digest].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+async function signingPublicJwk(env) {
+  const k = await signingKeyParts(env);
+  return { kty: "RSA", alg: "RS256", use: "sig", kid: await signingKeyId(k), n: b64urlBytes(bytesFromBig(k.n)), e: b64urlBytes(bytesFromBig(k.e)) };
+}
+async function licensePublicKeyPem(env) {
+  const pub = await crypto.subtle.importKey("jwk", { ...(await signingPublicJwk(env)), ext: true }, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
+  const der = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey("spki", pub))));
+  return new Response(`-----BEGIN PUBLIC KEY-----\n${der.match(/.{1,64}/g).join("\n")}\n-----END PUBLIC KEY-----\n`, { headers: { "content-type": "application/x-pem-file" } });
+}
+async function makeLicenseToken(env, claims) {
+  const k = await signingKeyParts(env);
+  const b = n => b64urlBytes(bytesFromBig(n));
+  const key = await crypto.subtle.importKey("jwk", { kty: "RSA", n: b(k.n), e: b(k.e), d: b(k.d), p: b(k.p), q: b(k.q), dp: b(k.d % (k.p - 1n)), dq: b(k.d % (k.q - 1n)), qi: b(modInverse(k.q, k.p)), alg: "RS256", ext: true },
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const sorted = Object.fromEntries(Object.entries(claims).sort(([a], [b2]) => (a < b2 ? -1 : 1)));
+  const data = b64urlText(JSON.stringify({ alg: "RS256", typ: "JWT", kid: await signingKeyId(k) })) + "." + b64urlText(JSON.stringify(sorted));
+  return data + "." + b64urlBytes(new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(data))));
+}
+const licenseIp = request => request.headers.get("CF-Connecting-IP") || "";
+async function licenseFailed(request, env, reply) {
+  await env.DB.prepare("INSERT INTO license_failures (ip_address, created_at) VALUES (?, ?)").bind(licenseIp(request), utcStamp()).run();
+  return reply;
+}
+
 async function licenseForRequest(request, env) {
   const body = await request.json().catch(() => ({}));
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM license_failures WHERE ip_address = ? AND created_at >= ?").bind(licenseIp(request), utcStamp(3600)).first();
+  if (recent && recent.n >= LICENSE_FAILURES_PER_HOUR) return { error: json({ valid: false, reason: "rate_limited", error: "Too many wrong licence keys from this address. Try again in an hour." }, 429) };
   const key = normalizeKey(body.key);
-  if (!key) return { error: json({ valid: false, reason: "invalid_format", error: "That is not a valid licence key." }, 400) };
+  if (!key) return { error: await licenseFailed(request, env, json({ valid: false, reason: "invalid_format", error: "That is not a valid licence key." }, 400)) };
   const lic = await env.DB.prepare("SELECT * FROM licenses WHERE license_key = ?").bind(key).first();
-  if (!lic) return { error: json({ valid: false, reason: "not_found", error: "This licence key does not exist." }, 404) };
+  if (!lic) return { error: await licenseFailed(request, env, json({ valid: false, reason: "not_found", error: "This licence key does not exist." }, 404)) };
   if (lic.status !== "active") return { error: json({ valid: false, reason: "revoked", error: "This licence key has been revoked." }, 403) };
   const product = String(body.product || "").trim();
   if (product && !sameProduct(product, lic.product_id)) return { error: json({ valid: false, reason: "wrong_product", error: "This licence key is for another product." }, 403) };
@@ -693,7 +752,16 @@ async function licenseForRequest(request, env) {
   return { lic, machine, body };
 }
 const activationCount = async (env, id) => ((await env.DB.prepare("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?").bind(id).first()) || {}).n || 0;
-const licenseReply = (lic, used) => json({ valid: true, product_id: lic.product_id, activations_used: used, max_activations: lic.max_activations, checked_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") });
+async function licenseReply(request, env, r, used) {
+  const now = Math.floor(Date.now() / 1000), days = Number(env.LICENSE_LEASE_DAYS) || LICENSE_LEASE_DAYS, exp = now + days * 86400;
+  const claims = { iss: (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, ""), sub: `license:${r.lic.id}`, aud: r.lic.product_id, key: r.lic.license_key,
+    mid: r.machine, iat: now, exp, activations_used: used, max_activations: r.lic.max_activations };
+  const nonce = String(r.body.nonce || "").slice(0, 128);
+  if (nonce) claims.nonce = nonce;
+  const iso = t => new Date(t * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+  return json({ valid: true, product_id: r.lic.product_id, activations_used: used, max_activations: r.lic.max_activations,
+    checked_at: iso(now), lease_until: iso(exp), token: await makeLicenseToken(env, claims) });
+}
 
 async function licenseActivate(request, env) {
   const r = await licenseForRequest(request, env);
@@ -709,7 +777,7 @@ async function licenseActivate(request, env) {
     await env.DB.prepare("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)").bind(r.lic.id, r.machine, name).run();
     used += 1;
   }
-  return licenseReply(r.lic, used);
+  return licenseReply(request, env, r, used);
 }
 
 async function licenseValidate(request, env) {
@@ -718,7 +786,7 @@ async function licenseValidate(request, env) {
   const existing = await env.DB.prepare("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?").bind(r.lic.id, r.machine).first();
   if (!existing) return json({ valid: false, reason: "not_activated", error: "This computer has not been activated with this key." }, 403);
   await env.DB.prepare("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?").bind(existing.id).run();
-  return licenseReply(r.lic, await activationCount(env, r.lic.id));
+  return licenseReply(request, env, r, await activationCount(env, r.lic.id));
 }
 
 async function licenseDeactivate(request, env) {

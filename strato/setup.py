@@ -22,6 +22,7 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py reset-catalog  removes all products (asks first, keeps a copy)
     python3 rotaidem/strato/setup.py email-test ADDRESS  sends a test e-mail and shows what Resend answers
     python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
+    python3 rotaidem/strato/setup.py signing-key     shows the public key HeavyPro uses to check licence answers
     python3 rotaidem/strato/setup.py fetch-installer [URL]  copies the newest HeavyPro installer from GitHub onto
                                                   rotaidem.com/files/ and points the Download buttons at it
 
@@ -414,6 +415,8 @@ def prepare_database(data_dir):
     os.makedirs(os.path.join(data_dir, "logs"), exist_ok=True)
     secure_data(data_dir)
     say("  Database OK: " + ", ".join(f"{n} {t}" for t, n in counts.items()))
+    # Made now, so no customer waits for it; HeavyPro's build fetches the public half.
+    say(f"  Licence signing key {server.signing_key_id(server.signing_key())} is ready")
 
 
 def secure_data(data_dir, group=False):
@@ -1099,6 +1102,22 @@ def cmd_email_test(address):
         say("  " + error)
 
 
+def cmd_signing_key():
+    """Print the public half of the licence signing key (safe to share; the private half stays in the database)."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    server = connect(data_dir)
+    server.ensure_schema()
+    key = server.signing_key()
+    say(f"Key ID: {server.signing_key_id(key)}")
+    say("Public key as JSON (HeavyPro's build reads it from " + site_url(values.get("SITE_URL")) + "/api/licenses/jwks.json):")
+    say(json.dumps(server.signing_jwk(key)))
+    say()
+    say(server.signing_pem(key))
+    say("The private key is in the database (meta 'license_signing_key') and in every backup. Keep backups private;")
+    say("if it is lost, HeavyPro needs a new build with the new public key.")
+
+
 def cmd_admin_password():
     """Set or remove the admin page password (also possible in Admin > Security). Works when it is forgotten."""
     data_dir = current_data_dir()
@@ -1300,6 +1319,8 @@ def main():
         cmd_email_test(args[1])
     elif command == "admin-password":
         cmd_admin_password()
+    elif command == "signing-key":
+        cmd_signing_key()
     elif command == "fetch-installer":
         cmd_fetch_installer(args[1:])
     elif command in ("help", "-h", "--help"):
@@ -1307,7 +1328,7 @@ def main():
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test", "admin-password", "fetch-installer"]
+                 "check", "email-test", "admin-password", "fetch-installer", "signing-key"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")
