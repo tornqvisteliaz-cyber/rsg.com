@@ -508,6 +508,23 @@ class StratoCGITests:
         self.assertEqual(r.status, 502)
         self.assertIn("not verified", r.json()["error"])
 
+    def test_signup_sends_a_welcome_email(self):
+        self.resend.requests.clear()
+        r = self.ok(self.w.cgi("POST", "/api/signup", {"name": "Welcome Wendy", "email": "Wendy@Example.com", "password": "wendy-pass-1"}))
+        self.assertEqual(r["email"], "wendy@example.com")
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), (["wendy@example.com"], "Welcome to Rotaidem"))
+        self.assertIn("Welcome Wendy", sent["html"])
+        self.assertIn("https://rotaidem.test/account", sent["html"])
+        self.assertNotIn("wendy-pass-1", sent["html"])  # never the password
+        self.assertEqual(self.w.cgi("POST", "/api/signup", {"name": "X", "email": "not-an-email", "password": "secret-1"}).status, 400)
+        self.resend.fail_with = (500, {"message": "down"})
+        try:
+            r = self.w.cgi("POST", "/api/signup", {"name": "Late Larry", "email": "larry@example.com", "password": "larry-pass-1"})
+        finally:
+            self.resend.fail_with = None
+        self.assertEqual(r.status, 200, "a failing email service never blocks signing up")
+
     def test_forgot_password(self):
         import re
         import urllib.parse

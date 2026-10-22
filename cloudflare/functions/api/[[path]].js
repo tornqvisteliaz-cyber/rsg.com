@@ -135,11 +135,43 @@ async function signup(request, env) {
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
   if (!name || !email || password.length < 6) return json({ error: "Name, email and a 6 character password are required" }, 400);
+  if (!EMAIL_RE.test(email)) return json({ error: "Enter a valid email address" }, 400);
   const token = crypto.randomUUID();
   try {
     await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Customer', ?)").bind(name, email, await hashPassword(password), token).run();
   } catch { return json({ error: "Email already exists" }, 400); }
+  await sendWelcomeEmail(request, env, name, email);
   return json({ token, name, email, role: "Customer", is_admin: false });
+}
+
+// Best effort: a failed welcome email never stops the sign-up. Same text as server.py.
+async function sendWelcomeEmail(request, env, name, email) {
+  if (!resendKey(env)) return;
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const link = (path, text) => `<a href="${escHtml(base + path)}" style="color:#111315">${escHtml(text)}</a>`;
+  const html = `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Welcome to Rotaidem, ${escHtml(name)}</h1>
+<p style="margin:0 0 16px">Your account is ready. You log in with <strong>${escHtml(email)}</strong> and the password you chose.</p>
+<ul style="margin:0 0 16px;padding-left:20px">
+<li>Your licence keys, downloads and orders are under ${link("/account", "My account")}.</li>
+<li>Installers and updates are on ${link("/downloads", "Downloads")}.</li>
+<li>Forgot your password? Use ${link("/forgot-password", "Forgot password")} on the log-in page.</li>
+</ul></td></tr>
+<tr><td style="padding:4px 28px 28px"><a href="${escHtml(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Go to my account</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not create this account? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a> and we remove it.</td></tr>
+</table></td></tr></table></body></html>`;
+  try {
+    const res = await fetch("https://api.resend.com/emails/batch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify([{ from: mailFrom(env), to: [email], subject: "Welcome to Rotaidem", html }]),
+    });
+    if (!res.ok) console.error("Welcome email failed:", explainResendError(env, res.status, await res.text()));
+  } catch (err) { console.error("Welcome email failed:", err); }
 }
 
 async function logout(request, env) {

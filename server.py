@@ -313,12 +313,44 @@ def signup():
     password = str(b.get("password", ""))
     if not name or not email or len(password) < 6:
         return err("Name, email and a 6 character password are required", 400)
+    if not EMAIL_RE.match(email):
+        return err("Enter a valid email address", 400)
     if db().first("SELECT id FROM users WHERE LOWER(email) = ?", email):
         return err("Email already exists", 400)
     token = uuid.uuid4().hex
     db().run("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Customer', ?)",
              name, email, hash_password(password), token)
+    send_welcome_email(name, email)
     return jsonify({"token": token, "name": name, "email": email, "role": "Customer", "is_admin": False})
+
+
+def welcome_email_html(name, email):
+    base = site_url()
+    link = lambda path, text: f'<a href="{escape(base + path)}" style="color:#111315">{escape(text)}</a>'  # noqa: E731
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Welcome to Rotaidem, {escape(name)}</h1>
+<p style="margin:0 0 16px">Your account is ready. You log in with <strong>{escape(email)}</strong> and the password you chose.</p>
+<ul style="margin:0 0 16px;padding-left:20px">
+<li>Your licence keys, downloads and orders are under {link("/account", "My account")}.</li>
+<li>Installers and updates are on {link("/downloads", "Downloads")}.</li>
+<li>Forgot your password? Use {link("/forgot-password", "Forgot password")} on the log-in page.</li>
+</ul></td></tr>
+<tr><td style="padding:4px 28px 28px"><a href="{escape(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Go to my account</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not create this account? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a> and we remove it.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def send_welcome_email(name, email):
+    """Best effort: a failed welcome email never stops the sign-up."""
+    if not RESEND_API_KEY:
+        return
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [email], "subject": "Welcome to Rotaidem", "html": welcome_email_html(name, email)}])
+    if error:
+        app.logger.error("Welcome email failed: %s", error)
 
 
 @app.post("/api/logout")
