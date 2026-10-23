@@ -198,6 +198,10 @@ class StratoCGITests:
         self.assertEqual(r.status, status, f"{r.body[:300]!r} {r.stderr[-1500:]}")
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else r.body
 
+    def unsubscribe_token(self, email):
+        import hashlib, hmac
+        return hmac.new(self.w.values["SECRET_KEY"].encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
+
     def customer(self, name):
         email = f"{name}@example.com"
         r = self.w.cgi("POST", "/api/signup", {"name": name, "email": email, "password": "customer-pass-1"})
@@ -573,6 +577,78 @@ class StratoCGITests:
         self.assertEqual(statuses[-1], 429)
         logs = self.ok(self.w.cgi("GET", "/api/admin/audit", token=self.owner_token))["logs"]
         self.assertIn("password_reset", [entry["action"] for entry in logs])
+
+    def test_news_drafts_and_dates(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Secret draft", "content": "Soon", "status": "draft", "date": "2026-12-24"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Out now", "content": "Live"}, token=t))
+        public = [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]]
+        self.assertIn("Out now", public)
+        self.assertNotIn("Secret draft", public)
+        admin = {p["title"]: p for p in self.ok(self.w.cgi("GET", "/api/admin/posts", token=t))["posts"]}
+        self.assertEqual((admin["Secret draft"]["status"], admin["Secret draft"]["date"]), ("draft", "December 24, 2026"))
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"id": admin["Secret draft"]["id"], "title": "Secret draft", "content": "Now", "status": "published"}, token=t))
+        post = next(p for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"] if p["title"] == "Secret draft")
+        self.assertEqual(post["date"], "December 24, 2026", "publishing keeps the chosen date")
+        customer, _ = self.customer("drafty")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/posts", token=customer).status, 403)
+
+    def test_messages_can_be_marked_handled(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Pilot", "email": "pilot@example.com", "message": "Help with my stick"}))
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["email"] == "pilot@example.com")
+        before = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"]
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}", {"handled": True}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"], before - 1)
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["id"] == msg["id"])
+        self.assertEqual(int(msg["handled"]), 1)
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}", {"handled": False}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"], before)
+
+    def test_subscribers_added_in_bulk(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/subscribe", {"email": "gone@example.com"}))
+        sub = next(s for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"] if s["email"] == "gone@example.com")
+        self.ok(self.w.cgi("POST", "/api/unsubscribe", {"email": "gone@example.com", "token": self.unsubscribe_token("gone@example.com")}))
+        r = self.ok(self.w.cgi("POST", "/api/admin/subscribers", {"emails": "one@example.com, Two@Example.com\nnot-an-email; one@example.com gone@example.com"}, token=t))
+        self.assertEqual((r["added"], r["skipped"], r["invalid"]), (2, 1, ["not-an-email"]))
+        subs = {s["email"]: s for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"]}
+        self.assertIn("two@example.com", subs)
+        self.assertEqual(int(subs["gone@example.com"]["unsubscribed"]), 1, "someone who unsubscribed stays unsubscribed")
+        self.assertEqual(sub["email"], "gone@example.com")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/subscribers", {"emails": "  "}, token=t).status, 400)
+
+    def test_staff_can_send_a_reset_link(self):
+        t = self.owner_token
+        _, email = self.customer("needsreset")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.resend.requests.clear()
+        r = self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/reset-link", {}, token=t))
+        self.assertEqual(r["sent_to"], email)
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), ([email], "Reset your Rotaidem password"))
+        self.assertIn("/reset-password?token=", sent["html"])
+        customer, _ = self.customer("sneaky")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/reset-link", {}, token=customer).status, 403)
+
+    def test_general_site_settings(self):
+        t = self.owner_token
+        config = {"contact_email": "hello@rotaidem.com", "footer_text": "Made in Sweden",
+                  "socials": {"discord": "https://discord.gg/rotaidem", "youtube": "", "myspace": "https://myspace.com/x"},
+                  "maintenance": {"enabled": True, "message": "Back at 18:00"}}
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=t))
+        self.assertEqual(r["config"], {"contact_email": "hello@rotaidem.com", "footer_text": "Made in Sweden",
+                                       "socials": {"discord": "https://discord.gg/rotaidem"},
+                                       "maintenance": {"enabled": True, "message": "Back at 18:00"}})
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["config"]["maintenance"]["enabled"], True)
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertIn("discord.gg/rotaidem", js if isinstance(js, str) else js.decode())
+        for bad in ({"contact_email": "nope"}, {"socials": {"discord": "http://discord.gg/x"}}, {"socials": {"x": "javascript:alert(1)"}}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"config": bad}, token=t).status, 400, bad)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": {"maintenance": {"enabled": False}}}, token=t))
+        self.assertEqual((r["config"]["maintenance"]["enabled"], r["config"]["contact_email"]), (False, "Eliaz@rotaidem.com"))
+        customer, _ = self.customer("configy")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=customer).status, 403)
 
     def test_page_texts(self):
         t = self.owner_token

@@ -42,12 +42,12 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
                 <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
             <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
-            <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
-        </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem</span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
+            <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a id="ft-mail" href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
+        </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
         body.append(footer);
     }
 }
@@ -127,9 +127,31 @@ function applyTexts(texts) {
     });
 }
 
+// General settings from the admin: contact email, footer text and social links in the footer.
+const SOCIAL_NAMES = { discord: "Discord", youtube: "YouTube", instagram: "Instagram", x: "X", facebook: "Facebook", twitch: "Twitch", tiktok: "TikTok" };
+function applyConfig(config) {
+    const text = document.getElementById("ft-text"), mail = document.getElementById("ft-mail"), socials = document.getElementById("ft-socials");
+    if (text && config.footer_text) text.textContent = config.footer_text;
+    if (mail && config.contact_email) { mail.textContent = config.contact_email; mail.href = "mailto:" + config.contact_email; }
+    if (socials) socials.innerHTML = Object.entries(config.socials || {}).filter(([k, url]) => SOCIAL_NAMES[k] && /^https:\/\//.test(url))
+        .map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${SOCIAL_NAMES[k]}</a>`).join("");
+    applyMaintenance(config.maintenance || {});
+}
+// Maintenance mode: visitors see a back-soon page; logged-in staff and the log in pages are left alone.
+function applyMaintenance(m) {
+    const old = document.getElementById("maintenance");
+    const exempt = localStorage.getItem("rsg_admin") === "true" || /^\/(login|admin|forgot-password|reset-password)/.test(location.pathname);
+    if (!m.enabled || exempt) { if (old) old.remove(); return; }
+    const box = old || document.createElement("div");
+    box.id = "maintenance"; box.className = "maintenance";
+    box.innerHTML = `<div><img src="${withBase(LOGO)}" alt="" style="height:28px;margin:0 auto 28px"><h1>Back soon</h1><p class="lead" style="margin:0 auto 28px">${esc(m.message || "We are updating the website. Please check back in a few minutes.")}</p><a class="text-link" href="/login">Staff log in</a></div>`;
+    if (!old) document.body.append(box);
+}
+
 // Site settings from the admin panel: images per slot, page texts and the announcement banner.
 function applyContent(site) {
     applyTexts(site.texts || {});
+    if (site.config) applyConfig(site.config);
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
     document.querySelectorAll("[data-image]").forEach(el => {
@@ -156,7 +178,8 @@ function applyBanner(site) {
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
-    if (window.RSG_SITE) { applyBanner(window.RSG_SITE); return; }
+    // The footer only exists from here on, so its settings go in now.
+    if (window.RSG_SITE) { if (window.RSG_SITE.config) applyConfig(window.RSG_SITE.config); applyBanner(window.RSG_SITE); return; }
     // Hosts without /site-settings.js: ask the API instead (the page shows the defaults until then).
     fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => {
         if (site) { applyContent(site); applyBanner(site); }

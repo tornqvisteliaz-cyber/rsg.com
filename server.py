@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-22-license-tokens"
+SCHEMA_VERSION = "2026-10-23-admin-options"
 
 
 def ensure_schema():
@@ -184,7 +184,8 @@ def ensure_schema():
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
-                          ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT")):
+                          ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT"),
+                          ("posts", f"status {word} DEFAULT 'published'"), ("messages", "handled INTEGER DEFAULT 0")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -198,9 +199,17 @@ def ensure_schema():
 
 # ---------- helpers ----------
 
-def today():
-    d = datetime.now()
+def today(d=None):
+    d = d or datetime.now()
     return f"{d:%B} {d.day}, {d.year}"
+
+
+def post_date(value):
+    """The date shown on a news post: from the admin's date picker (YYYY-MM-DD), or today."""
+    try:
+        return today(datetime.strptime(str(value or "").strip(), "%Y-%m-%d"))
+    except ValueError:
+        return today()
 
 
 def body():
@@ -578,6 +587,26 @@ def password_forgot():
     return answer
 
 
+@app.post("/api/admin/users/<int:user_id>/reset-link")
+def admin_send_reset_link(user_id):
+    """Staff send a user the same reset email as Forgot password; the link works for RESET_HOURS."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    if not RESEND_API_KEY:
+        return err("Email is not set up. Add RESEND_API_KEY to the settings (on STRATO: rotaidem-data/config.env).", 400)
+    target = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not target or not EMAIL_RE.match(target["email"] or ""):
+        return err("That user has no valid email address", 400)
+    link = f"{site_url()}/reset-password?token={urllib.parse.quote(reset_token(target))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [target["email"]], "subject": "Reset your Rotaidem password",
+                                "html": reset_email_html(target["name"], link)}])
+    if error:
+        return err(error, 502)
+    audit(user, "send_reset_link", target["email"])
+    return jsonify({"ok": True, "sent_to": target["email"]})
+
+
 @app.post("/api/password/check")
 def password_check():
     user = user_for_reset_token(body().get("token"))
@@ -704,6 +733,14 @@ def save_livery():
 
 @app.get("/api/newsletter")
 def newsletter():
+    """Published posts only; drafts are listed in the admin (/api/admin/posts)."""
+    return jsonify({"posts": db().all("SELECT * FROM posts WHERE status IS NULL OR status <> 'draft' ORDER BY id DESC")})
+
+
+@app.get("/api/admin/posts")
+def admin_posts():
+    if not staff_user():
+        return err("Admin only", 403)
     return jsonify({"posts": db().all("SELECT * FROM posts ORDER BY id DESC")})
 
 
@@ -715,13 +752,16 @@ def save_newsletter():
     b = body()
     if not b.get("title") or not b.get("content"):
         return err("Title and content are required", 400)
+    status = "draft" if b.get("status") == "draft" else "published"
     if b.get("id"):
-        db().run("UPDATE posts SET title = ?, content = ?, image_url = ? WHERE id = ?",
-                 b["title"], b["content"], b.get("image_url") or "", int(b["id"]))
+        old = db().first("SELECT date FROM posts WHERE id = ?", int(b["id"])) or {}
+        date = post_date(b["date"]) if b.get("date") else old.get("date") or today()
+        db().run("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ? WHERE id = ?",
+                 b["title"], b["content"], b.get("image_url") or "", status, date, int(b["id"]))
     else:
-        db().run("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)",
-                 b["title"], b["content"], b.get("image_url") or "", today())
-    audit(user, "save_post", b["title"])
+        db().run("INSERT INTO posts (title, content, image_url, date, status) VALUES (?, ?, ?, ?, ?)",
+                 b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status)
+    audit(user, "save_post", ("draft: " if status == "draft" else "") + b["title"])
     return jsonify({"ok": True})
 
 
@@ -790,7 +830,9 @@ def admin_overview():
                     "customers": n("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'"),
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
+                    "drafts": n("SELECT COUNT(*) AS n FROM posts WHERE status = 'draft'"),
                     "messages": n("SELECT COUNT(*) AS n FROM messages"),
+                    "open_messages": n("SELECT COUNT(*) AS n FROM messages WHERE handled IS NULL OR handled = 0"),
                     "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
                     "licenses": n("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'"),
                     "email_ready": bool(RESEND_API_KEY),
@@ -866,6 +908,17 @@ def admin_messages():
     if not staff_user():
         return err("Admin only", 403)
     return jsonify({"messages": db().all("SELECT * FROM messages ORDER BY id DESC")})
+
+
+@app.post("/api/admin/messages/<int:msg_id>")
+def admin_mark_message(msg_id):
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    handled = 1 if body().get("handled") else 0
+    db().run("UPDATE messages SET handled = ? WHERE id = ?", handled, msg_id)
+    audit(user, "message_handled" if handled else "message_reopened", msg_id)
+    return jsonify({"ok": True})
 
 
 @app.delete("/api/admin/messages/<int:msg_id>")
@@ -1509,12 +1562,46 @@ def set_setting(key, value):
         db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, raw)
 
 
+SOCIALS = ("discord", "youtube", "instagram", "x", "facebook", "twitch", "tiktok")
+CONFIG_DEFAULT = {"contact_email": "Eliaz@rotaidem.com",
+                  "footer_text": "An independent studio making software for Microsoft Flight Simulator 2024.",
+                  "socials": {}, "maintenance": {"enabled": False, "message": ""}}
+
+
+def site_config():
+    saved = get_setting("site.config", {}) or {}
+    config = {**CONFIG_DEFAULT, **{k: v for k, v in saved.items() if k in CONFIG_DEFAULT}}
+    config["socials"] = {k: v for k, v in (config.get("socials") or {}).items() if k in SOCIALS and v}
+    m = config.get("maintenance") or {}
+    config["maintenance"] = {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "")}
+    return config
+
+
+def clean_config(c):
+    """The general settings from the admin, checked; raises ValueError with a message for the admin."""
+    email = str(c.get("contact_email") or "").strip()
+    if email and not EMAIL_RE.match(email):
+        raise ValueError("The contact email is not a valid address")
+    socials = {}
+    for name, url in (c.get("socials") or {}).items():
+        url = str(url or "").strip()
+        if name in SOCIALS and url:
+            if not url.startswith("https://") or len(url) > 300:
+                raise ValueError(f"The {name} link must start with https://")
+            socials[name] = url
+    m = c.get("maintenance") or {}
+    return {"contact_email": email or CONFIG_DEFAULT["contact_email"],
+            "footer_text": str(c.get("footer_text") or "").strip()[:300] or CONFIG_DEFAULT["footer_text"],
+            "socials": socials,
+            "maintenance": {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "").strip()[:500]}}
+
+
 def site_settings():
     images = dict(IMAGE_SLOTS)
     images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
     banner = get_setting("site.announcement", {}) or {}
     texts = get_setting("site.texts", {}) or {}
-    return {"images": images, "defaults": IMAGE_SLOTS, "texts": texts if isinstance(texts, dict) else {},
+    return {"images": images, "defaults": IMAGE_SLOTS, "texts": texts if isinstance(texts, dict) else {}, "config": site_config(),
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
 
 
@@ -1563,6 +1650,11 @@ def admin_save_settings():
         if link and not (link.startswith("https://") or link.startswith("/")):
             return err("The banner link must start with https:// or /", 400)
         set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
+    if "config" in b:
+        try:
+            set_setting("site.config", clean_config(b.get("config") or {}))
+        except ValueError as exc:
+            return err(str(exc), 400)
     if "texts" in b:
         # A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
         changes = b.get("texts")
@@ -1583,7 +1675,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
@@ -1963,6 +2055,31 @@ def admin_subscribers():
     if not staff_user():
         return err("Admin only", 403)
     return jsonify({"subscribers": db().all("SELECT * FROM subscribers ORDER BY id DESC")})
+
+
+@app.post("/api/admin/subscribers")
+def admin_add_subscribers():
+    """Paste one or many addresses. Someone who unsubscribed is never signed up again from here."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    words = [w.strip().lower() for w in re.split(r"[\s,;]+", str(body().get("emails", ""))) if w.strip()]
+    if not words:
+        return err("Paste at least one email address", 400)
+    if len(words) > 5000:
+        return err("At most 5000 addresses at a time", 400)
+    added, skipped, invalid = [], [], []
+    for email in dict.fromkeys(words):
+        if not EMAIL_RE.match(email) or len(email) > 200:
+            invalid.append(email)
+        elif db().first("SELECT id FROM subscribers WHERE email = ?", email):
+            skipped.append(email)
+        else:
+            db().run("INSERT INTO subscribers (email, source) VALUES (?, 'added by admin')", email)
+            added.append(email)
+    if added:
+        audit(user, "add_subscribers", f"{len(added)} added")
+    return jsonify({"ok": True, "added": len(added), "skipped": len(skipped), "invalid": invalid[:50]})
 
 
 @app.delete("/api/admin/subscribers/<int:sub_id>")

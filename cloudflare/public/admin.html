@@ -140,7 +140,7 @@
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
     <div class="group">Website</div>
     <button class="tab" data-tab="texts">Page texts</button>
-    <button class="tab" data-tab="site">Site images &amp; banner</button>
+    <button class="tab" data-tab="site">Site settings</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
     <div class="group">Marketing</div>
     <button class="tab" data-tab="email">Email a product</button>
@@ -209,7 +209,31 @@
         </form>
     </section>
 
-    <section class="pane" id="pane-site" data-title="Site images & banner">
+    <section class="pane" id="pane-site" data-title="Site settings">
+        <form class="panel" id="maint-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Maintenance mode</h2><span class="muted" style="font-size:13px" id="maint-state"></span></div>
+            <div class="panel-body form-grid">
+                <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="mt-on"> Show a "back soon" page to visitors</label>
+                <div class="field full"><label for="mt-msg">Message for visitors (optional)</label><textarea id="mt-msg" rows="3" maxlength="500" placeholder="We are updating the website. Back in a few minutes."></textarea>
+                    <div class="hint">Staff who are logged in still see the whole site, and the log in page stays open. Downloads and licence checks keep working.</div></div>
+                <div class="full"><button class="btn">Save</button></div>
+            </div>
+        </form>
+        <form class="panel" id="config-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Contact, footer and social links</h2><span class="muted" style="font-size:13px">Shown in the footer of every page</span></div>
+            <div class="panel-body form-grid">
+                <div class="field"><label for="cf-email">Contact email</label><input id="cf-email" type="email" placeholder="Eliaz@rotaidem.com"></div>
+                <div class="field"><label for="cf-footer">Footer text</label><input id="cf-footer" maxlength="300" placeholder="An independent studio making software for Microsoft Flight Simulator 2024."></div>
+                <div class="field"><label for="cf-discord">Discord invite</label><input id="cf-discord" placeholder="https://discord.gg/..."></div>
+                <div class="field"><label for="cf-youtube">YouTube</label><input id="cf-youtube" placeholder="https://youtube.com/@..."></div>
+                <div class="field"><label for="cf-instagram">Instagram</label><input id="cf-instagram" placeholder="https://instagram.com/..."></div>
+                <div class="field"><label for="cf-x">X (Twitter)</label><input id="cf-x" placeholder="https://x.com/..."></div>
+                <div class="field"><label for="cf-facebook">Facebook</label><input id="cf-facebook" placeholder="https://facebook.com/..."></div>
+                <div class="field"><label for="cf-twitch">Twitch</label><input id="cf-twitch" placeholder="https://twitch.tv/..."></div>
+                <div class="field"><label for="cf-tiktok">TikTok</label><input id="cf-tiktok" placeholder="https://tiktok.com/@..."></div>
+                <div class="full"><div class="hint" style="margin:0 0 12px">Leave a link empty to hide it.</div><button class="btn">Save</button></div>
+            </div>
+        </form>
         <form class="panel" id="banner-form" style="margin-bottom:24px">
             <div class="panel-head"><h2>Announcement banner</h2><span class="muted" style="font-size:13px">A thin bar above the menu on every page</span></div>
             <div class="panel-body form-grid">
@@ -248,7 +272,11 @@
                         <div style="display:flex;gap:0"><input id="n-image" placeholder="Upload, pick from the library, or paste an https:// link"><button class="btn btn-ghost" type="button" id="n-image-up">Upload</button><button class="btn btn-ghost" type="button" id="n-image-lib">Library</button></div>
                         <div class="hint">Shown above the post on the News page. Large photos are made smaller before uploading.</div></div>
                     <div class="field"><label for="n-content">Article</label><textarea id="n-content" rows="10" required></textarea></div>
-                    <div class="actions" style="justify-content:flex-start"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
+                    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+                        <div class="field"><label for="n-status">Status</label><select id="n-status"><option value="published">Published (visible on the site)</option><option value="draft">Draft (only in the admin)</option></select></div>
+                        <div class="field"><label for="n-date">Date shown</label><input id="n-date" type="date"><div class="hint">Empty = today</div></div>
+                    </div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn" id="n-save">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button><a class="btn btn-ghost" href="/newsletter" target="_blank" rel="noopener">View News page</a></div>
                 </div>
             </form>
             <div class="panel"><div class="panel-head"><h2>Published</h2></div><table class="table"><tbody id="posts-list"></tbody></table></div>
@@ -292,7 +320,7 @@
     <section class="pane" id="pane-subscribers" data-title="Subscribers">
         <div class="panel">
             <div class="panel-head"><h2>Newsletter subscribers</h2><div class="actions"><input class="search" id="sub-search" placeholder="Search email"><button class="btn btn-ghost btn-sm" onclick="exportSubscribers()">Export CSV</button></div></div>
-            <form class="panel-body" id="sub-form" style="display:flex;gap:0;border-bottom:1px solid var(--line)"><input type="email" id="sub-email" placeholder="Add an address by hand" required><button class="btn">Add</button></form>
+            <form class="panel-body" id="sub-form" style="border-bottom:1px solid var(--line)"><div style="display:flex;gap:0;align-items:stretch"><textarea id="sub-email" rows="2" placeholder="Add addresses by hand: one, or paste many separated by commas or new lines" required style="resize:vertical"></textarea><button class="btn">Add</button></div><div class="hint">Addresses already on the list are skipped, and people who unsubscribed are never added back.</div></form>
             <div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th>Signed up from</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody id="subs-list"></tbody></table></div>
         </div>
     </section>
@@ -309,7 +337,7 @@
                 <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="o-license" checked> Create a licence key for this order and email it to the customer</label>
             </div>
         </form>
-        <div class="panel"><div class="panel-head"><h2>All orders</h2><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><h2>All orders</h2><div class="actions"><input class="search" id="order-search" placeholder="Search customer, email or product"><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
     </section>
 
     <section class="pane" id="pane-users" data-title="Users">
@@ -357,6 +385,7 @@
     </section>
 
     <section class="pane" id="pane-messages" data-title="Messages">
+        <div class="actions" style="justify-content:flex-start;margin:0 0 16px" id="msg-filter"><button class="btn btn-sm" type="button" data-filter="open">Open</button><button class="btn btn-ghost btn-sm" type="button" data-filter="handled">Handled</button><button class="btn btn-ghost btn-sm" type="button" data-filter="all">All</button></div>
         <div id="messages-list"></div>
     </section>
 
@@ -416,7 +445,7 @@
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
-    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="gate" id="gate" hidden>
@@ -575,7 +604,8 @@ async function loadOverview() {
     $("who-name").textContent = o.name; $("who-role").textContent = o.role;
     $("s-revenue").textContent = money(o.revenue);
     for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
-    for (const k of ["products", "posts", "orders", "messages", "subscribers"]) $("c-" + k).textContent = o[k] || "";
+    for (const k of ["products", "posts", "orders", "subscribers"]) $("c-" + k).textContent = o[k] || "";
+    $("c-messages").textContent = o.open_messages ?? o.messages ?? "";
     $("email-setup").style.display = state.emailReady ? "none" : "";
 }
 
@@ -820,7 +850,12 @@ $("subs-list").onclick = async e => {
 };
 $("sub-form").onsubmit = async e => {
     e.preventDefault();
-    try { await post("/api/subscribe", { email: val("sub-email"), source: "added by admin" }); toast("Subscriber added"); e.target.reset(); loadSubscribers(); loadOverview(); refreshAudience(); } catch (err) { toast(err.message, true); }
+    try {
+        const r = await post("/api/admin/subscribers", { emails: $("sub-email").value });
+        toast(`${r.added} added` + (r.skipped ? `, ${r.skipped} already on the list` : "") + (r.invalid.length ? `, ${r.invalid.length} not valid (${r.invalid.slice(0, 3).join(", ")})` : ""), !r.added && r.invalid.length > 0);
+        if (r.added) e.target.reset();
+        loadSubscribers(); loadOverview(); refreshAudience();
+    } catch (err) { toast(err.message, true); }
 };
 function exportSubscribers() {
     const rows = [["email", "source", "status", "created_at"], ...state.subs.map(s => [s.email, s.source || "", Number(s.unsubscribed) ? "unsubscribed" : "subscribed", s.created_at || ""])];
@@ -832,22 +867,28 @@ function exportSubscribers() {
 
 // news
 async function loadPosts() {
-    state.posts = (await api("/api/newsletter")).posts || [];
-    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong><div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
+    state.posts = (await api("/api/admin/posts")).posts || [];
+    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong>${p.status === "draft" ? ' <span class="badge">Draft</span>' : ""}<div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
 }
 function editPost(id) {
     const p = state.posts.find(x => x.id === id) || {};
     $("n-id").value = p.id || ""; $("n-title").value = p.title || ""; $("n-image").value = p.image_url || ""; $("n-content").value = p.content || "";
     $("nf-title").textContent = p.id ? "Edit post" : "New post";
-    previewPostImage();
+    $("n-status").value = p.status === "draft" ? "draft" : "published";
+    const d = new Date(p.date || ""); // stored as "October 23, 2026"
+    $("n-date").value = p.date && !isNaN(d) ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : "";
+    saveLabel(); previewPostImage();
 }
+function saveLabel() { $("n-save").textContent = $("n-status").value === "draft" ? "Save draft" : "Publish"; }
+$("n-status").onchange = saveLabel;
 function previewPostImage() { const u = val("n-image"); $("n-preview").style.display = IMAGE_RE.test(u) ? "" : "none"; $("n-preview").src = IMAGE_RE.test(u) ? safeImage(u) : ""; }
 $("n-image").oninput = previewPostImage;
 $("n-image-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) { $("n-image").value = u; previewPostImage(); } };
 $("n-image-lib").onclick = async () => { const u = await pickImage(); if (u) { $("n-image").value = u; previewPostImage(); } };
 $("post-form").onsubmit = async e => {
     e.preventDefault();
-    try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value }); toast("Published"); editPost(); loadPosts(); loadOverview(); }
+    const draft = $("n-status").value === "draft";
+    try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value, status: $("n-status").value, date: $("n-date").value }); toast(draft ? "Draft saved" : "Published"); editPost(); loadPosts(); loadOverview(); }
     catch (err) { toast(err.message, true); }
 };
 async function deletePost(id) {
@@ -859,7 +900,7 @@ async function deletePost(id) {
 async function loadOrders() {
     const orders = state.orders = (await api("/api/admin/orders")).orders || [];
     renderChart();
-    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(6, "No orders yet.");
+    renderOrders();
     $("dash-orders").innerHTML = orders.length ? orders.slice(0, 5).map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}</td><td>${money(o.amount)}</td></tr>`).join("") : empty(3, "No orders yet.");
 }
 $("order-form").onsubmit = async e => {
@@ -880,6 +921,13 @@ function renderChart() {
     $("chart-total").textContent = `${total.length} order${total.length === 1 ? "" : "s"} · ${money(total.reduce((s, o) => s + Number(o.amount || 0), 0))}`;
     $("chart-start").textContent = days[0].toLocaleDateString();
 }
+function renderOrders() {
+    const q = val("order-search").toLowerCase();
+    const orders = state.orders.filter(o => !q || [o.id, o.customer_name, o.customer_email, o.product_id, o.payment_status].some(v => String(v || "").toLowerCase().includes(q)));
+    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("")
+        : empty(6, state.orders.length ? "No orders match your search." : "No orders yet.");
+}
+$("order-search").oninput = renderOrders;
 function exportOrders() { downloadCsv("rotaidem-orders.csv", [["id", "customer", "email", "product", "amount", "payment", "date"], ...state.orders.map(o => [o.id, o.customer_name, o.customer_email, o.product_id, o.amount, o.payment_status, o.created_at])]); }
 function exportUsers() { downloadCsv("rotaidem-users.csv", [["id", "name", "email", "role", "joined"], ...state.users.map(u => [u.id, u.name, u.email, u.role, u.created_at])]); }
 function exportLicenses() { downloadCsv("rotaidem-licences.csv", [["key", "product", "email", "status", "computers_used", "computers_max", "note", "created"], ...(state.licenses || []).map(l => [l.license_key, l.product_id, l.email, l.status, l.activations, l.max_activations, l.note, l.created_at])]); }
@@ -914,6 +962,10 @@ async function openUser(id) {
         $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
         $("um-mail").href = "mailto:" + u.email;
         $("um-license").onclick = () => { $("user-modal").classList.remove("show"); showTab("licenses"); $("l-email").value = u.email; $("l-count").value = 1; $("l-email").focus(); };
+        $("um-reset").onclick = async () => {
+            if (!await confirmBox("Send a password reset link?", `${u.email} gets an email with a link to choose a new password. Their current password keeps working until they use it.`, "Send link")) return;
+            try { const r = await post(`/api/admin/users/${id}/reset-link`, {}); toast("Reset link sent to " + r.sent_to); } catch (err) { toast(err.message, true); }
+        };
         $("um-delete").style.display = state.role === "Owner" && u.id !== state.me ? "" : "none";
         $("um-delete").onclick = async () => {
             $("user-modal").classList.remove("show");
@@ -931,13 +983,26 @@ $("users-list").onchange = async e => {
 };
 
 // messages
+state.msgFilter = "open";
 async function loadMessages() {
-    const msgs = (await api("/api/admin/messages")).messages || [];
+    state.messages = (await api("/api/admin/messages")).messages || [];
+    renderMessages();
+    const open = state.messages.filter(m => !Number(m.handled));
+    $("dash-messages").innerHTML = open.length ? open.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No open messages.");
+}
+function renderMessages() {
+    const f = state.msgFilter;
+    document.querySelectorAll("#msg-filter [data-filter]").forEach(b => b.className = "btn btn-sm" + (b.dataset.filter === f ? "" : " btn-ghost"));
+    const msgs = state.messages.filter(m => f === "all" || (f === "handled") === !!Number(m.handled));
     $("messages-list").innerHTML = msgs.length ? msgs.map(m =>
-        `<div class="panel" style="margin-bottom:16px"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span></div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
-        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p><div class="actions" style="justify-content:flex-start"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div></div>`
-    ).join("") : '<div class="empty">No messages. Everything is answered.</div>';
-    $("dash-messages").innerHTML = msgs.length ? msgs.slice(0, 5).map(m => `<tr><td>${esc(m.name || "-")}</td><td class="muted">${esc(String(m.message || "").slice(0, 60))}</td></tr>`).join("") : empty(2, "No messages.");
+        `<div class="panel" style="margin-bottom:16px${Number(m.handled) ? ";opacity:.7" : ""}"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span>${Number(m.handled) ? ' <span class="badge published">Handled</span>' : ""}</div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
+        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p><div class="actions" style="justify-content:flex-start"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a>` +
+        `<button class="btn btn-ghost btn-sm" onclick="markMessage(${m.id}, ${Number(m.handled) ? "false" : "true"})">${Number(m.handled) ? "Reopen" : "Mark handled"}</button><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div></div>`
+    ).join("") : `<div class="empty">${f === "open" ? "No open messages. Everything is answered." : "No messages here."}</div>`;
+}
+$("msg-filter").onclick = e => { const b = e.target.closest("[data-filter]"); if (b) { state.msgFilter = b.dataset.filter; renderMessages(); } };
+async function markMessage(id, handled) {
+    try { await post("/api/admin/messages/" + id, { handled }); toast(handled ? "Marked as handled" : "Reopened"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
 }
 async function deleteMessage(id) {
     if (!await confirmBox("Delete this message?", "It will be removed from the inbox.", "Delete", true)) return;
@@ -1036,12 +1101,38 @@ const SLOT_INFO = {
     about: ["About page", "Picture on the About page"],
     product: ["Products without a picture", "Used when a product has no cover image"],
 };
+const SOCIALS = ["discord", "youtube", "instagram", "x", "facebook", "twitch", "tiktok"];
 async function loadSite() {
     state.site = await api("/api/admin/settings");
     const a = state.site.announcement || {};
     $("b-text").value = a.text || ""; $("b-link").value = a.link || ""; $("b-on").checked = !!a.enabled;
+    renderConfig();
     renderSlots();
 }
+function renderConfig() {
+    const c = state.site.config || {}, m = c.maintenance || {};
+    $("mt-on").checked = !!m.enabled; $("mt-msg").value = m.message || "";
+    $("maint-state").innerHTML = m.enabled ? '<span class="badge in_development">On: visitors see the back-soon page</span>' : "Off";
+    $("cf-email").value = c.contact_email || ""; $("cf-footer").value = c.footer_text || "";
+    SOCIALS.forEach(k => $("cf-" + k).value = (c.socials || {})[k] || "");
+}
+async function saveConfig(changes, done) {
+    try {
+        const c = state.site.config || {};
+        state.site = await post("/api/admin/settings", { config: { ...c, ...changes } });
+        renderConfig(); toast(done); loadAudit();
+    } catch (err) { toast(err.message, true); }
+}
+$("maint-form").onsubmit = async e => {
+    e.preventDefault();
+    const on = $("mt-on").checked;
+    if (on && !await confirmBox("Turn on maintenance mode?", "Visitors see a back-soon page until you turn it off. You and other staff still see the site.", "Turn on")) return;
+    saveConfig({ maintenance: { enabled: on, message: val("mt-msg") } }, on ? "Maintenance mode is on" : "Maintenance mode is off");
+};
+$("config-form").onsubmit = e => {
+    e.preventDefault();
+    saveConfig({ contact_email: val("cf-email"), footer_text: val("cf-footer"), socials: Object.fromEntries(SOCIALS.map(k => [k, val("cf-" + k)])) }, "Footer and links saved");
+};
 function renderSlots() {
     const imgs = state.site.images, defs = state.site.defaults;
     $("slots").innerHTML = Object.keys(SLOT_INFO).map(k => `<div class="slot"><img src="${esc(safeImage(imgs[k]))}" alt=""><h3>${SLOT_INFO[k][0]}</h3><p>${SLOT_INFO[k][1]}${imgs[k] === defs[k] ? " · default" : ""}</p>

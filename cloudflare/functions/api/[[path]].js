@@ -35,6 +35,7 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/save-livery") return saveLivery(request, env);
     if (method === "DELETE" && path.startsWith("/api/products/")) return deleteProduct(request, env, decodeURIComponent(path.split("/").pop()));
     if (method === "GET" && path === "/api/newsletter") return newsletter(env);
+    if (method === "GET" && path === "/api/admin/posts") return adminPosts(request, env);
     if (method === "POST" && path === "/api/newsletter") return saveNewsletter(request, env);
     if (method === "DELETE" && path.startsWith("/api/newsletter/")) return deleteNewsletter(request, env, path.split("/").pop());
     if (method === "POST" && path === "/api/contact") return contact(request, env);
@@ -44,6 +45,7 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/admin/orders") return adminSaveOrder(request, env);
     if (method === "GET" && path === "/api/admin/messages") return adminMessages(request, env);
     if (method === "DELETE" && path.startsWith("/api/admin/messages/")) return adminDeleteMessage(request, env, path.split("/").pop());
+    if (method === "POST" && /^\/api\/admin\/messages\/\d+$/.test(path)) return adminMarkMessage(request, env, Number(path.split("/").pop()));
     if (method === "GET" && path === "/api/admin/audit") return adminAudit(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/licenses/import") return licensesImport(request, env);
@@ -66,6 +68,8 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/campaigns") return adminCampaigns(request, env);
     if (method === "GET" && path === "/api/admin/subscribers") return adminSubscribers(request, env);
     if (method === "DELETE" && path.startsWith("/api/admin/subscribers/")) return adminDeleteSubscriber(request, env, Number(path.split("/").pop()));
+    if (method === "POST" && path === "/api/admin/subscribers") return adminAddSubscribers(request, env);
+    if (method === "POST" && /^\/api\/admin\/users\/\d+\/reset-link$/.test(path)) return adminSendResetLink(request, env, Number(path.split("/")[4]));
     if (method === "GET" && path === "/api/site") return json(await siteSettings(env));
     if (method === "GET" && path === "/api/admin/settings") return adminSettings(request, env);
     if (method === "POST" && path === "/api/admin/settings") return adminSaveSettings(request, env);
@@ -96,6 +100,8 @@ async function ensure(env) {
     try { await env.DB.prepare("ALTER TABLE products ADD COLUMN " + col).run(); } catch (err) {}
   }
   try { await env.DB.prepare("ALTER TABLE orders ADD COLUMN product_id TEXT").run(); } catch (err) {}
+  try { await env.DB.prepare("ALTER TABLE posts ADD COLUMN status TEXT DEFAULT 'published'").run(); } catch (err) {}
+  try { await env.DB.prepare("ALTER TABLE messages ADD COLUMN handled INTEGER DEFAULT 0").run(); } catch (err) {}
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -259,9 +265,24 @@ async function saveLivery(request, env) {
   return json({ ok: true, id });
 }
 
+// Published posts only; drafts are listed in the admin (/api/admin/posts).
 async function newsletter(env) {
+  const rows = await env.DB.prepare("SELECT * FROM posts WHERE status IS NULL OR status <> 'draft' ORDER BY id DESC").all();
+  return json({ posts: rows.results || [] });
+}
+
+async function adminPosts(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const rows = await env.DB.prepare("SELECT * FROM posts ORDER BY id DESC").all();
   return json({ posts: rows.results || [] });
+}
+
+// The date shown on a news post: from the admin's date picker (YYYY-MM-DD), or today.
+function postDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
+  const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : new Date();
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: m ? "UTC" : undefined });
 }
 
 async function saveNewsletter(request, env) {
@@ -269,14 +290,17 @@ async function saveNewsletter(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const body = await request.json();
   if (!body.title || !body.content) return json({ error: "Title and content are required" }, 400);
+  const status = body.status === "draft" ? "draft" : "published";
   if (body.id) {
-    await env.DB.prepare("UPDATE posts SET title = ?, content = ?, image_url = ? WHERE id = ?").bind(body.title, body.content, body.image_url || "", Number(body.id)).run();
+    const old = (await env.DB.prepare("SELECT date FROM posts WHERE id = ?").bind(Number(body.id)).first()) || {};
+    const date = body.date ? postDate(body.date) : old.date || postDate("");
+    await env.DB.prepare("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ? WHERE id = ?").bind(body.title, body.content, body.image_url || "", status, date, Number(body.id)).run();
   } else {
-    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)").bind(
-      body.title, body.content, body.image_url || "", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date, status) VALUES (?, ?, ?, ?, ?)").bind(
+      body.title, body.content, body.image_url || "", postDate(body.date), status
     ).run();
   }
-  await audit(env, user, "save_post", body.title);
+  await audit(env, user, "save_post", (status === "draft" ? "draft: " : "") + body.title);
   return json({ ok: true });
 }
 
@@ -301,10 +325,12 @@ async function adminOverview(request, env) {
   const orderCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM orders").first();
   const postCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first();
   const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
+  const openCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE handled IS NULL OR handled = 0").first();
+  const draftCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE status = 'draft'").first();
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
   const licCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, messages: msgCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -355,6 +381,15 @@ async function adminMessages(request, env) {
   return json({ messages: rows.results || [] });
 }
 
+async function adminMarkMessage(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const handled = (await request.json().catch(() => ({}))).handled ? 1 : 0;
+  await env.DB.prepare("UPDATE messages SET handled = ? WHERE id = ?").bind(handled, id).run();
+  await audit(env, user, handled ? "message_handled" : "message_reopened", id);
+  return json({ ok: true });
+}
+
 async function adminDeleteMessage(request, env, id) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
@@ -398,13 +433,39 @@ async function getSetting(env, key, fallback) {
 async function setSetting(env, key, value) {
   await env.DB.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(key, JSON.stringify(value)).run();
 }
+const SOCIALS = ["discord", "youtube", "instagram", "x", "facebook", "twitch", "tiktok"];
+const CONFIG_DEFAULT = { contact_email: "Eliaz@rotaidem.com", footer_text: "An independent studio making software for Microsoft Flight Simulator 2024.", socials: {}, maintenance: { enabled: false, message: "" } };
+async function siteConfig(env) {
+  const saved = (await getSetting(env, "site.config", {})) || {};
+  const config = { ...CONFIG_DEFAULT };
+  for (const k of Object.keys(CONFIG_DEFAULT)) if (k in saved) config[k] = saved[k];
+  config.socials = Object.fromEntries(Object.entries(config.socials || {}).filter(([k, v]) => SOCIALS.includes(k) && v));
+  const m = config.maintenance || {};
+  config.maintenance = { enabled: !!m.enabled, message: String(m.message || "") };
+  return config;
+}
+// The general settings from the admin, checked; throws an Error with a message for the admin.
+function cleanConfig(c) {
+  const email = String(c.contact_email || "").trim();
+  if (email && !EMAIL_RE.test(email)) throw new Error("The contact email is not a valid address");
+  const socials = {};
+  for (const [name, raw] of Object.entries(c.socials || {})) {
+    const url = String(raw || "").trim();
+    if (!SOCIALS.includes(name) || !url) continue;
+    if (!url.startsWith("https://") || url.length > 300) throw new Error(`The ${name} link must start with https://`);
+    socials[name] = url;
+  }
+  const m = c.maintenance || {};
+  return { contact_email: email || CONFIG_DEFAULT.contact_email, footer_text: String(c.footer_text || "").trim().slice(0, 300) || CONFIG_DEFAULT.footer_text,
+    socials, maintenance: { enabled: !!m.enabled, message: String(m.message || "").trim().slice(0, 500) } };
+}
 async function siteSettings(env) {
   const saved = (await getSetting(env, "site.images", {})) || {};
   const images = { ...IMAGE_SLOTS };
   for (const [k, v] of Object.entries(saved)) if (k in IMAGE_SLOTS && v) images[k] = v;
   const banner = (await getSetting(env, "site.announcement", {})) || {};
   const texts = (await getSetting(env, "site.texts", {})) || {};
-  return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
+  return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env), announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -437,6 +498,9 @@ async function adminSaveSettings(request, env) {
     if (link && !(link.startsWith("https://") || link.startsWith("/"))) return json({ error: "The banner link must start with https:// or /" }, 400);
     await setSetting(env, "site.announcement", { enabled: !!a.enabled, text: String(a.text || "").slice(0, 200), link: link.slice(0, 300) });
   }
+  if ("config" in body) {
+    try { await setSetting(env, "site.config", cleanConfig(body.config || {})); } catch (err) { return json({ error: err.message }, 400); }
+  }
   if ("texts" in body) {
     // A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
     const changes = body.texts;
@@ -451,7 +515,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
@@ -1142,6 +1206,47 @@ async function adminCampaigns(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const rows = await env.DB.prepare("SELECT campaigns.*, users.name AS admin_name FROM campaigns LEFT JOIN users ON users.id = campaigns.admin_id ORDER BY campaigns.id DESC LIMIT 50").all();
   return json({ campaigns: rows.results || [] });
+}
+
+// Paste one or many addresses. Someone who unsubscribed is never signed up again from here.
+async function adminAddSubscribers(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const words = String(body.emails || "").split(/[\s,;]+/).map(w => w.trim().toLowerCase()).filter(Boolean);
+  if (!words.length) return json({ error: "Paste at least one email address" }, 400);
+  if (words.length > 5000) return json({ error: "At most 5000 addresses at a time" }, 400);
+  let added = 0, skipped = 0;
+  const invalid = [];
+  for (const email of new Set(words)) {
+    if (!EMAIL_RE.test(email) || email.length > 200) { invalid.push(email); continue; }
+    if (await env.DB.prepare("SELECT id FROM subscribers WHERE email = ?").bind(email).first()) { skipped++; continue; }
+    await env.DB.prepare("INSERT INTO subscribers (email, source) VALUES (?, 'added by admin')").bind(email).run();
+    added++;
+  }
+  if (added) await audit(env, user, "add_subscribers", `${added} added`);
+  return json({ ok: true, added, skipped, invalid: invalid.slice(0, 50) });
+}
+
+// Staff send a user the same reset email as Forgot password.
+async function adminSendResetLink(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  if (!resendKey(env)) return json({ error: "Email is not set up. Add RESEND_API_KEY to the environment variables and redeploy." }, 400);
+  const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  if (!target || !EMAIL_RE.test(target.email || "")) return json({ error: "That user has no valid email address" }, 400);
+  const expires = Math.floor(Date.now() / 1000) + RESET_HOURS * 3600;
+  const token = `${target.id}.${expires}.${await resetSignature(env, target.id, expires, target.password_hash)}`;
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const link = `${base}/reset-password?token=${encodeURIComponent(token)}`;
+  const res = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify([{ from: mailFrom(env), to: [target.email], subject: "Reset your Rotaidem password", html: resetEmailHtml(target.name, link) }]),
+  });
+  if (!res.ok) return json({ error: explainResendError(env, res.status, await res.text()) }, 502);
+  await audit(env, user, "send_reset_link", target.email);
+  return json({ ok: true, sent_to: target.email });
 }
 
 async function adminSubscribers(request, env) {

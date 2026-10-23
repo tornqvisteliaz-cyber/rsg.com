@@ -230,6 +230,10 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
 .footer .brand { display: flex; }
 .footer-bottom { margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--navy-line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 13px; }
 .footer-bottom a { display: inline; margin-left: 18px; }
+.footer-socials a { margin-left: 0; margin-right: 0; }
+.footer-socials a::before { content: "·"; margin: 0 10px; color: var(--navy-line); }
+.maintenance { position: fixed; inset: 0; z-index: 300; background: var(--bg); display: grid; place-items: center; padding: 24px; text-align: center; }
+.maintenance .lead { max-width: 460px; }
 
 @media (max-width: 960px) {
   .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
