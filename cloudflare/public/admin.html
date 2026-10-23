@@ -236,7 +236,10 @@
                 <div class="panel-body">
                     <input id="n-id" type="hidden">
                     <div class="field"><label for="n-title">Title</label><input id="n-title" required></div>
-                    <div class="field"><label for="n-image">Image URL</label><input id="n-image" placeholder="https://"></div>
+                    <div class="field"><label for="n-image">Picture</label>
+                        <img id="n-preview" class="preview" src="" alt="" style="display:none">
+                        <div style="display:flex;gap:0"><input id="n-image" placeholder="Upload, pick from the library, or paste an https:// link"><button class="btn btn-ghost" type="button" id="n-image-up">Upload</button><button class="btn btn-ghost" type="button" id="n-image-lib">Library</button></div>
+                        <div class="hint">Shown above the post on the News page. Large photos are made smaller before uploading.</div></div>
                     <div class="field"><label for="n-content">Article</label><textarea id="n-content" rows="10" required></textarea></div>
                     <div class="actions" style="justify-content:flex-start"><button class="btn">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button></div>
                 </div>
@@ -793,7 +796,12 @@ function editPost(id) {
     const p = state.posts.find(x => x.id === id) || {};
     $("n-id").value = p.id || ""; $("n-title").value = p.title || ""; $("n-image").value = p.image_url || ""; $("n-content").value = p.content || "";
     $("nf-title").textContent = p.id ? "Edit post" : "New post";
+    previewPostImage();
 }
+function previewPostImage() { const u = val("n-image"); $("n-preview").style.display = IMAGE_RE.test(u) ? "" : "none"; $("n-preview").src = IMAGE_RE.test(u) ? safeImage(u) : ""; }
+$("n-image").oninput = previewPostImage;
+$("n-image-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) { $("n-image").value = u; previewPostImage(); } };
+$("n-image-lib").onclick = async () => { const u = await pickImage(); if (u) { $("n-image").value = u; previewPostImage(); } };
 $("post-form").onsubmit = async e => {
     e.preventDefault();
     try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value }); toast("Published"); editPost(); loadPosts(); loadOverview(); }
