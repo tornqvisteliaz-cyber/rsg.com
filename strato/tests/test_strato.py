@@ -508,6 +508,20 @@ class StratoCGITests:
         self.assertEqual(r.status, 502)
         self.assertIn("not verified", r.json()["error"])
 
+    def test_product_email_with_several_pictures(self):
+        t = self.owner_token
+        self.resend.requests.clear()
+        pics = ["/img/hero.jpg", "https://cdn.example.com/cockpit.jpg", "/img/clouds.jpg"]
+        self.ok(self.w.cgi("POST", "/api/admin/broadcast", {"subject": "Update", "message": "Look", "images": pics,
+                                                            "test_email": "test@example.com"}, token=t))
+        html = self.resend.requests[-1]["body"][0]["html"]
+        found = [html.find(u) for u in ("https://rotaidem.test/img/hero.jpg", "https://cdn.example.com/cockpit.jpg", "https://rotaidem.test/img/clouds.jpg")]
+        self.assertTrue(all(i > 0 for i in found) and found == sorted(found), "all pictures, full addresses, in the chosen order")
+        r = self.w.cgi("POST", "/api/admin/broadcast", {"subject": "x", "message": "y", "images": ["javascript:alert(1)"], "test_email": "test@example.com"}, token=t)
+        self.assertEqual(r.status, 400)
+        r = self.w.cgi("POST", "/api/admin/broadcast", {"subject": "x", "message": "y", "images": ["/img/hero.jpg"] * 13, "test_email": "test@example.com"}, token=t)
+        self.assertEqual(r.status, 400)
+
     def test_signup_sends_a_welcome_email(self):
         self.resend.requests.clear()
         r = self.ok(self.w.cgi("POST", "/api/signup", {"name": "Welcome Wendy", "email": "Wendy@Example.com", "password": "wendy-pass-1"}))

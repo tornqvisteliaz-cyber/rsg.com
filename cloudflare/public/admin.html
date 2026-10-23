@@ -51,6 +51,13 @@
         .preview-mail .mail-body { padding: 22px; line-height: 1.6; }
         .preview-mail .mail-foot { padding: 14px 22px; border-top: 1px solid #e4e4e7; font-size: 12px; color: #6d6f75; }
         .preview-mail img { width: 100%; margin-bottom: 14px; }
+        .email-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; margin-bottom: 10px; }
+        .email-pic { border: 1px solid var(--line); background: var(--bg-2); }
+        .email-pic img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+        .email-pic .pic-tools { display: flex; border-top: 1px solid var(--line); }
+        .email-pic .pic-tools button { flex: 1; background: none; border: 0; color: var(--text); padding: 5px 0; cursor: pointer; font: inherit; font-size: 14px; }
+        .email-pic .pic-tools button:hover:not([disabled]) { background: var(--navy-hover); color: var(--ink); }
+        .email-pic .pic-tools button[disabled] { opacity: .3; cursor: default; }
         /* drawer */
         .drawer-bg { position: fixed; inset: 0; background: rgba(var(--navy-rgb),.45); z-index: 40; display: none; }
         .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 100%); background: var(--bg); border-left: 1px solid var(--line); z-index: 41; transform: translateX(100%); transition: transform .22s ease; display: flex; flex-direction: column; }
@@ -257,6 +264,10 @@
                     <div class="field"><label for="e-product">Product to feature</label><select id="e-product"></select></div>
                     <div class="field"><label for="e-subject">Subject</label><input id="e-subject" required placeholder="HeavyPro is now available"></div>
                     <div class="field"><label for="e-message">Message</label><textarea id="e-message" rows="7" required placeholder="Write a short note. The product's picture, name, price and a button are added below it."></textarea></div>
+                    <div class="field"><label>Pictures</label>
+                        <div class="email-pics" id="e-pics" style="display:none"></div>
+                        <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="e-pics-up">Upload pictures</button><button class="btn btn-ghost btn-sm" type="button" id="e-pics-lib">From library</button></div>
+                        <div class="hint">Shown under your message, in this order. Pick several files at once; up to 12.</div></div>
                     <div class="sub">Who receives it</div>
                     <div class="checks">
                         <label><span><input type="checkbox" value="accounts" checked><span>Everyone with an account<small>Customers, staff, all registered users</small></span></span><span class="muted" data-count="accounts">0</span></label>
@@ -719,19 +730,51 @@ function refreshAudience() {
 }
 document.querySelectorAll(".checks input").forEach(i => i.onchange = refreshAudience);
 $("e-extra").oninput = refreshAudience;
+// Pictures for "Email a product": shown under the message, in this order.
+const EMAIL_IMAGES_MAX = 12;
+state.emailImages = [];
+function renderEmailPics() {
+    const list = state.emailImages, last = list.length - 1;
+    $("e-pics").innerHTML = list.map((u, i) => `<div class="email-pic"><img src="${esc(safeImage(u))}" alt=""><div class="pic-tools">` +
+        `<button type="button" data-pic-move="${i}" data-dir="-1" title="Move left" aria-label="Move left"${i === 0 ? " disabled" : ""}>&larr;</button>` +
+        `<button type="button" data-pic-move="${i}" data-dir="1" title="Move right" aria-label="Move right"${i === last ? " disabled" : ""}>&rarr;</button>` +
+        `<button type="button" data-pic-del="${i}" title="Remove" aria-label="Remove">&times;</button></div></div>`).join("");
+    $("e-pics").style.display = list.length ? "" : "none";
+    renderPreview();
+}
+function addEmailPics(urls) {
+    for (const u of urls) {
+        if (state.emailImages.length >= EMAIL_IMAGES_MAX) { toast(`At most ${EMAIL_IMAGES_MAX} pictures per email`, true); break; }
+        state.emailImages.push(u);
+    }
+    renderEmailPics();
+}
+$("e-pics-up").onclick = async () => addEmailPics(await uploadImages(await chooseFiles(true)));
+$("e-pics-lib").onclick = async () => { const u = await pickImage(); if (u) addEmailPics([u]); };
+$("e-pics").onclick = e => {
+    const move = e.target.closest("[data-pic-move]"), del = e.target.closest("[data-pic-del]");
+    const list = state.emailImages;
+    if (move && !move.disabled) {
+        const i = Number(move.dataset.picMove), j = i + Number(move.dataset.dir);
+        [list[i], list[j]] = [list[j], list[i]];
+    } else if (del) list.splice(Number(del.dataset.picDel), 1);
+    else return;
+    renderEmailPics();
+};
 function renderPreview() {
     const p = state.products.find(x => x.id === $("e-product").value);
     const msg = esc($("e-message").value || "Your message appears here.").replace(/\n/g, "<br>");
+    const pictures = state.emailImages.map(u => `<img src="${esc(safeImage(u))}" alt="">`).join("");
     let block = "";
-    if (p) block = (/^https:\/\//.test(p.image_url || "") ? `<img src="${esc(p.image_url)}" alt="">` : "") +
+    if (p) block = (IMAGE_RE.test(p.image_url || "") ? `<img src="${esc(safeImage(p.image_url))}" alt="">` : "") +
         `<div style="font-size:20px;font-weight:bold;color:#141517">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#141517">${esc(p.price || "")}</div>`;
-    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${block}<span style="display:inline-block;background:#141517;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
+    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${pictures}${block}<span style="display:inline-block;background:#141517;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
 }
 ["e-product", "e-message"].forEach(id => $(id).addEventListener("input", renderPreview));
 async function sendEmail(test) {
     const msg = $("e-msg");
     if (!val("e-subject") || !val("e-message")) { msg.className = "msg error"; msg.textContent = "Add a subject and a message first."; return; }
-    const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, groups: groups(), extra: $("e-extra").value };
+    const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, images: state.emailImages, groups: groups(), extra: $("e-extra").value };
     if (test) {
         payload.test_email = val("e-test-to");
         if (!payload.test_email) { msg.className = "msg error"; msg.textContent = "Enter the address to send the test to."; return; }

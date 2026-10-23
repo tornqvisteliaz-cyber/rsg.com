@@ -1809,17 +1809,26 @@ def site_url():
     return base if "://" in base else "https://" + base.lower()  # "Rotaidem.com" still gives working links
 
 
-def product_email_html(product, message, email):
+EMAIL_IMAGES_MAX = 12
+
+
+def email_image_tag(base, url):
+    if url.startswith("/media/") or url.startswith("/img/"):
+        url = base + url  # uploaded images need a full address inside an email
+    if not url.startswith("https://"):
+        return ""
+    return f'<img src="{escape(url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">'
+
+
+def product_email_html(product, message, email, images=()):
     base = site_url()
     link = f"{base}/addons/view?id={product['id']}" if product else base
     unsub = f"{base}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
     text = "<br>".join(escape(line) for line in (message or "").splitlines())
+    pictures = "".join(email_image_tag(base, url) for url in images)
     block = ""
     if product:
-        image = product.get("image_url") or ""
-        if image.startswith("/media/") or image.startswith("/img/"):
-            image = base + image  # uploaded images need a full address inside an email
-        img = f'<img src="{escape(image)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">' if image.startswith("https://") else ""
+        img = email_image_tag(base, product.get("image_url") or "")
         block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
                  f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
                  f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
@@ -1828,7 +1837,7 @@ def product_email_html(product, message, email):
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
 <tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
 <tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>
-<tr><td style="padding:12px 28px 28px">{block}<a href="{escape(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
+<tr><td style="padding:12px 28px 28px">{pictures}{block}<a href="{escape(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
 <tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
 <a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
 </table></td></tr></table></body></html>"""
@@ -1905,6 +1914,14 @@ def admin_broadcast():
         product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"])
         if not product:
             return err("That product no longer exists", 400)
+    images = []
+    for url in b.get("images") or []:
+        clean = valid_image_url(url)
+        if not clean:
+            return err("Each picture must be uploaded or an https:// link", 400)
+        images.append(clean)
+    if len(images) > EMAIL_IMAGES_MAX:
+        return err(f"At most {EMAIL_IMAGES_MAX} pictures per email", 400)
     test = str(b.get("test_email", "")).strip().lower()
     if test:
         if not EMAIL_RE.match(test):
@@ -1918,7 +1935,7 @@ def admin_broadcast():
     sent, failed, last_error = 0, 0, ""
     for i in range(0, len(recipients), 100):
         chunk = recipients[i:i + 100]
-        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r)} for r in chunk]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images)} for r in chunk]
         ok, error = send_batch(messages)
         sent += ok
         if error:
