@@ -44,14 +44,14 @@
     </div>
 </section>
 
-<section class="section">
+<section class="section" id="products-section" hidden>
     <div class="wrap">
         <div class="section-head"><h2 data-text="index.products">Products</h2><a href="/addons/" class="more">All products</a></div>
         <div class="grid grid-3" id="home-products"><p class="muted">Loading products…</p></div>
     </div>
 </section>
 
-<section class="section alt">
+<section class="section alt" id="news-section" hidden>
     <div class="wrap">
         <div class="section-head"><h2 data-text="index.latest-news">Latest news</h2><a href="/newsletter" class="more">All news</a></div>
         <div class="grid grid-3" id="home-news"><p class="muted">Loading news…</p></div>
@@ -66,16 +66,19 @@
 </section>
 <script src="/auth.js"></script>
 <script>
+// Products and news only show once there is something in them.
 fetch("/api/products").then(r => r.json()).then(d => {
     const items = (d.products || []).slice(0, 3);
-    document.getElementById("home-products").innerHTML = items.length ? items.map(productCard).join("")
-        : '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>';
-}).catch(() => { document.getElementById("home-products").innerHTML = '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>'; });
+    if (!items.length) return;
+    document.getElementById("home-products").innerHTML = items.map(productCard).join("");
+    document.getElementById("products-section").hidden = false;
+}).catch(() => {});
 fetch("/api/newsletter").then(r => r.json()).then(d => {
     const posts = (d.posts || []).slice(0, 3);
-    document.getElementById("home-news").innerHTML = posts.length ? posts.map(p => `<a class="news-card" href="/newsletter"><div class="tile"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div><div class="date">${esc(p.date)}</div><h3>${esc(p.title)}</h3></a>`).join("")
-        : '<p class="muted">No news yet.</p>';
-}).catch(() => { document.getElementById("home-news").innerHTML = '<p class="muted">No news yet.</p>'; });
+    if (!posts.length) return;
+    document.getElementById("home-news").innerHTML = posts.map(p => `<a class="news-card" href="/newsletter"><div class="tile"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div><div class="date">${esc(p.date)}</div><h3>${esc(p.title)}</h3></a>`).join("");
+    document.getElementById("news-section").hidden = false;
+}).catch(() => {});
 </script>
 </body>
 </html>
