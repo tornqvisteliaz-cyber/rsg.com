@@ -148,6 +148,51 @@ function applyMaintenance(m) {
     if (!old) document.body.append(box);
 }
 
+// Look & media from the admin: accent colour, logo, HeavyPro screenshots and video, launch countdown,
+// and home page sections switched off.
+const ACCENT_COLOURS = { amber: ["#f2a900", "#ffbd2e", "242, 169, 0"], sky: ["#5ab0ff", "#8cc8ff", "90, 176, 255"], mint: ["#4cc38a", "#7ad7aa", "76, 195, 138"],
+    rose: ["#ff6b81", "#ff94a5", "255, 107, 129"], violet: ["#a78bfa", "#c4b5fd", "167, 139, 250"] };
+function applyExtras(x) {
+    const root = document.documentElement, accent = ACCENT_COLOURS[x.accent];
+    ["--accent", "--accent-hover", "--accent-rgb"].forEach((name, i) => accent ? root.style.setProperty(name, accent[i]) : root.style.removeProperty(name));
+    if (x.logo) document.querySelectorAll(".brand img").forEach(img => { img.src = safeImage(x.logo); });
+    root.dataset.hide = (x.hide || []).join(" ");
+    const media = document.querySelector("[data-media]");
+    if (media) {
+        const shots = x.gallery || [];
+        media.querySelector("[data-gallery]").innerHTML = shots.map(u => `<button type="button" class="shot" data-full="${esc(safeImage(u))}" aria-label="Show larger"><img src="${esc(safeImage(u))}" alt="" loading="lazy"></button>`).join("");
+        media.querySelector("[data-video]").innerHTML = x.video ? `<button type="button" class="video-play" data-yt="${esc(x.video)}"><span class="play" aria-hidden="true"></span>Play video<small>Plays from YouTube</small></button>` : "";
+        media.hidden = !shots.length && !x.video;
+    }
+    startCountdown(x.launch || {});
+}
+let countdownTimer = null;
+function startCountdown(launch) {
+    const el = document.querySelector("[data-countdown]");
+    if (!el) return;
+    clearInterval(countdownTimer);
+    const end = Date.parse(launch.at || ""), pad = n => String(n).padStart(2, "0");
+    const tick = () => {
+        const left = end - Date.now();
+        if (!launch.enabled || !(left > 0)) { el.hidden = true; clearInterval(countdownTimer); return; }
+        const d = Math.floor(left / 864e5), h = Math.floor(left / 36e5) % 24, m = Math.floor(left / 6e4) % 60, sec = Math.floor(left / 1e3) % 60;
+        el.innerHTML = `<span>HeavyPro launches in</span><b>${d}<small>days</small></b><b>${pad(h)}<small>hours</small></b><b>${pad(m)}<small>min</small></b><b>${pad(sec)}<small>sec</small></b>`;
+        el.hidden = false;
+    };
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+}
+document.addEventListener("click", e => {
+    const shot = e.target.closest(".shot"), play = e.target.closest(".video-play"), box = e.target.closest(".lightbox");
+    if (shot) {
+        const lb = document.createElement("div");
+        lb.className = "lightbox"; lb.innerHTML = `<img src="${esc(shot.dataset.full)}" alt="">`;
+        document.body.append(lb);
+    } else if (box) box.remove();
+    else if (play) play.outerHTML = `<div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(play.dataset.yt)}?autoplay=1&rel=0" title="Video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>`;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".lightbox").forEach(b => b.remove()); });
+
 // Roadmap and FAQ edited in the admin replace the built-in lists on those pages.
 function applyLists(site) {
     const roadmap = document.querySelector("[data-roadmap]");
@@ -163,6 +208,7 @@ function applyContent(site) {
     applyTexts(site.texts || {});
     applyLists(site);
     if (site.config) applyConfig(site.config);
+    if (site.extras) applyExtras(site.extras);
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
     document.querySelectorAll("[data-image]").forEach(el => {
@@ -192,7 +238,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
     // The footer only exists from here on, so its settings go in now.
-    if (window.RSG_SITE) { if (window.RSG_SITE.config) applyConfig(window.RSG_SITE.config); applyBanner(window.RSG_SITE); return; }
+    if (window.RSG_SITE) {
+        if (window.RSG_SITE.config) applyConfig(window.RSG_SITE.config);
+        if (window.RSG_SITE.extras) applyExtras(window.RSG_SITE.extras); // the header logo exists from here on
+        applyBanner(window.RSG_SITE); return;
+    }
     // Hosts without /site-settings.js: ask the API instead (the page shows the defaults until then).
     fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => {
         if (site) { applyContent(site); applyBanner(site); }

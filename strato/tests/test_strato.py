@@ -683,6 +683,32 @@ class StratoCGITests:
         owner = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["role"] == "Owner")
         self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{owner['id']}/sign-out", {}, token=self.owner_token).status, 400)
 
+    def test_look_and_media(self):
+        t = self.owner_token
+        extras = {"accent": "amber", "logo": "/img/hero.jpg", "gallery": ["/img/clouds.jpg", "https://cdn.example.com/a.png"],
+                  "video": "https://youtu.be/dQw4w9WgXcQ?t=5", "launch": {"enabled": True, "at": "2026-12-01T17:00:00.000Z"}, "hide": ["news", "nonsense"]}
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": extras}, token=t))
+        self.assertEqual(r["extras"], {"accent": "amber", "logo": "/img/hero.jpg", "gallery": ["/img/clouds.jpg", "https://cdn.example.com/a.png"],
+                                       "video": "dQw4w9WgXcQ", "launch": {"enabled": True, "at": "2026-12-01T17:00:00.000Z"}, "hide": ["news"]})
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertIn("--accent:#f2a900", js if isinstance(js, str) else js.decode(), "the colour applies before the page is drawn")
+        for video in ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/shorts/dQw4w9WgXcQ", "dQw4w9WgXcQ"):
+            r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": {**extras, "video": video}}, token=t))
+            self.assertEqual(r["extras"]["video"], "dQw4w9WgXcQ", video)
+        for bad in ({"video": "https://evil.example/watch?v=dQw4w9WgXcQ"}, {"logo": "javascript:alert(1)"}, {"gallery": ["ftp://x"]},
+                    {"gallery": ["/img/hero.jpg"] * 25}, {"launch": {"enabled": True, "at": ""}}, {"launch": {"enabled": True, "at": "tomorrow"}}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"extras": {**extras, **bad}}, token=t).status, 400, bad)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": {"accent": "steel"}}, token=t))
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertNotIn("--accent:", js if isinstance(js, str) else js.decode())
+        customer, _ = self.customer("looky")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"extras": extras}, token=customer).status, 403)
+
+    def test_cut_off_upload_says_so(self):
+        r = self.w.cgi("POST", "/api/admin/media", b'{"filename": "big.jpg", "mime": "image/jpeg", "data": "/9j/4AAQ', token=self.owner_token)
+        self.assertEqual(r.status, 400)
+        self.assertIn("cut off", r.json()["error"])
+
     def test_page_texts(self):
         t = self.owner_token
         key = "index.welcome-to-rotaidem"

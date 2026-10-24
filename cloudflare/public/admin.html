@@ -51,6 +51,12 @@
         .preview-mail .mail-body { padding: 22px; line-height: 1.6; }
         .preview-mail .mail-foot { padding: 14px 22px; border-top: 1px solid #e4e4e7; font-size: 12px; color: #6d6f75; }
         .preview-mail img { width: 100%; margin-bottom: 14px; }
+        .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+        .swatch { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--bg-2); padding: 8px 12px; cursor: pointer; font-size: 14px; color: var(--text); }
+        .swatch i { width: 22px; height: 22px; display: block; }
+        .swatch.on { border-color: var(--ink); color: var(--ink); }
+        .logo-preview { height: 56px; display: flex; align-items: center; gap: 12px; background: #0b0c0e; border: 1px solid var(--line); padding: 0 16px; margin-bottom: 12px; color: #fff; font-weight: 600; letter-spacing: .14em; font-size: 15px; }
+        .logo-preview img { height: 22px; width: auto; }
         .list-edit { display: grid; gap: 10px; margin-bottom: 14px; }
         .list-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; border: 1px solid var(--line); background: var(--bg-2); padding: 12px; }
         .list-row .fields { display: grid; gap: 8px; }
@@ -154,6 +160,7 @@
     <button class="tab" data-tab="texts">Page texts</button>
     <button class="tab" data-tab="pages">Roadmap &amp; FAQ</button>
     <button class="tab" data-tab="site">Site settings</button>
+    <button class="tab" data-tab="look">Look &amp; media</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
     <div class="group">Marketing</div>
     <button class="tab" data-tab="email">Email a product</button>
@@ -269,6 +276,55 @@
         <div class="panel">
             <div class="panel-head"><h2>Site images</h2><span class="muted" style="font-size:13px">Upload your own screenshots or photos for each place on the site</span></div>
             <div class="panel-body"><div class="slots" id="slots"></div></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-look" data-title="Look & media">
+        <div class="two">
+            <div class="panel" style="margin-bottom:24px">
+                <div class="panel-head"><h2>Accent colour</h2><span class="muted" style="font-size:13px">Buttons, links and highlights on the website</span></div>
+                <div class="panel-body"><div class="swatches" id="lk-accents"></div></div>
+            </div>
+            <div class="panel" style="margin-bottom:24px">
+                <div class="panel-head"><h2>Logo</h2><span class="muted" style="font-size:13px">Replaces the R mark in the menu and footer</span></div>
+                <div class="panel-body">
+                    <div class="logo-preview"><img id="lk-logo-img" alt="">ROTAIDEM</div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="lk-logo-up">Upload logo</button><button class="btn btn-ghost btn-sm" type="button" id="lk-logo-lib">From library</button><button class="btn btn-ghost btn-sm" type="button" id="lk-logo-reset">Use the R mark</button></div>
+                    <div class="hint">A small, wide picture works best, like a transparent PNG about 200 × 60 px.</div>
+                </div>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>HeavyPro screenshots and video</h2><a class="btn btn-ghost btn-sm" href="/heavypro" target="_blank" rel="noopener">View page</a></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">Shown on the HeavyPro page under "See it in action". Visitors can click a screenshot to see it large.</p>
+                <div class="email-pics" id="lk-gallery" style="display:none"></div>
+                <div class="actions" style="justify-content:flex-start;margin-bottom:18px"><button class="btn btn-ghost btn-sm" type="button" id="lk-gal-up">Upload screenshots</button><button class="btn btn-ghost btn-sm" type="button" id="lk-gal-lib">From library</button></div>
+                <div class="field" style="max-width:620px"><label for="lk-video">Video (YouTube link, optional)</label><input id="lk-video" placeholder="https://www.youtube.com/watch?v=..."><div class="hint">The video only loads from YouTube when a visitor presses play.</div></div>
+                <button class="btn" type="button" id="lk-media-save">Save screenshots and video</button>
+            </div>
+        </div>
+        <div class="two">
+            <div class="panel" style="margin-bottom:24px">
+                <div class="panel-head"><h2>Launch countdown</h2><span class="muted" style="font-size:13px" id="lk-cd-state"></span></div>
+                <div class="panel-body">
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 14px"><input type="checkbox" id="lk-cd-on"> Show a countdown on the home page</label>
+                    <div class="field"><label for="lk-cd-at">Launch date and time (your time)</label><input id="lk-cd-at" type="datetime-local"></div>
+                    <div class="hint" style="margin:-8px 0 14px">It hides itself when the time is reached.</div>
+                    <button class="btn" type="button" id="lk-cd-save">Save countdown</button>
+                </div>
+            </div>
+            <div class="panel" style="margin-bottom:24px">
+                <div class="panel-head"><h2>Home page sections</h2></div>
+                <div class="panel-body">
+                    <p class="muted" style="margin-top:0;font-size:14px">Untick a section to hide it from the home page.</p>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center"><input type="checkbox" data-sec="profiles"> Made for the aircraft you already fly</label>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center"><input type="checkbox" data-sec="products"> Products</label>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center"><input type="checkbox" data-sec="news"> Latest news</label>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin-bottom:16px"><input type="checkbox" data-sec="signup"> Hear about HeavyPro first (email sign-up)</label>
+                    <button class="btn" type="button" id="lk-sec-save">Save sections</button>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -554,28 +610,51 @@ async function uploadImages(files) {
     if (urls.length) { toast(`Uploaded ${urls.length} image${urls.length === 1 ? "" : "s"}`); loadMedia(); }
     return urls;
 }
-function shrinkImage(file) {
+// Every picture is made smaller in the browser (at most 1920 px wide, about 1 MB), so uploads stay
+// well under the host's request limit. Messages say what to do, not just that it failed.
+const CANNOT_OPEN = "This picture could not be opened. If it is in OneDrive or another cloud folder, download it to this computer first " +
+    "(right-click, Always keep on this device) or copy it to your Downloads folder, then try again.";
+const MAX_UPLOAD = 1024 * 1024; // as base64 about 1.35 MB, under the 1.5 MB the host is checked for
+function readDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error(CANNOT_OPEN));
+        reader.readAsDataURL(file);
+    });
+}
+async function openImage(file) {
+    if (window.createImageBitmap) {
+        try { return await createImageBitmap(file); } catch (err) { /* fall back to an <img> below */ }
+    }
+    const src = await readDataUrl(file);
     return new Promise((resolve, reject) => {
         const img = new Image();
-        img.onload = () => {
-            const scale = Math.min(1, 2400 / img.naturalWidth);
-            const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
-            const reader = new FileReader();
-            if (file.type === "image/gif" || (scale === 1 && file.size < 1.5 * 1024 * 1024)) {
-                reader.onload = () => resolve({ data: reader.result, mime: file.type, width: w, height: h });
-                reader.onerror = () => reject(new Error("could not read the file"));
-                reader.readAsDataURL(file);
-                return;
-            }
-            const canvas = document.createElement("canvas");
-            canvas.width = w; canvas.height = h;
-            canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-            const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
-            resolve({ data: canvas.toDataURL(mime, .86), mime, width: w, height: h });
-        };
-        img.onerror = () => reject(new Error("could not open the image"));
-        img.src = URL.createObjectURL(file);
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error(CANNOT_OPEN));
+        img.src = src;
     });
+}
+async function shrinkImage(file) {
+    if (file.type === "image/gif") { // kept as it is so animations survive
+        if (file.size > MAX_UPLOAD) throw new Error("GIFs must be smaller than 1 MB. Use a JPG or PNG instead.");
+        const data = await readDataUrl(file);
+        return { data, mime: file.type, width: 0, height: 0 };
+    }
+    const img = await openImage(file);
+    const fullW = img.naturalWidth || img.width, fullH = img.naturalHeight || img.height;
+    for (const maxW of [1920, 1600, 1280, 1024]) {
+        const scale = Math.min(1, maxW / fullW);
+        const w = Math.round(fullW * scale), h = Math.round(fullH * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        for (const [mime, quality] of file.type === "image/png" ? [["image/png"], ["image/jpeg", .85]] : [["image/jpeg", .85], ["image/jpeg", .72]]) {
+            const data = canvas.toDataURL(mime, quality);
+            if (data.length * 0.75 <= MAX_UPLOAD) return { data, mime, width: w, height: h };
+        }
+    }
+    throw new Error("This picture is too large even after making it smaller. Try a smaller picture.");
 }
 function chooseFiles(multiple) {
     return new Promise(resolve => {
@@ -1160,7 +1239,61 @@ async function loadSite() {
     renderConfig();
     renderSlots();
     loadPagesEditor();
+    renderLook();
 }
+
+// Look & media
+const ACCENTS = [["steel", "Steel", "#aab6c2"], ["amber", "Amber", "#f2a900"], ["sky", "Sky", "#5ab0ff"], ["mint", "Mint", "#4cc38a"], ["rose", "Rose", "#ff6b81"], ["violet", "Violet", "#a78bfa"]];
+function extras() { return state.site.extras || {}; }
+function renderLook() {
+    const x = extras();
+    $("lk-accents").innerHTML = ACCENTS.map(([k, name, c]) => `<button type="button" class="swatch${(x.accent || "steel") === k ? " on" : ""}" data-accent="${k}"><i style="background:${c}"></i>${name}</button>`).join("");
+    $("lk-logo-img").src = x.logo ? safeImage(x.logo) : "/logo.svg";
+    state.gallery = [...(x.gallery || [])]; renderLookGallery();
+    $("lk-video").value = x.video ? "https://www.youtube.com/watch?v=" + x.video : "";
+    const l = x.launch || {};
+    $("lk-cd-on").checked = !!l.enabled;
+    const at = l.at ? new Date(l.at) : null;
+    $("lk-cd-at").value = at && !isNaN(at) ? new Date(at.getTime() - at.getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : "";
+    $("lk-cd-state").textContent = l.enabled && at > new Date() ? "Counting down" : l.enabled ? "Time reached, hidden" : "Off";
+    document.querySelectorAll("[data-sec]").forEach(c => c.checked = !(x.hide || []).includes(c.dataset.sec));
+}
+async function saveExtras(changes, done) {
+    try { state.site = await post("/api/admin/settings", { extras: { ...extras(), ...changes } }); renderLook(); toast(done); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+}
+$("lk-accents").onclick = e => { const b = e.target.closest("[data-accent]"); if (b) saveExtras({ accent: b.dataset.accent }, "Colour changed on the website"); };
+$("lk-logo-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) saveExtras({ logo: u }, "Logo changed"); };
+$("lk-logo-lib").onclick = async () => { const u = await pickImage(); if (u) saveExtras({ logo: u }, "Logo changed"); };
+$("lk-logo-reset").onclick = () => saveExtras({ logo: "" }, "Back to the R mark");
+function renderLookGallery() {
+    const list = state.gallery, last = list.length - 1;
+    $("lk-gallery").innerHTML = list.map((u, i) => `<div class="email-pic"><img src="${esc(safeImage(u))}" alt=""><div class="pic-tools">` +
+        `<button type="button" data-g-move="${i}" data-dir="-1" aria-label="Move left"${i === 0 ? " disabled" : ""}>&larr;</button>` +
+        `<button type="button" data-g-move="${i}" data-dir="1" aria-label="Move right"${i === last ? " disabled" : ""}>&rarr;</button>` +
+        `<button type="button" data-g-del="${i}" aria-label="Remove">&times;</button></div></div>`).join("");
+    $("lk-gallery").style.display = list.length ? "" : "none";
+}
+function addShots(urls) {
+    for (const u of urls) { if (state.gallery.length >= 24) { toast("At most 24 screenshots", true); break; } state.gallery.push(u); }
+    renderLookGallery();
+}
+$("lk-gal-up").onclick = async () => addShots(await uploadImages(await chooseFiles(true)));
+$("lk-gal-lib").onclick = async () => { const u = await pickImage(); if (u) addShots([u]); };
+$("lk-gallery").onclick = e => {
+    const move = e.target.closest("[data-g-move]"), del = e.target.closest("[data-g-del]"), list = state.gallery;
+    if (move && !move.disabled) { const i = Number(move.dataset.gMove), j = i + Number(move.dataset.dir); [list[i], list[j]] = [list[j], list[i]]; }
+    else if (del) list.splice(Number(del.dataset.gDel), 1);
+    else return;
+    renderLookGallery();
+};
+$("lk-media-save").onclick = () => saveExtras({ gallery: state.gallery, video: val("lk-video") }, "Screenshots and video saved");
+$("lk-cd-save").onclick = () => {
+    const v = $("lk-cd-at").value, on = $("lk-cd-on").checked;
+    if (on && !v) return toast("Pick the launch date and time first", true);
+    saveExtras({ launch: { enabled: on, at: v ? new Date(v).toISOString() : "" } }, on ? "Countdown is on" : "Countdown saved (off)");
+};
+$("lk-sec-save").onclick = () => saveExtras({ hide: [...document.querySelectorAll("[data-sec]")].filter(c => !c.checked).map(c => c.dataset.sec) }, "Home page sections saved");
 
 // Roadmap and FAQ: start from what is saved, or from the steps and questions the pages show now.
 async function pageItems(path, read) {

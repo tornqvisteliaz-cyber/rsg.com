@@ -487,6 +487,29 @@ function cleanLinks(links) {
   }
   return out;
 }
+// "Look & media" in the admin: colour, logo, screenshots, video, launch countdown, home page sections.
+const ACCENTS = ["steel", "amber", "sky", "mint", "rose", "violet"];
+const HOME_SECTIONS = ["profiles", "products", "news", "signup"];
+const EXTRAS_DEFAULT = { accent: "steel", logo: "", gallery: [], video: "", launch: { enabled: false, at: "" }, hide: [] };
+function youtubeId(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  if (/^[\w-]{11}$/.test(value)) return value;
+  const m = /^https:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)\//.test(value) && /(?:youtu\.be\/|[?&]v=|\/embed\/|\/shorts\/|\/live\/)([\w-]{11})(?:[?&#/]|$)/.exec(value);
+  if (!m) throw new Error("Paste a YouTube link, like https://www.youtube.com/watch?v=...");
+  return m[1];
+}
+function cleanExtras(e) {
+  const logo = String(e.logo || "").trim();
+  if (logo && !validImageUrl(logo)) throw new Error("The logo must be an uploaded picture or an https:// link");
+  const gallery = (e.gallery || []).map(u => String(u).trim()).filter(Boolean);
+  if (gallery.length > 24) throw new Error("At most 24 screenshots");
+  if (gallery.some(u => !validImageUrl(u))) throw new Error("Each screenshot must be an uploaded picture or an https:// link");
+  const launch = e.launch || {}, at = String(launch.at || "").trim();
+  if ((at && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/.test(at)) || (launch.enabled && !at)) throw new Error("Pick a date and time for the launch countdown");
+  return { accent: ACCENTS.includes(e.accent) ? e.accent : "steel", logo, gallery, video: youtubeId(e.video), launch: { enabled: !!launch.enabled, at },
+    hide: HOME_SECTIONS.filter(h => (e.hide || []).includes(h)) };
+}
 async function siteSettings(env) {
   const saved = (await getSetting(env, "site.images", {})) || {};
   const images = { ...IMAGE_SLOTS };
@@ -495,7 +518,8 @@ async function siteSettings(env) {
   const texts = (await getSetting(env, "site.texts", {})) || {};
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
-    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {} };
+    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
+    extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) } };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -535,6 +559,7 @@ async function adminSaveSettings(request, env) {
     if ("roadmap" in body) await setSetting(env, "site.roadmap", cleanRoadmap(body.roadmap));
     if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
     if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
+    if ("extras" in body) await setSetting(env, "site.extras", cleanExtras(body.extras || {}));
   } catch (err) { return json({ error: err.message }, 400); }
   if ("texts" in body) {
     // A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
@@ -550,7 +575,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "links", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
@@ -565,7 +590,8 @@ async function adminMedia(request, env) {
 async function adminUploadMedia(request, env) {
   const user = await currentUser(request, env);
   if (!isManager(user)) return json({ error: "Only the Owner or an Admin can upload images" }, 403);
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: "The picture did not arrive in one piece (the upload was cut off). Try a smaller picture." }, 400);
   const mime = String(body.mime || "");
   if (!MEDIA_TYPES[mime]) return json({ error: "Upload a JPG, PNG, WebP or GIF image" }, 400);
   let data = String(body.data || "");

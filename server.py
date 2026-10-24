@@ -1647,6 +1647,55 @@ def clean_links(links):
     return out
 
 
+# "Look & media" in the admin: colour, logo, screenshots, video, launch countdown, home page sections.
+ACCENTS = {"steel": ("#aab6c2", "#cfd7de", "170, 182, 194"), "amber": ("#f2a900", "#ffbd2e", "242, 169, 0"),
+           "sky": ("#5ab0ff", "#8cc8ff", "90, 176, 255"), "mint": ("#4cc38a", "#7ad7aa", "76, 195, 138"),
+           "rose": ("#ff6b81", "#ff94a5", "255, 107, 129"), "violet": ("#a78bfa", "#c4b5fd", "167, 139, 250")}
+HOME_SECTIONS = ("profiles", "products", "news", "signup")
+GALLERY_MAX = 24
+YOUTUBE_ID = re.compile(r"(?:youtu\.be/|[?&]v=|/embed/|/shorts/|/live/)([\w-]{11})(?:[?&#/]|$)")
+LAUNCH_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$")
+EXTRAS_DEFAULT = {"accent": "steel", "logo": "", "gallery": [], "video": "", "launch": {"enabled": False, "at": ""}, "hide": []}
+
+
+def youtube_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if re.fullmatch(r"[\w-]{11}", value):
+        return value
+    match = YOUTUBE_ID.search(value) if re.match(r"^https://(www\.|m\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)/", value) else None
+    if not match:
+        raise ValueError("Paste a YouTube link, like https://www.youtube.com/watch?v=...")
+    return match.group(1)
+
+
+def clean_extras(e):
+    """The Look & media settings from the admin, checked; raises ValueError with a message for the admin."""
+    logo = str(e.get("logo") or "").strip()
+    if logo and not valid_image_url(logo):
+        raise ValueError("The logo must be an uploaded picture or an https:// link")
+    gallery = [str(u).strip() for u in (e.get("gallery") or []) if str(u).strip()]
+    if len(gallery) > GALLERY_MAX:
+        raise ValueError(f"At most {GALLERY_MAX} screenshots")
+    if any(not valid_image_url(u) for u in gallery):
+        raise ValueError("Each screenshot must be an uploaded picture or an https:// link")
+    launch = e.get("launch") or {}
+    at = str(launch.get("at") or "").strip()
+    if at and not LAUNCH_RE.match(at):
+        raise ValueError("Pick a date and time for the launch countdown")
+    if launch.get("enabled") and not at:
+        raise ValueError("Pick a date and time for the launch countdown")
+    return {"accent": e.get("accent") if e.get("accent") in ACCENTS else "steel", "logo": logo, "gallery": gallery,
+            "video": youtube_id(e.get("video")), "launch": {"enabled": bool(launch.get("enabled")), "at": at},
+            "hide": [h for h in HOME_SECTIONS if h in (e.get("hide") or [])]}
+
+
+def site_extras():
+    saved = get_setting("site.extras", {}) or {}
+    return {**EXTRAS_DEFAULT, **{k: v for k, v in saved.items() if k in EXTRAS_DEFAULT}}
+
+
 def site_settings():
     images = dict(IMAGE_SLOTS)
     images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
@@ -1656,7 +1705,7 @@ def site_settings():
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
-            "links": get_setting("site.links", {}) or {}}
+            "links": get_setting("site.links", {}) or {}, "extras": site_extras()}
 
 
 # Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their
@@ -1716,6 +1765,8 @@ def admin_save_settings():
             set_setting("site.faq", clean_faq(b.get("faq")))
         if "links" in b:
             set_setting("site.links", clean_links(b.get("links")))
+        if "extras" in b:
+            set_setting("site.extras", clean_extras(b.get("extras") or {}))
     except ValueError as exc:
         return err(str(exc), 400)
     if "texts" in b:
@@ -1738,7 +1789,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
@@ -1759,6 +1810,8 @@ def admin_upload_media():
     if not user:
         return err("Only the Owner or an Admin can upload images", 403)
     b = body()
+    if not b and request.content_length:
+        return err("The picture did not arrive in one piece (the upload was cut off). Try a smaller picture.", 400)
     mime = str(b.get("mime") or "")
     if mime not in MEDIA_TYPES:
         return err("Upload a JPG, PNG, WebP or GIF image", 400)
@@ -1852,6 +1905,9 @@ def site_settings_js():
     site = site_settings()
     css = "".join(f'[data-image="{slot}"]:not(img){{background-image:url("{css_url(url)}")!important}}'
                   for slot, url in site["images"].items() if url and url != IMAGE_SLOTS.get(slot))
+    accent = ACCENTS.get(site["extras"].get("accent"))
+    if accent and site["extras"].get("accent") != "steel":
+        css += f":root{{--accent:{accent[0]};--accent-hover:{accent[1]};--accent-rgb:{accent[2]}}}"
     data = json.dumps(site).replace("</", "<\\/")
     style = json.dumps(css).replace("</", "<\\/")
     return (f"window.RSG_SITE={data};\n"

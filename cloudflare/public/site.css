@@ -232,6 +232,25 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
 .footer-bottom a { display: inline; margin-left: 18px; }
 .footer-socials a { margin-left: 0; margin-right: 0; }
 .footer-socials a::before { content: "·"; margin: 0 10px; color: var(--navy-line); }
+/* Look & media from the admin */
+[data-hide~="profiles"] [data-section="profiles"], [data-hide~="products"] [data-section="products"],
+[data-hide~="news"] [data-section="news"], [data-hide~="signup"] [data-section="signup"] { display: none !important; }
+.countdown { display: flex; gap: 10px; justify-content: center; align-items: stretch; flex-wrap: wrap; margin: -8px 0 32px; }
+.countdown span { align-self: center; color: #d0d6dd; font-size: 16px; margin-right: 6px; }
+.countdown b { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 70px; padding: 10px 8px; border: 1px solid rgba(255,255,255,.3); background: rgba(var(--navy-rgb), .45); color: #fff; font-size: 26px; font-weight: 600; line-height: 1; }
+.countdown small { font-size: 12px; font-weight: 400; color: #b8c1cc; margin-top: 6px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 24px; }
+.shot { display: block; padding: 0; border: 0; background: var(--bg-2); cursor: zoom-in; }
+.shot img { width: 100%; aspect-ratio: 16/10; object-fit: cover; transition: opacity .15s; }
+.shot:hover img { opacity: .85; }
+.video-play { width: 100%; aspect-ratio: 16/9; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--navy); border: 1px solid var(--line); color: #fff; font: 600 17px "IBM Plex Sans", sans-serif; cursor: pointer; }
+.video-play small { font-weight: 400; font-size: 13px; color: var(--muted); }
+.video-play .play { width: 64px; height: 64px; border-radius: 50%; border: 2px solid #fff; position: relative; }
+.video-play .play::after { content: ""; position: absolute; left: 25px; top: 19px; border-left: 20px solid #fff; border-top: 13px solid transparent; border-bottom: 13px solid transparent; }
+.video-play:hover .play { background: rgba(255,255,255,.1); }
+.video-frame iframe { display: block; width: 100%; aspect-ratio: 16/9; border: 0; }
+.lightbox { position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,.92); display: grid; place-items: center; padding: 24px; cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: calc(100vh - 48px); object-fit: contain; }
 .maintenance { position: fixed; inset: 0; z-index: 300; background: var(--bg); display: grid; place-items: center; padding: 24px; text-align: center; }
 .maintenance .lead { max-width: 460px; }
 
