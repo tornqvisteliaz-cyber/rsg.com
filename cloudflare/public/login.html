@@ -40,7 +40,8 @@ $("form").onsubmit = async e => {
     }
     if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Login is not available right now."; return; }
     saveSession(data);
-    location.href = data.is_admin ? "/admin" : "/account";
+    const next = new URLSearchParams(location.search).get("next") || ""; // e.g. back to Downloads
+    location.href = next.startsWith("/") && !next.startsWith("//") ? next : data.is_admin ? "/admin" : "/account";
 };
 </script>
 </body>

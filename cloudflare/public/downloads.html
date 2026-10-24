@@ -12,7 +12,7 @@
 <body>
 <section class="page-head" data-image="header" style="background-image:url('/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / <a href="/support">Support</a> / Downloads</div><h1 data-text="downloads.downloads">Downloads</h1><p data-text="downloads.installers-and-updates-for">Installers and updates for your products.</p></div></section>
 <section class="section"><div class="wrap">
-    <div class="box" style="padding:0"><div class="table-wrap"><table class="table">
+    <div class="box box-flush"><div class="table-wrap"><table class="table">
         <thead><tr><th>Product</th><th>Version</th><th>Platform</th><th></th></tr></thead>
         <tbody id="downloads"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
     </table></div></div>
@@ -46,13 +46,24 @@ async function extras(p, row) {
         if (hash) row.insertAdjacentHTML("afterend", `<tr><td colspan="4" class="muted" style="font-size:12px;border-top:0;padding-top:0">SHA-256: <code style="word-break:break-all">${esc(hash)}</code></td></tr>`);
     }
 }
-fetch("/api/products").then(r => r.json()).then(d => {
+// Version history from the admin: the newest version open to read, older ones folded away.
+function changelogRow(p) {
+    const list = p.changelog || [];
+    if (!list.length) return "";
+    const entry = v => `<div class="cl-entry"><strong>${esc(v.version)}</strong>${v.date ? ` <span class="muted">${esc(v.date)}</span>` : ""}${v.notes ? `<p>${esc(v.notes)}</p>` : ""}</div>`;
+    return `<tr class="cl-row"><td colspan="4"><details><summary>What's new in ${esc(list[0].version)}</summary>${list[0].notes ? `<p>${esc(list[0].notes)}</p>` : ""}` +
+        (list.length > 1 ? `<details class="cl-older"><summary>Older versions (${list.length - 1})</summary>${list.slice(1).map(entry).join("")}</details>` : "") + "</details></td></tr>";
+}
+const token = localStorage.getItem("rsg_token");
+fetch("/api/products", { headers: token ? { "X-Rotaidem-Token": token } : {} }).then(r => r.json()).then(d => {
     const items = d.products || [];
     const body = document.getElementById("downloads");
     body.innerHTML = items.length ? items.map((p, i) => {
-        const ready = /^https:\/\//.test(p.download_url || "");
-        const action = ready ? `<span class="dl-extra"><a class="btn btn-sm" href="${esc(p.download_url)}" rel="noopener">Download</a></span>` : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
-        return `<tr data-i="${i}"><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right;white-space:nowrap">${action}</td></tr>`;
+        const link = /^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "");
+        const ready = link || p.has_download; // has_download: "licence holders only", the link comes after logging in
+        const action = ready ? `<span class="dl-extra"><a class="btn btn-sm" href="${link ? esc(p.download_url) : "#"}" data-dl="${esc(p.id)}" rel="noopener">Download</a></span>` +
+            (p.has_download ? '<div class="muted" style="font-size:12px;margin-top:6px">For licence holders</div>' : "") : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
+        return `<tr data-i="${i}"><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right;white-space:nowrap">${action}</td></tr>` + changelogRow(p);
     }).join("") : fallback;
     items.forEach((p, i) => { const row = body.querySelector(`tr[data-i="${i}"]`); if (row && p.download_url) extras(p, row).catch(() => {}); });
 }).catch(() => { document.getElementById("downloads").innerHTML = fallback; });

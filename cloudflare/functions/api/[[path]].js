@@ -29,6 +29,9 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/password/reset") return passwordReset(request, env);
     if (method === "POST" && path === "/api/verify-email") return verifyEmail(request, env);
     if (method === "GET" && path === "/api/account/sessions") return accountSessions(request, env);
+    if (method === "POST" && /^\/api\/download\/[\w.-]+$/.test(path)) return download(request, env, decodeURIComponent(path.split("/").pop()));
+    if (method === "GET" && path === "/api/admin/downloads") return adminDownloads(request, env);
+    if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
     if (method === "DELETE" && /^\/api\/admin\/users\/\d+\/sessions\/\d+$/.test(path)) return adminEndSession(request, env, Number(path.split("/")[4]), Number(path.split("/")[6]));
@@ -118,6 +121,10 @@ async function ensure(env) {
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1").run(); } catch (err) {}
   // One row per logged-in browser; only a hash of the token is stored.
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, user_id INTEGER, ip_address TEXT, created_at TEXT)").run();
+  for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"]]) {
+    try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
+  }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -257,6 +264,16 @@ async function resendVerifyEmail(request, env) {
   if (await sendVerifyEmail(request, env, user)) return json({ error: "The email could not be sent right now. Please try again later." }, 502);
   return answer;
 }
+// A private note about a user, only seen by staff.
+async function adminUserNote(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const body = await request.json().catch(() => ({}));
+  await env.DB.prepare("UPDATE users SET admin_note = ? WHERE id = ?").bind(String(body.note || "").trim().slice(0, 2000), id).run();
+  await audit(env, user, "user_note", id);
+  return json({ ok: true });
+}
+
 // Staff confirm an address by hand, e.g. for someone whose confirmation email never arrived.
 async function adminVerifyUser(request, env, id) {
   const user = await currentUser(request, env);
@@ -309,9 +326,58 @@ async function customerOrders(request, env) {
   return json({ orders: rows.results || [] });
 }
 
+// A product for the website. A "licence holders only" download keeps its link hidden from visitors.
+function publicProduct(row, staff) {
+  const p = withImages(row);
+  try { p.changelog = JSON.parse(p.changelog || "[]"); } catch (err) { p.changelog = []; }
+  p.download_gate = p.download_gate || "public";
+  if (p.download_gate === "licence" && !staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  return p;
+}
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
-  return json({ products: (rows.results || []).map(withImages) });
+  const viewer = await currentUser(request, env);
+  const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
+  return json({ products: (rows.results || []).map(r => publicProduct(r, staff)) });
+}
+// Version history of a product: [{version, date, notes}], newest first, at most 50.
+function cleanChangelog(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 50).map(i => ({ version: String((i || {}).version || "").trim().slice(0, 30), date: /^\d{4}-\d{2}-\d{2}$/.test(String((i || {}).date || "").trim()) ? String(i.date).trim() : "", notes: String((i || {}).notes || "").trim().slice(0, 3000) })).filter(i => i.version);
+}
+// Gives the download link and counts the download. "Licence holders only" products need a
+// logged-in account with an active licence for the product.
+async function download(request, env, pid) {
+  const product = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(pid).first();
+  const url = String((product || {}).download_url || "");
+  if (!product || !(url.startsWith("https://") || url.startsWith("/files/"))) return json({ error: "This product has no download yet" }, 404);
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if ((product.download_gate || "public") === "licence") {
+    if (!user) return json({ error: "Log in to download. The download is for licence holders.", login: true }, 401);
+    if (!STAFF_ROLES.includes(user.role)) {
+      const rows = (await env.DB.prepare("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)").bind(user.id, String(user.email || "").toLowerCase()).all()).results || [];
+      if (!rows.some(r => sameProduct(pid, r.product_id))) return json({ error: "This download is for licence holders. Your account has no active licence for it yet." }, 403);
+    }
+  }
+  const ip = (request.headers.get("CF-Connecting-IP") || "").slice(0, 64);
+  if (!(await env.DB.prepare("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?").bind(pid, ip, utcStamp(600)).first())) {
+    await env.DB.prepare("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)").bind(pid, user ? user.id : null, ip, utcStamp()).run();
+  }
+  return json({ url });
+}
+async function adminDownloads(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const count = async (sql, ...args) => ((await env.DB.prepare(sql).bind(...args).first()) || {}).n || 0;
+  const grouped = (await env.DB.prepare("SELECT product_id, COUNT(*) AS n FROM downloads GROUP BY product_id ORDER BY n DESC").all()).results || [];
+  const perProduct = [];
+  for (const r of grouped) perProduct.push({ product_id: r.product_id, total: r.n,
+    last_7: await count("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r.product_id, utcStamp(7 * 86400)),
+    last_30: await count("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r.product_id, utcStamp(30 * 86400)) });
+  const days = {};
+  for (const r of (await env.DB.prepare("SELECT created_at FROM downloads WHERE created_at >= ?").bind(utcStamp(30 * 86400)).all()).results || []) {
+    const day = String(r.created_at).slice(0, 10); days[day] = (days[day] || 0) + 1;
+  }
+  return json({ products: perProduct, days, last_7: await count("SELECT COUNT(*) AS n FROM downloads WHERE created_at >= ?", utcStamp(7 * 86400)) });
 }
 
 async function liveries(request, env) {
@@ -327,8 +393,9 @@ async function saveProduct(request, env) {
   if (!name) return json({ error: "Name is required" }, 400);
   const id = slug(body.id || name);
   const images = JSON.stringify(listImages(body.images));
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order").bind(
-    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog").bind(
+    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
+    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog))
   ).run();
   await audit(env, user, "save_product", id);
   return json({ ok: true, id, page: "/addons/view?id=" + id });
@@ -357,7 +424,7 @@ async function saveLivery(request, env) {
 
 // Published posts only; drafts are listed in the admin (/api/admin/posts).
 async function newsletter(env) {
-  const rows = await env.DB.prepare("SELECT * FROM posts WHERE status IS NULL OR status <> 'draft' ORDER BY id DESC").all();
+  const rows = await env.DB.prepare("SELECT * FROM posts WHERE status IS NULL OR status = 'published' OR (status = 'scheduled' AND publish_at <= ?) ORDER BY id DESC").bind(utcStamp()).all();
   return json({ posts: rows.results || [] });
 }
 
@@ -380,14 +447,22 @@ async function saveNewsletter(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const body = await request.json();
   if (!body.title || !body.content) return json({ error: "Title and content are required" }, 400);
-  const status = body.status === "draft" ? "draft" : "published";
+  const status = ["draft", "scheduled"].includes(body.status) ? body.status : "published";
+  let publishAt = "";
+  if (status === "scheduled") {
+    const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(String(body.publish_at || ""));
+    if (!m) return json({ error: "Pick the date and time the post should appear" }, 400);
+    publishAt = `${m[1]} ${m[2]}`;
+    if (publishAt <= utcStamp()) return json({ error: "Pick a time in the future, or publish it now" }, 400);
+    body.date = m[1]; // the date shown is the day it appears
+  }
   if (body.id) {
     const old = (await env.DB.prepare("SELECT date FROM posts WHERE id = ?").bind(Number(body.id)).first()) || {};
     const date = body.date ? postDate(body.date) : old.date || postDate("");
-    await env.DB.prepare("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ? WHERE id = ?").bind(body.title, body.content, body.image_url || "", status, date, Number(body.id)).run();
+    await env.DB.prepare("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ?, publish_at = ? WHERE id = ?").bind(body.title, body.content, body.image_url || "", status, date, publishAt, Number(body.id)).run();
   } else {
-    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date, status) VALUES (?, ?, ?, ?, ?)").bind(
-      body.title, body.content, body.image_url || "", postDate(body.date), status
+    await env.DB.prepare("INSERT INTO posts (title, content, image_url, date, status, publish_at) VALUES (?, ?, ?, ?, ?, ?)").bind(
+      body.title, body.content, body.image_url || "", postDate(body.date), status, publishAt
     ).run();
   }
   await audit(env, user, "save_post", (status === "draft" ? "draft: " : "") + body.title);
@@ -709,7 +784,7 @@ async function adminDeleteMedia(request, env, id) {
 async function adminUserDetail(request, env, id) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
-  const u = await env.DB.prepare("SELECT id, name, email, role, created_at, email_verified FROM users WHERE id = ?").bind(id).first();
+  const u = await env.DB.prepare("SELECT id, name, email, role, created_at, email_verified, admin_note FROM users WHERE id = ?").bind(id).first();
   if (!u) return json({ error: "User not found" }, 404);
   u.orders = (await env.DB.prepare("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC").bind(id).all()).results || [];
   u.licenses = (await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC")

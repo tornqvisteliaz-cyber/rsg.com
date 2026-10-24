@@ -65,6 +65,26 @@ function paintAuth() {
         '<a class="btn btn-sm" href="/account">' + esc(localStorage.getItem("rsg_name") || "My account") + "</a>";
 }
 
+// Download buttons go through the server: it counts the download and, for "licence holders only"
+// products, checks the account first. Without the server the plain link (if any) still works.
+async function rsgDownload(productId, fallback) {
+    const token = localStorage.getItem("rsg_token");
+    try {
+        const res = await fetch(withBase("/api/download/" + encodeURIComponent(productId)), { method: "POST", headers: token ? { "X-Rotaidem-Token": token } : {} });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.url) { location.href = data.url; return; }
+        if (data.login) { if (confirm(data.error + "\n\nLog in now?")) location.href = withBase("/login?next=" + encodeURIComponent(location.pathname)); return; }
+        if (data.error) { alert(data.error); return; }
+    } catch (err) { /* fall back to the plain link */ }
+    if (fallback) location.href = fallback;
+}
+document.addEventListener("click", e => {
+    const b = e.target.closest("[data-dl]");
+    if (!b) return;
+    e.preventDefault();
+    rsgDownload(b.dataset.dl, b.getAttribute("href") && b.getAttribute("href") !== "#" ? b.getAttribute("href") : "");
+});
+
 function rsgLogout() {
     const token = localStorage.getItem("rsg_token");
     if (token) fetch("/api/logout", { method: "POST", headers: { "X-Rotaidem-Token": token } }).catch(() => {});

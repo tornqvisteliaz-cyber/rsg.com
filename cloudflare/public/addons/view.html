@@ -40,7 +40,11 @@ function show(p) {
     const buy = document.getElementById("buy");
     if (p.buy_url && /^(https?:|mailto:)/.test(p.buy_url)) buy.href = p.buy_url;
     if (p.status !== "published") buy.textContent = "Notify me";
-    if (/^https:\/\//.test(p.download_url || "")) { const dl = document.getElementById("download"); dl.href = p.download_url; dl.style.display = ""; document.getElementById("download-help").style.display = ""; }
+    if (/^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "") || p.has_download) {
+        const dl = document.getElementById("download");
+        dl.href = p.download_url || "#"; dl.dataset.dl = p.id; dl.style.display = ""; // counted, and checked for licence-only downloads
+        document.getElementById("download-help").style.display = "";
+    }
     document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
     document.getElementById("features").innerHTML = (p.features || []).map(f => `<li>${esc(f)}</li>`).join("");
     const imgs = [hero].concat((p.images || []).map(safeImage)).filter((u, i, l) => l.indexOf(u) === i);

@@ -843,6 +843,58 @@ class StratoCGITests:
         customer, _ = self.customer("templater")
         self.assertEqual(self.w.cgi("GET", "/api/admin/email-templates", token=customer).status, 403)
 
+    def test_downloads_counted_and_licence_only(self):
+        t = self.owner_token
+        product = {"name": "Gated App", "id": "gated-app", "download_url": "https://rotaidem.test/files/GatedSetup.exe", "status": "published",
+                   "changelog": [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "", "notes": "ignored"}, {"version": "1.0", "date": "bad"}]}
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
+        self.assertEqual(listed["changelog"], [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "1.0", "date": "", "notes": ""}])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["url"], product["download_url"])
+        self.ok(self.w.cgi("POST", "/api/download/gated-app"))  # same address again soon: counted once
+        self.ok(self.w.cgi("POST", "/api/download/gated-app", remote_addr="198.51.100.20"))
+        stats = self.ok(self.w.cgi("GET", "/api/admin/downloads", token=t))
+        row = next(p for p in stats["products"] if p["product_id"] == "gated-app")
+        self.assertEqual((row["total"], row["last_7"], row["last_30"]), (2, 2, 2))
+        # licence holders only: the link is hidden and the download needs an account with a licence
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
+        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True))
+        staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "gated-app")
+        self.assertEqual(staff_view["download_url"], product["download_url"], "the admin still sees the link")
+        r = self.w.cgi("POST", "/api/download/gated-app")
+        self.assertEqual((r.status, r.json().get("login")), (401, True))
+        customer, email = self.customer("downloader")
+        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer).status, 403)
+        self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": email, "product_id": "gated-app", "send_email": False}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["url"], product["download_url"])
+        self.assertEqual(self.w.cgi("POST", "/api/download/no-such-product").status, 404)
+
+    def test_user_notes_and_scheduled_posts(self):
+        t = self.owner_token
+        _, email = self.customer("noted")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/note", {"note": "Beta tester, Thrustmaster stick"}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]["admin_note"], "Beta tester, Thrustmaster stick")
+        customer, _ = self.customer("nosy")
+        self.assertNotIn("admin_note", self.ok(self.w.cgi("GET", "/api/me", token=customer))["user"])
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/note", {"note": "x"}, token=customer).status, 403)
+        # a post scheduled for later is not on the site yet; one whose time has come is
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Future post", "content": "Soon", "status": "scheduled", "publish_at": "2099-01-01T09:00:00.000Z"}, token=t))
+        self.assertNotIn("Future post", [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]])
+        post = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/posts", token=t))["posts"] if p["title"] == "Future post")
+        self.assertEqual((post["status"], post["publish_at"], post["date"]), ("scheduled", "2099-01-01 09:00:00", "January 1, 2099"))
+        self.assertEqual(self.w.cgi("POST", "/api/newsletter", {"title": "Late", "content": "x", "status": "scheduled", "publish_at": "2001-01-01T09:00:00.000Z"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/newsletter", {"title": "No time", "content": "x", "status": "scheduled"}, token=t).status, 400)
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):  # move the time into the past, as if it had passed
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("UPDATE posts SET publish_at = '2001-01-01 09:00:00' WHERE title = 'Future post'")
+            conn.commit()
+            conn.close()
+            self.assertIn("Future post", [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]])
+
     def test_page_texts(self):
         t = self.owner_token
         key = "index.welcome-to-rotaidem"

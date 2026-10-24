@@ -202,6 +202,7 @@
             <div class="panel"><div class="panel-head"><h2>Latest messages</h2><a class="more" href="#messages" data-go="messages">Inbox</a></div><table class="table"><tbody id="dash-messages"></tbody></table></div>
             <div class="panel"><div class="panel-head"><h2>Recent emails</h2><a class="more" href="#email" data-go="email">Email a product</a></div><table class="table"><tbody id="dash-campaigns"></tbody></table></div>
             <div class="panel"><div class="panel-head"><h2>Recent activity</h2><a class="more" href="#activity" data-go="activity">Full log</a></div><table class="table"><tbody id="dash-audit"></tbody></table></div>
+            <div class="panel"><div class="panel-head"><h2>Downloads</h2><span class="muted" style="font-size:13px" id="dl-total"></span></div><table class="table"><thead><tr><th>Product</th><th>7 days</th><th>30 days</th><th>All time</th></tr></thead><tbody id="dash-downloads"></tbody></table></div>
         </div>
     </section>
 
@@ -379,8 +380,9 @@
                         <div class="hint">Shown above the post on the News page. Large photos are made smaller before uploading.</div></div>
                     <div class="field"><label for="n-content">Article</label><textarea id="n-content" rows="10" required></textarea></div>
                     <div class="form-grid" style="grid-template-columns:1fr 1fr">
-                        <div class="field"><label for="n-status">Status</label><select id="n-status"><option value="published">Published (visible on the site)</option><option value="draft">Draft (only in the admin)</option></select></div>
-                        <div class="field"><label for="n-date">Date shown</label><input id="n-date" type="date"><div class="hint">Empty = today</div></div>
+                        <div class="field"><label for="n-status">Status</label><select id="n-status"><option value="published">Published (visible on the site)</option><option value="scheduled">Scheduled (appears at a set time)</option><option value="draft">Draft (only in the admin)</option></select></div>
+                        <div class="field" id="n-date-field"><label for="n-date">Date shown</label><input id="n-date" type="date"><div class="hint">Empty = today</div></div>
+                        <div class="field" id="n-when-field" hidden><label for="n-when">Appears on (your time)</label><input id="n-when" type="datetime-local"></div>
                     </div>
                     <div class="actions" style="justify-content:flex-start"><button class="btn" id="n-save">Publish</button><button class="btn btn-ghost" type="button" onclick="editPost()">Clear</button><a class="btn btn-ghost" href="/newsletter" target="_blank" rel="noopener">View News page</a></div>
                 </div>
@@ -533,6 +535,12 @@
         </div>
         <div class="sub">Download</div>
         <div class="field"><label for="p-download">Installer download link</label><input id="p-download" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
+        <div class="field"><label for="p-gate">Who can download</label><select id="p-gate"><option value="public">Everyone</option><option value="licence">Only logged-in customers with a licence for this product</option></select>
+            <div class="hint">With licence holders only, visitors see "For licence holders" and must log in. The file itself stays at its address, so do not share that link publicly.</div></div>
+        <div class="sub">Version history</div>
+        <p class="muted" style="font-size:13px;margin:-4px 0 10px">Shown on the Downloads page as "What's new". Newest at the top.</p>
+        <div class="list-edit" id="p-versions"></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="p-ver-add" style="margin-bottom:18px">Add version</button>
         <div class="sub">Images</div>
         <img id="preview" class="preview" src="" alt="">
         <div class="field"><label for="p-image">Cover image</label>
@@ -565,6 +573,8 @@
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
+    <div class="sub" style="margin-top:18px">Private note <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(only staff see it)</span></div>
+    <div style="display:flex;gap:8px;align-items:flex-start"><textarea id="um-note" rows="2" maxlength="2000" placeholder="e.g. Beta tester, uses a Thrustmaster stick" style="flex:1"></textarea><button class="btn btn-ghost btn-sm" type="button" id="um-note-save">Save note</button></div>
     <div class="sub" style="margin-top:18px">Logged in on</div><div class="table-wrap"><table class="table"><tbody id="um-sessions"></tbody></table></div>
     <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-resend">Resend confirmation</button><button class="btn btn-ghost" type="button" id="um-verify">Mark email as confirmed</button><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
@@ -742,6 +752,16 @@ function showTab(name) {
     history.replaceState(null, "", "#" + name);
 }
 
+// Downloads through the website's Download buttons (the same address within 10 minutes counts once).
+async function loadDownloads() {
+    const d = await api("/api/admin/downloads");
+    state.downloads = Object.fromEntries((d.products || []).map(p => [p.product_id, p]));
+    $("dl-total").textContent = `${d.last_7 || 0} in the last 7 days`;
+    $("dash-downloads").innerHTML = (d.products || []).length ? d.products.map(p => `<tr><td>${esc(productName(p.product_id))}</td><td>${esc(p.last_7)}</td><td>${esc(p.last_30)}</td><td>${esc(p.total)}</td></tr>`).join("")
+        : empty(4, "No downloads yet.");
+    if (state.products.length) renderProducts();
+}
+function productName(id) { return (state.products.find(p => p.id === id) || {}).name || id; }
 async function loadOverview() {
     const o = await api("/api/admin/overview");
     state.role = o.role; state.me = o.id; $("backup-panel").style.display = o.role === "Owner" ? "" : "none"; state.emailReady = !!o.email_ready;
@@ -773,7 +793,8 @@ function renderProducts() {
     const q = val("product-search").toLowerCase();
     const list = state.products.filter(p => !q || (p.name + " " + (p.tagline || "")).toLowerCase().includes(q));
     $("products-list").innerHTML = list.length ? list.map(p =>
-        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.tagline || "")}</div></td><td>${esc(p.price || "")}</td>` +
+        `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.tagline || "")}</div>` +
+        `<div class="muted" style="font-size:12px">${((state.downloads || {})[p.id] || {}).total || 0} downloads${p.download_gate === "licence" ? " · licence holders only" : ""}</div></td><td>${esc(p.price || "")}</td>` +
         `<td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
         `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-email="${esc(p.id)}">Email</button><button class="btn btn-ghost btn-sm" data-edit="${esc(p.id)}">Edit</button><button class="btn btn-danger btn-sm" data-del="${esc(p.id)}">Delete</button></div></td></tr>`
     ).join("") : empty(5, state.products.length ? "No products match your search." : "No products yet. Click New product to add HeavyPro.");
@@ -788,7 +809,8 @@ $("products-list").onclick = e => {
 function productDraft() {
     return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
         simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
-        description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0 };
+        description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0,
+        download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()) };
 }
 function refreshProductPreview() {
     const d = productDraft();
@@ -817,9 +839,24 @@ $("p-dup").onclick = () => {
     const set = (k, v) => $(k).value = v == null ? "" : v;
     set("p-name", d.name + " copy"); set("p-tagline", d.tagline); set("p-price", d.price); set("p-status", "in_development"); set("p-sim", d.simulator);
     set("p-version", d.version); set("p-image", d.image_url); set("p-desc", d.description); set("p-features", d.features.join("\n")); set("p-buy", d.buy_url);
-    set("p-download", d.download_url); set("p-sort", d.sort_order);
+    set("p-download", d.download_url); set("p-sort", d.sort_order); set("p-gate", d.download_gate);
+    state.versions = d.changelog.map(v => ({ ...v })); renderVersions();
     state.gallery = d.images; renderGallery(); previewImage();
     toast("Copy ready. Change the name and save.");
+};
+function renderVersions() {
+    const list = state.versions || [], last = list.length - 1;
+    $("p-versions").innerHTML = list.map((v, i) => `<div class="list-row"><div class="fields"><div class="fields two-col">` +
+        `<input data-ver="version" data-i="${i}" maxlength="30" placeholder="0.5.0" value="${esc(v.version)}"><input data-ver="date" data-i="${i}" type="date" value="${esc(v.date)}"></div>` +
+        `<textarea data-ver="notes" data-i="${i}" rows="3" maxlength="3000" placeholder="What changed (one point per line)">${esc(v.notes)}</textarea></div>${rowTools("ver", i, last)}</div>`).join("")
+        || '<p class="muted" style="font-size:14px;margin:0">No versions yet.</p>';
+}
+listEditor("p-versions", "ver", "versions", () => { renderVersions(); refreshProductPreview(); });
+$("p-ver-add").onclick = () => {
+    const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    (state.versions = state.versions || []).unshift({ version: val("p-version"), date: today, notes: "" });
+    renderVersions();
+    $("p-versions").querySelector('[data-i="0"][data-ver="notes"]').focus();
 };
 function openProduct(id) {
     const p = state.products.find(x => x.id === id) || {};
@@ -828,6 +865,8 @@ function openProduct(id) {
     set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
     set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
+    set("p-gate", p.download_gate || "public");
+    state.versions = (p.changelog || []).map(v => ({ ...v })); renderVersions();
     $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
     $("p-open").style.display = p.id ? "" : "none";
     $("p-email").style.display = p.id ? "" : "none";
@@ -857,6 +896,7 @@ $("p-image").oninput = previewImage;
 $("drawer").onsubmit = async e => {
     e.preventDefault();
     if (val("p-download") && !/^https:\/\//.test(val("p-download"))) return toast("The download link must start with https://", true);
+    if ((state.versions || []).some(v => !String(v.version || "").trim() && String(v.notes || "").trim())) return toast("Give every version in the version history a number, like 0.5.0", true);
     const draft = productDraft();
     if ([draft.image_url, ...draft.images].filter(Boolean).some(u => !IMAGE_RE.test(u))) return toast("Image links must start with https:// or be uploaded images", true);
     if (!draft.id && state.products.some(x => x.id === slugify(draft.name)))
@@ -1057,18 +1097,24 @@ function exportSubscribers() {
 // news
 async function loadPosts() {
     state.posts = (await api("/api/admin/posts")).posts || [];
-    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong>${p.status === "draft" ? ' <span class="badge">Draft</span>' : ""}<div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
+    $("posts-list").innerHTML = state.posts.length ? state.posts.map(p => `<tr><td><strong>${esc(p.title)}</strong>${p.status === "draft" ? ' <span class="badge">Draft</span>' : ""}${p.status === "scheduled" ? ` <span class="badge coming_soon">${String(p.publish_at || "") <= new Date().toISOString().slice(0, 19).replace("T", " ") ? "Published (was scheduled)" : "Scheduled " + esc(new Date(String(p.publish_at).replace(" ", "T") + "Z").toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span>` : ""}<div class="muted" style="font-size:13px">${esc(p.date)}</div></td><td><div class="actions"><button class="btn btn-ghost btn-sm" onclick="editPost(${p.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button></div></td></tr>`).join("") : empty(2, "No posts yet.");
 }
 function editPost(id) {
     const p = state.posts.find(x => x.id === id) || {};
     $("n-id").value = p.id || ""; $("n-title").value = p.title || ""; $("n-image").value = p.image_url || ""; $("n-content").value = p.content || "";
     $("nf-title").textContent = p.id ? "Edit post" : "New post";
-    $("n-status").value = p.status === "draft" ? "draft" : "published";
+    $("n-status").value = ["draft", "scheduled"].includes(p.status) ? p.status : "published";
+    const at = p.publish_at ? new Date(String(p.publish_at).replace(" ", "T") + "Z") : null;
+    $("n-when").value = at && !isNaN(at) ? new Date(at.getTime() - at.getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : "";
     const d = new Date(p.date || ""); // stored as "October 23, 2026"
     $("n-date").value = p.date && !isNaN(d) ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : "";
     saveLabel(); previewPostImage();
 }
-function saveLabel() { $("n-save").textContent = $("n-status").value === "draft" ? "Save draft" : "Publish"; }
+function saveLabel() {
+    const st = $("n-status").value;
+    $("n-save").textContent = st === "draft" ? "Save draft" : st === "scheduled" ? "Schedule" : "Publish";
+    $("n-when-field").hidden = st !== "scheduled"; $("n-date-field").hidden = st === "scheduled";
+}
 $("n-status").onchange = saveLabel;
 function previewPostImage() { const u = val("n-image"); $("n-preview").style.display = IMAGE_RE.test(u) ? "" : "none"; $("n-preview").src = IMAGE_RE.test(u) ? safeImage(u) : ""; }
 $("n-image").oninput = previewPostImage;
@@ -1076,8 +1122,13 @@ $("n-image-up").onclick = async () => { const [u] = await uploadImages(await cho
 $("n-image-lib").onclick = async () => { const u = await pickImage(); if (u) { $("n-image").value = u; previewPostImage(); } };
 $("post-form").onsubmit = async e => {
     e.preventDefault();
-    const draft = $("n-status").value === "draft";
-    try { await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value, status: $("n-status").value, date: $("n-date").value }); toast(draft ? "Draft saved" : "Published"); editPost(); loadPosts(); loadOverview(); }
+    const st = $("n-status").value;
+    if (st === "scheduled" && !$("n-when").value) return toast("Pick when the post should appear", true);
+    try {
+        await post("/api/newsletter", { id: val("n-id") || undefined, title: val("n-title"), image_url: val("n-image"), content: $("n-content").value, status: st, date: $("n-date").value,
+            publish_at: st === "scheduled" ? new Date($("n-when").value).toISOString() : "" });
+        toast(st === "draft" ? "Draft saved" : st === "scheduled" ? "Scheduled" : "Published"); editPost(); loadPosts(); loadOverview();
+    }
     catch (err) { toast(err.message, true); }
 };
 async function deletePost(id) {
@@ -1160,6 +1211,10 @@ async function openUser(id) {
         $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
         $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
         $("um-mail").href = "mailto:" + u.email;
+        $("um-note").value = u.admin_note || "";
+        $("um-note-save").onclick = async () => {
+            try { await post(`/api/admin/users/${id}/note`, { note: $("um-note").value }); toast("Note saved"); } catch (err) { toast(err.message, true); }
+        };
         const canEnd = ["Owner", "Admin"].includes(state.role);
         $("um-sessions").innerHTML = (u.sessions || []).length ? u.sessions.map(se => `<tr><td>${esc(se.device)}<div class="muted" style="font-size:13px">since ${date(se.created_at)}</div></td>` +
             `<td class="muted" style="font-family:ui-monospace,Consolas,monospace;font-size:13px">${esc(se.ip_address || "-")}</td><td class="muted">last active ${date(se.last_seen)}</td>` +
@@ -1625,7 +1680,7 @@ function auditLabel(a) {
     const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password",
         sign_out_user: "Signed a user out", send_reset_link: "Sent a password reset link", add_subscribers: "Added subscribers", message_handled: "Marked a message handled",
         message_reopened: "Reopened a message", verify_user: "Confirmed a user's email", email_verified: "Confirmed their email",
-        verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device",
+        verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device", user_note: "Changed a note on a user",
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template" }[a] || a);
     return label(a);
 }
@@ -1635,7 +1690,7 @@ $("audit-search").oninput = renderAudit;
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

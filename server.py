@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-24-sessions"
+SCHEMA_VERSION = "2026-10-25-downloads"
 
 
 def ensure_schema():
@@ -184,13 +184,16 @@ def ensure_schema():
         # One row per logged-in browser; only a hash of the token is stored.
         f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
         f"user_agent TEXT, created_at {word}, last_seen {word})",
+        f"CREATE TABLE IF NOT EXISTS downloads (id {pk}, product_id {ident}, user_id INTEGER, ip_address {word}, created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
                           ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT"),
                           ("posts", f"status {word} DEFAULT 'published'"), ("messages", "handled INTEGER DEFAULT 0"),
                           # accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
-                          ("users", "email_verified INTEGER DEFAULT 1")):
+                          ("users", "email_verified INTEGER DEFAULT 1"),
+                          ("products", f"download_gate {word} DEFAULT 'public'"), ("products", "changelog TEXT"),
+                          ("users", "admin_note TEXT"), ("posts", f"publish_at {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -849,10 +852,83 @@ def account_orders():
 
 # ---------- catalog ----------
 
+def public_product(row, staff=False):
+    """A product for the website. A "licence holders only" download keeps its link hidden from visitors."""
+    p = with_images(row)
+    try:
+        p["changelog"] = json.loads(p.get("changelog") or "[]")
+    except ValueError:
+        p["changelog"] = []
+    p["download_gate"] = p.get("download_gate") or "public"
+    if p["download_gate"] == "licence" and not staff:
+        p["has_download"] = bool(p.get("download_url"))
+        p["download_url"] = ""
+    return p
+
+
 @app.get("/api/products")
 def products():
     rows = db().all("SELECT * FROM products ORDER BY sort_order, name")
-    return jsonify({"products": [with_images(r) for r in rows]})
+    viewer = current_user()
+    staff = bool(viewer and viewer["role"] in STAFF)
+    return jsonify({"products": [public_product(r, staff) for r in rows]})
+
+
+def clean_changelog(items):
+    """Version history of a product: [{version, date, notes}], newest first, at most 50."""
+    out = []
+    for i in (items if isinstance(items, list) else [])[:50]:
+        version = str((i or {}).get("version") or "").strip()[:30]
+        if not version:
+            continue
+        date = str(i.get("date") or "").strip()
+        out.append({"version": version, "date": date if DATE_RE.match(date) else "", "notes": str(i.get("notes") or "").strip()[:3000]})
+    return out
+
+
+DOWNLOAD_REPEAT_MINUTES = 10  # the same address downloading again within this time is counted once
+
+
+@app.post("/api/download/<pid>")
+def download(pid):
+    """Gives the download link and counts the download. "Licence holders only" products need a
+    logged-in account with an active licence for the product."""
+    product = db().first("SELECT * FROM products WHERE id = ?", pid)
+    url = str((product or {}).get("download_url") or "")
+    if not product or not (url.startswith("https://") or url.startswith("/files/")):
+        return err("This product has no download yet", 404)
+    user = current_user()
+    if (product.get("download_gate") or "public") == "licence":
+        if not user:
+            return jsonify({"error": "Log in to download. The download is for licence holders.", "login": True}), 401
+        if user["role"] not in STAFF:
+            rows = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)",
+                            user["id"], (user["email"] or "").lower())
+            if not any(same_product(pid, r["product_id"]) for r in rows):
+                return err("This download is for licence holders. Your account has no active licence for it yet.", 403)
+    ip = (request.remote_addr or "")[:64]
+    if not db().first("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?",
+                      pid, ip, utc_stamp(DOWNLOAD_REPEAT_MINUTES * 60)):
+        db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
+                 pid, user["id"] if user else None, ip, utc_stamp())
+    return jsonify({"url": url})
+
+
+@app.get("/api/admin/downloads")
+def admin_downloads():
+    """Downloads per product (all time, 7 and 30 days) and per day for the last 30 days."""
+    if not staff_user():
+        return err("Admin only", 403)
+    n = lambda sql, *args: (db().first(sql, *args) or {}).get("n") or 0  # noqa: E731
+    per_product = [{"product_id": r["product_id"], "total": r["n"],
+                    "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(7 * 86400)),
+                    "last_30": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(30 * 86400))}
+                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads GROUP BY product_id ORDER BY n DESC")]
+    days = {}
+    for r in db().all("SELECT created_at FROM downloads WHERE created_at >= ?", utc_stamp(30 * 86400)):
+        day = str(r["created_at"])[:10]
+        days[day] = days.get(day, 0) + 1
+    return jsonify({"products": per_product, "days": days, "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE created_at >= ?", utc_stamp(7 * 86400))})
 
 
 @app.get("/api/liveries")
@@ -875,15 +951,16 @@ def save_product():
     except (TypeError, ValueError):
         sort_order = 0
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
-        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order",
+        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog",
         pid, name, b.get("simulator") or "MSFS 2024", b.get("version") or "0.1.0", b.get("folder_name") or f"rotaidem-{pid}",
         b.get("download_url") or "", b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
-        b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order)
+        b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
+        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))))
     audit(user, "save_product", pid)
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
@@ -920,7 +997,8 @@ def save_livery():
 @app.get("/api/newsletter")
 def newsletter():
     """Published posts only; drafts are listed in the admin (/api/admin/posts)."""
-    return jsonify({"posts": db().all("SELECT * FROM posts WHERE status IS NULL OR status <> 'draft' ORDER BY id DESC")})
+    return jsonify({"posts": db().all("SELECT * FROM posts WHERE status IS NULL OR status = 'published' OR "
+                                      "(status = 'scheduled' AND publish_at <= ?) ORDER BY id DESC", utc_stamp())})
 
 
 @app.get("/api/admin/posts")
@@ -938,15 +1016,25 @@ def save_newsletter():
     b = body()
     if not b.get("title") or not b.get("content"):
         return err("Title and content are required", 400)
-    status = "draft" if b.get("status") == "draft" else "published"
+    status = b.get("status") if b.get("status") in ("draft", "scheduled") else "published"
+    publish_at = ""
+    if status == "scheduled":
+        try:  # from the admin as an ISO time in UTC, e.g. 2026-11-01T17:00:00.000Z
+            when = datetime.strptime(str(b.get("publish_at") or "")[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return err("Pick the date and time the post should appear", 400)
+        publish_at = when.strftime("%Y-%m-%d %H:%M:%S")
+        if publish_at <= utc_stamp():
+            return err("Pick a time in the future, or publish it now", 400)
+        b["date"] = when.strftime("%Y-%m-%d")  # the date shown is the day it appears
     if b.get("id"):
         old = db().first("SELECT date FROM posts WHERE id = ?", int(b["id"])) or {}
         date = post_date(b["date"]) if b.get("date") else old.get("date") or today()
-        db().run("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ? WHERE id = ?",
-                 b["title"], b["content"], b.get("image_url") or "", status, date, int(b["id"]))
+        db().run("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ?, publish_at = ? WHERE id = ?",
+                 b["title"], b["content"], b.get("image_url") or "", status, date, publish_at, int(b["id"]))
     else:
-        db().run("INSERT INTO posts (title, content, image_url, date, status) VALUES (?, ?, ?, ?, ?)",
-                 b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status)
+        db().run("INSERT INTO posts (title, content, image_url, date, status, publish_at) VALUES (?, ?, ?, ?, ?, ?)",
+                 b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status, publish_at)
     audit(user, "save_post", ("draft: " if status == "draft" else "") + b["title"])
     return jsonify({"ok": True})
 
@@ -2145,7 +2233,7 @@ def admin_backup():
 def admin_user_detail(user_id):
     if not staff_user():
         return err("Admin only", 403)
-    u = db().first("SELECT id, name, email, role, created_at, email_verified FROM users WHERE id = ?", user_id)
+    u = db().first("SELECT id, name, email, role, created_at, email_verified, admin_note FROM users WHERE id = ?", user_id)
     if not u:
         return err("User not found", 404)
     u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
@@ -2162,6 +2250,17 @@ def admin_end_session(user_id, session_id):
         return err("Only the Owner or an Admin can log users out", 403)
     db().run("DELETE FROM sessions WHERE id = ? AND user_id = ?", session_id, user_id)
     audit(user, "end_session", f"user {user_id}")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/users/<int:user_id>/note")
+def admin_user_note(user_id):
+    """A private note about a user, only seen by staff."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    db().run("UPDATE users SET admin_note = ? WHERE id = ?", str(body().get("note") or "").strip()[:2000], user_id)
+    audit(user, "user_note", user_id)
     return jsonify({"ok": True})
 
 
