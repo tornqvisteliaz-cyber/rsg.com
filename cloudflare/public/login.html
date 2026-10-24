@@ -33,6 +33,11 @@ $("form").onsubmit = async e => {
     const msg = $("error"); msg.className = "msg"; msg.textContent = "Logging in…";
     const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: $("email").value, password: $("password").value }) }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
+    if (data.unverified) {
+        msg.className = "msg error";
+        msg.innerHTML = `${esc(data.error)} <a href="/verify-email#email=${encodeURIComponent(data.email || "")}">Send the link again</a>`;
+        return;
+    }
     if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Login is not available right now."; return; }
     saveSession(data);
     location.href = data.is_admin ? "/admin" : "/account";

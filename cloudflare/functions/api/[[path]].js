@@ -27,6 +27,9 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/password/forgot") return passwordForgot(request, env);
     if (method === "POST" && path === "/api/password/check") return passwordCheck(request, env);
     if (method === "POST" && path === "/api/password/reset") return passwordReset(request, env);
+    if (method === "POST" && path === "/api/verify-email") return verifyEmail(request, env);
+    if (method === "POST" && path === "/api/verify-email/resend") return resendVerifyEmail(request, env);
+    if (method === "POST" && /^\/api\/admin\/users\/\d+\/verify$/.test(path)) return adminVerifyUser(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/settings") return updateSettings(request, env);
     if (method === "GET" && path === "/api/account/orders") return customerOrders(request, env);
     if (method === "GET" && path === "/api/products") return products(request, env);
@@ -103,6 +106,8 @@ async function ensure(env) {
   try { await env.DB.prepare("ALTER TABLE orders ADD COLUMN product_id TEXT").run(); } catch (err) {}
   try { await env.DB.prepare("ALTER TABLE posts ADD COLUMN status TEXT DEFAULT 'published'").run(); } catch (err) {}
   try { await env.DB.prepare("ALTER TABLE messages ADD COLUMN handled INTEGER DEFAULT 0").run(); } catch (err) {}
+  // accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1").run(); } catch (err) {}
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -130,6 +135,9 @@ async function login(request, env) {
     }
   }
   if (!user || !(await verifyPassword(password, user.password_hash))) return json({ error: "Invalid email or password" }, 401);
+  if (user.email_verified != null && !Number(user.email_verified)) {
+    return json({ error: "Confirm your email address first: click the link in the email we sent you when you signed up.", unverified: true, email: user.email }, 403);
+  }
   const token = crypto.randomUUID();
   await env.DB.prepare("UPDATE users SET token = ? WHERE id = ?").bind(token, user.id).run();
   const isAdmin = ["Owner", "Admin", "Support"].includes(user.role);
@@ -143,42 +151,109 @@ async function signup(request, env) {
   const password = String(body.password || "");
   if (!name || !email || password.length < 6) return json({ error: "Name, email and a 6 character password are required" }, 400);
   if (!EMAIL_RE.test(email)) return json({ error: "Enter a valid email address" }, 400);
-  const token = crypto.randomUUID();
+  if (!resendKey(env)) {
+    // Without email there is no way to confirm an address: the account works at once, as before.
+    const token = crypto.randomUUID();
+    try {
+      await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, token, email_verified) VALUES (?, ?, ?, 'Customer', ?, 1)").bind(name, email, await hashPassword(password), token).run();
+    } catch { return json({ error: "Email already exists" }, 400); }
+    return json({ token, name, email, role: "Customer", is_admin: false });
+  }
   try {
-    await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Customer', ?)").bind(name, email, await hashPassword(password), token).run();
+    await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)").bind(name, email, await hashPassword(password)).run();
   } catch { return json({ error: "Email already exists" }, 400); }
-  await sendWelcomeEmail(request, env, name, email);
-  return json({ token, name, email, role: "Customer", is_admin: false });
+  const user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(email) = ?").bind(email).first();
+  if (await sendVerifyEmail(request, env, user)) {
+    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id).run(); // nothing half-made that would block the address
+    return json({ error: "We could not send the confirmation email right now. Please try again in a few minutes." }, 502);
+  }
+  return json({ verify: true, email, message: `Almost done: we sent a link to ${email}. Click it to confirm your email and open your account.` });
 }
 
-// Best effort: a failed welcome email never stops the sign-up. Same text as server.py.
-async function sendWelcomeEmail(request, env, name, email) {
-  if (!resendKey(env)) return;
-  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
-  const link = (path, text) => `<a href="${escHtml(base + path)}" style="color:#111315">${escHtml(text)}</a>`;
-  const html = `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+// ---------- email confirmation (same as server.py) ----------
+const VERIFY_HOURS = 48;
+async function verifySignature(env, userId, expires, email) {
+  const secret = env.SECRET_KEY || env.ADMIN_PASSWORD || "rotaidem-dev-secret";
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`verify:${userId}:${expires}:${String(email || "").toLowerCase()}`));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+}
+async function userForVerifyToken(env, token) {
+  const parts = String(token || "").trim().split(".");
+  if (parts.length !== 3) return null;
+  const [id, expires] = [Number(parts[0]), Number(parts[1])];
+  if (!Number.isInteger(id) || !Number.isInteger(expires) || expires < Date.now() / 1000) return null;
+  const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  return user && (await verifySignature(env, id, expires, user.email)) === parts[2] ? user : null;
+}
+function verifyEmailHtml(name, link) {
+  return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
 <tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
 <tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
-<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Welcome to Rotaidem, ${escHtml(name)}</h1>
-<p style="margin:0 0 16px">Your account is ready. You log in with <strong>${escHtml(email)}</strong> and the password you chose.</p>
-<ul style="margin:0 0 16px;padding-left:20px">
-<li>Your licence keys, downloads and orders are under ${link("/account", "My account")}.</li>
-<li>Installers and updates are on ${link("/downloads", "Downloads")}.</li>
-<li>Forgot your password? Use ${link("/forgot-password", "Forgot password")} on the log-in page.</li>
-</ul></td></tr>
-<tr><td style="padding:4px 28px 28px"><a href="${escHtml(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Go to my account</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not create this account? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a> and we remove it.</td></tr>
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Confirm your email</h1>
+<p style="margin:0 0 12px">Hi ${escHtml(name || "there")}, welcome to Rotaidem.</p>
+<p style="margin:0 0 20px">Click the button to confirm that this is your email address. Then your account opens, with your licence keys, downloads and orders. The link works for ${VERIFY_HOURS} hours.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="${escHtml(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Confirm my email</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="${escHtml(link)}" style="color:#6d6f75;word-break:break-all">${escHtml(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not sign up? Then someone typed your address by mistake: ignore this email and no account is opened. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
 </table></td></tr></table></body></html>`;
+}
+// Sends the confirmation link; returns an error text, or "" when Resend took it.
+async function sendVerifyEmail(request, env, user) {
+  const expires = Math.floor(Date.now() / 1000) + VERIFY_HOURS * 3600;
+  const token = `${user.id}.${expires}.${await verifySignature(env, user.id, expires, user.email)}`;
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
   try {
     const res = await fetch("https://api.resend.com/emails/batch", {
       method: "POST",
       headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify([{ from: mailFrom(env), to: [email], subject: "Welcome to Rotaidem", html }]),
+      body: JSON.stringify([{ from: mailFrom(env), to: [user.email], subject: "Confirm your email for Rotaidem", html: verifyEmailHtml(user.name, `${base}/verify-email?token=${encodeURIComponent(token)}`) }]),
     });
-    if (!res.ok) console.error("Welcome email failed:", explainResendError(env, res.status, await res.text()));
-  } catch (err) { console.error("Welcome email failed:", err); }
+    if (!res.ok) return explainResendError(env, res.status, await res.text());
+  } catch (err) { return String(err); }
+  return "";
+}
+async function verifyEmail(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const user = await userForVerifyToken(env, body.token);
+  if (!user) return json({ error: "This confirmation link has expired or is not valid. Log in to get a new one." }, 400);
+  const token = crypto.randomUUID();
+  await env.DB.prepare("UPDATE users SET email_verified = 1, token = ? WHERE id = ?").bind(token, user.id).run();
+  if (user.email_verified != null && !Number(user.email_verified)) {
+    await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'email_verified', ?, ?, ?)")
+      .bind(user.id, user.email, request.headers.get("CF-Connecting-IP") || "", utcStamp()).run();
+  }
+  return json({ token, name: user.name, email: user.email, role: user.role, is_admin: ["Owner", "Admin", "Support"].includes(user.role), verified: true });
+}
+// Always gives the same answer, so nobody can find out which addresses have an account.
+async function resendVerifyEmail(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const ident = String(body.email || "").trim().toLowerCase();
+  if (!ident) return json({ error: "Enter your email address" }, 400);
+  if (!resendKey(env)) return json({ error: "Email is not available right now. Please email Eliaz@rotaidem.com." }, 503);
+  const ip = request.headers.get("CF-Connecting-IP") || "";
+  const hourAgo = utcStamp(3600);
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND ip_address = ? AND created_at >= ?").bind(ip, hourAgo).first();
+  if (recent && recent.n >= RESET_PER_IP) return json({ error: "Too many requests. Please wait an hour and try again." }, 429);
+  const user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?").bind(ident, ident).first();
+  await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'verify_email_request', ?, ?, ?)")
+    .bind(user ? user.id : null, ident.slice(0, 200), ip, utcStamp()).run();
+  const answer = json({ ok: true, message: "If that account still needs confirming, a new link is on its way. Check your inbox (and spam)." });
+  if (!user || user.email_verified == null || Number(user.email_verified)) return answer;
+  const sentLately = await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND admin_id = ? AND created_at >= ?").bind(user.id, hourAgo).first();
+  if (sentLately && sentLately.n > RESET_PER_ACCOUNT) return answer;
+  if (await sendVerifyEmail(request, env, user)) return json({ error: "The email could not be sent right now. Please try again later." }, 502);
+  return answer;
+}
+// Staff confirm an address by hand, e.g. for someone whose confirmation email never arrived.
+async function adminVerifyUser(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  await env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(id).run();
+  await audit(env, user, "verify_user", id);
+  return json({ ok: true });
 }
 
 async function logout(request, env) {
@@ -338,7 +413,7 @@ async function adminOverview(request, env) {
 async function adminCustomers(request, env) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
-  const rows = await env.DB.prepare("SELECT id, name, email, role, created_at FROM users ORDER BY id DESC").all();
+  const rows = await env.DB.prepare("SELECT id, name, email, role, created_at, email_verified FROM users ORDER BY id DESC").all();
   return json({ customers: rows.results || [] });
 }
 
@@ -619,7 +694,7 @@ async function adminDeleteMedia(request, env, id) {
 async function adminUserDetail(request, env, id) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
-  const u = await env.DB.prepare("SELECT id, name, email, role, created_at FROM users WHERE id = ?").bind(id).first();
+  const u = await env.DB.prepare("SELECT id, name, email, role, created_at, email_verified FROM users WHERE id = ?").bind(id).first();
   if (!u) return json({ error: "User not found" }, 404);
   u.orders = (await env.DB.prepare("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC").bind(id).all()).results || [];
   u.licenses = (await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC")
@@ -1152,7 +1227,7 @@ async function passwordReset(request, env) {
   const password = String(body.password || "");
   if (password.length < 6) return json({ error: "The new password must be at least 6 characters" }, 400);
   const token = crypto.randomUUID(); // signs out every other browser and signs this one in
-  await env.DB.prepare("UPDATE users SET password_hash = ?, token = ? WHERE id = ?").bind(await hashPassword(password), token, user.id).run();
+  await env.DB.prepare("UPDATE users SET password_hash = ?, token = ?, email_verified = 1 WHERE id = ?").bind(await hashPassword(password), token, user.id).run();
   await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)")
     .bind(user.id, user.email || "", request.headers.get("CF-Connecting-IP") || "", utcStamp()).run();
   return json({ token, name: user.name, email: user.email, role: user.role, is_admin: ["Owner", "Admin", "Support"].includes(user.role) });

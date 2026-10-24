@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PY = sys.executable
@@ -202,10 +203,18 @@ class StratoCGITests:
         import hashlib, hmac
         return hmac.new(self.w.values["SECRET_KEY"].encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
 
+    def confirm_link_token(self, email):
+        """The token from the last confirmation email sent to this address (as the person would click it)."""
+        import re
+        sent = [m for req in self.resend.requests for m in req["body"] if m["to"] == [email] and "verify-email?token=" in m["html"]]
+        return urllib.parse.unquote(re.search(r"verify-email\?token=([^\"&<]+)", sent[-1]["html"]).group(1))
+
     def customer(self, name):
+        """Signs up and confirms the email, like a real customer. Returns (session token, email)."""
         email = f"{name}@example.com"
-        r = self.w.cgi("POST", "/api/signup", {"name": name, "email": email, "password": "customer-pass-1"})
-        return self.ok(r)["token"], email
+        r = self.ok(self.w.cgi("POST", "/api/signup", {"name": name, "email": email, "password": "customer-pass-1"}))
+        self.assertTrue(r["verify"])
+        return self.ok(self.w.cgi("POST", "/api/verify-email", {"token": self.confirm_link_token(email)}))["token"], email
 
     # ---------- installation ----------
 
@@ -526,22 +535,59 @@ class StratoCGITests:
         r = self.w.cgi("POST", "/api/admin/broadcast", {"subject": "x", "message": "y", "images": ["/img/hero.jpg"] * 13, "test_email": "test@example.com"}, token=t)
         self.assertEqual(r.status, 400)
 
-    def test_signup_sends_a_welcome_email(self):
+    def test_signup_needs_email_confirmation(self):
         self.resend.requests.clear()
         r = self.ok(self.w.cgi("POST", "/api/signup", {"name": "Welcome Wendy", "email": "Wendy@Example.com", "password": "wendy-pass-1"}))
-        self.assertEqual(r["email"], "wendy@example.com")
+        self.assertEqual((r["verify"], r["email"]), (True, "wendy@example.com"))
+        self.assertNotIn("token", r, "no session before the email is confirmed")
         sent = self.resend.requests[-1]["body"][0]
-        self.assertEqual((sent["to"], sent["subject"]), (["wendy@example.com"], "Welcome to Rotaidem"))
-        self.assertIn("Welcome Wendy", sent["html"])
-        self.assertIn("https://rotaidem.test/account", sent["html"])
+        self.assertEqual((sent["to"], sent["subject"]), (["wendy@example.com"], "Confirm your email for Rotaidem"))
+        self.assertIn("https://rotaidem.test/verify-email?token=", sent["html"])
         self.assertNotIn("wendy-pass-1", sent["html"])  # never the password
+        # someone else's address: no way in without the email
+        r = self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wendy-pass-1"})
+        self.assertEqual((r.status, r.json().get("unverified")), (403, True))
+        self.assertEqual(self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wrong-pass"}).status, 401, "a wrong password reveals nothing")
+        self.assertEqual(self.w.cgi("POST", "/api/verify-email", {"token": "1.9999999999.forged"}).status, 400)
+        token = self.confirm_link_token("wendy@example.com")
+        r = self.ok(self.w.cgi("POST", "/api/verify-email", {"token": token}))
+        self.assertTrue(r["verified"])
+        self.ok(self.w.cgi("GET", "/api/me", token=r["token"]))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wendy-pass-1"}))
+        # a new link can be asked for; the answer is the same whether the account exists or not
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Slow Sam", "email": "sam@example.com", "password": "sam-pass-1"}))
+        self.resend.requests.clear()
+        a = self.ok(self.w.cgi("POST", "/api/verify-email/resend", {"email": "sam@example.com"}))
+        b = self.ok(self.w.cgi("POST", "/api/verify-email/resend", {"email": "nobody@example.com"}))
+        self.assertEqual(a, b)
+        self.assertEqual(len(self.resend.requests), 1)
         self.assertEqual(self.w.cgi("POST", "/api/signup", {"name": "X", "email": "not-an-email", "password": "secret-1"}).status, 400)
+        # when the email cannot be sent, no half-made account blocks the address
         self.resend.fail_with = (500, {"message": "down"})
         try:
             r = self.w.cgi("POST", "/api/signup", {"name": "Late Larry", "email": "larry@example.com", "password": "larry-pass-1"})
         finally:
             self.resend.fail_with = None
-        self.assertEqual(r.status, 200, "a failing email service never blocks signing up")
+        self.assertEqual(r.status, 502)
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Late Larry", "email": "larry@example.com", "password": "larry-pass-1"}))
+
+    def test_staff_can_confirm_and_reset_confirms(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Lost Mail", "email": "lost@example.com", "password": "lost-pass-1"}))
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == "lost@example.com")
+        self.assertEqual(int(user["email_verified"]), 0)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/verify", {}, token=t))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "lost@example.com", "password": "lost-pass-1"}))
+        # a password reset by email proves the address too
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Reset Rita", "email": "rita@example.com", "password": "rita-pass-1"}))
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "rita@example.com"}, remote_addr="198.51.100.77"))
+        import re
+        link = re.search(r"reset-password\?token=([^\"&<]+)", self.resend.requests[-1]["body"][0]["html"]).group(1)
+        self.ok(self.w.cgi("POST", "/api/password/reset", {"token": urllib.parse.unquote(link), "password": "rita-new-1"}))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "rita@example.com", "password": "rita-new-1"}))
+        customer, _ = self.customer("notstaff")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/verify", {}, token=customer).status, 403)
 
     def test_forgot_password(self):
         import re

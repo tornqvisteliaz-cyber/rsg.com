@@ -36,6 +36,12 @@ $("form").onsubmit = async e => {
     const res = await fetch("/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("name").value, email: $("email").value, password: $("password").value }) }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
     if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Sign-up is not available right now."; return; }
+    if (data.verify) { // the account opens once the email address is confirmed
+        $("form").innerHTML = `<h1 style="font-size:32px">Check your inbox</h1><p class="muted" style="margin-bottom:22px">${esc(data.message)}</p>` +
+            `<p class="muted" style="font-size:14px">No email after a few minutes? Look in your spam folder, or <a href="/verify-email#email=${encodeURIComponent(data.email)}">send the link again</a>.</p>` +
+            `<p class="alt-link">Already confirmed? <a href="/login">Log in</a></p>`;
+        return;
+    }
     saveSession(data);
     location.href = "/account";
 };

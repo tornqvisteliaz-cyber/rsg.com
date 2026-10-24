@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-23-admin-options"
+SCHEMA_VERSION = "2026-10-24-email-verify"
 
 
 def ensure_schema():
@@ -185,7 +185,9 @@ def ensure_schema():
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
                           ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT"),
-                          ("posts", f"status {word} DEFAULT 'published'"), ("messages", "handled INTEGER DEFAULT 0")):
+                          ("posts", f"status {word} DEFAULT 'published'"), ("messages", "handled INTEGER DEFAULT 0"),
+                          # accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
+                          ("users", "email_verified INTEGER DEFAULT 1")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -309,9 +311,17 @@ def login():
         return jsonify(session_payload({"name": admin_name, "email": admin_email, "role": "Owner"}, token))
     if not user or not verify_password(password, user["password_hash"]):
         return err("Invalid email or password", 401)
+    if not email_verified(user):
+        return jsonify({"error": "Confirm your email address first: click the link in the email we sent you when you signed up.",
+                        "unverified": True, "email": user["email"]}), 403
     token = uuid.uuid4().hex
     db().run("UPDATE users SET token = ? WHERE id = ?", token, user["id"])
     return jsonify(session_payload(user, token))
+
+
+def email_verified(user):
+    value = user.get("email_verified")
+    return value is None or int(value) == 1
 
 
 @app.post("/api/signup")
@@ -326,40 +336,118 @@ def signup():
         return err("Enter a valid email address", 400)
     if db().first("SELECT id FROM users WHERE LOWER(email) = ?", email):
         return err("Email already exists", 400)
-    token = uuid.uuid4().hex
-    db().run("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Customer', ?)",
-             name, email, hash_password(password), token)
-    send_welcome_email(name, email)
-    return jsonify({"token": token, "name": name, "email": email, "role": "Customer", "is_admin": False})
+    if not RESEND_API_KEY:
+        # Without email there is no way to confirm an address: the account works at once, as before.
+        app.logger.warning("Sign-up without email confirmation: RESEND_API_KEY is not set")
+        token = uuid.uuid4().hex
+        db().run("INSERT INTO users (name, email, password_hash, role, token, email_verified) VALUES (?, ?, ?, 'Customer', ?, 1)",
+                 name, email, hash_password(password), token)
+        return jsonify({"token": token, "name": name, "email": email, "role": "Customer", "is_admin": False})
+    db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)",
+             name, email, hash_password(password))
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ?", email)
+    error = send_verify_email(user)
+    if error:
+        db().run("DELETE FROM users WHERE id = ?", user["id"])  # nothing half-made that would block the address
+        return err("We could not send the confirmation email right now. Please try again in a few minutes.", 502)
+    return jsonify({"verify": True, "email": email,
+                    "message": f"Almost done: we sent a link to {email}. Click it to confirm your email and open your account."})
 
 
-def welcome_email_html(name, email):
-    base = site_url()
-    link = lambda path, text: f'<a href="{escape(base + path)}" style="color:#111315">{escape(text)}</a>'  # noqa: E731
+# ---------- email confirmation ----------
+
+VERIFY_HOURS = 48
+
+
+def verify_signature(user_id, expires, email):
+    message = f"verify:{user_id}:{expires}:{(email or '').lower()}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def verify_token(user):
+    expires = int(time.time()) + VERIFY_HOURS * 3600
+    return f"{user['id']}.{expires}.{verify_signature(user['id'], expires, user['email'])}"
+
+
+def user_for_verify_token(token):
+    try:
+        user_id, expires, signature = str(token or "").strip().split(".")
+        user_id, expires = int(user_id), int(expires)
+    except ValueError:
+        return None
+    if expires < time.time():
+        return None
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not user or not hmac.compare_digest(verify_signature(user_id, expires, user["email"]), signature):
+        return None
+    return user
+
+
+def verify_email_html(name, link):
     return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
 <tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
 <tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
-<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Welcome to Rotaidem, {escape(name)}</h1>
-<p style="margin:0 0 16px">Your account is ready. You log in with <strong>{escape(email)}</strong> and the password you chose.</p>
-<ul style="margin:0 0 16px;padding-left:20px">
-<li>Your licence keys, downloads and orders are under {link("/account", "My account")}.</li>
-<li>Installers and updates are on {link("/downloads", "Downloads")}.</li>
-<li>Forgot your password? Use {link("/forgot-password", "Forgot password")} on the log-in page.</li>
-</ul></td></tr>
-<tr><td style="padding:4px 28px 28px"><a href="{escape(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Go to my account</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not create this account? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a> and we remove it.</td></tr>
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Confirm your email</h1>
+<p style="margin:0 0 12px">Hi {escape(name or "there")}, welcome to Rotaidem.</p>
+<p style="margin:0 0 20px">Click the button to confirm that this is your email address. Then your account opens, with your licence keys, downloads and orders. The link works for {VERIFY_HOURS} hours.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="{escape(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Confirm my email</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="{escape(link)}" style="color:#6d6f75;word-break:break-all">{escape(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not sign up? Then someone typed your address by mistake: ignore this email and no account is opened. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
 </table></td></tr></table></body></html>"""
 
 
-def send_welcome_email(name, email):
-    """Best effort: a failed welcome email never stops the sign-up."""
-    if not RESEND_API_KEY:
-        return
-    _sent, error = send_batch([{"from": MAIL_FROM, "to": [email], "subject": "Welcome to Rotaidem", "html": welcome_email_html(name, email)}])
+def send_verify_email(user):
+    """Sends the confirmation link; returns an error text, or "" when Resend took it."""
+    link = f"{site_url()}/verify-email?token={urllib.parse.quote(verify_token(user))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [user["email"]], "subject": "Confirm your email for Rotaidem",
+                                "html": verify_email_html(user["name"], link)}])
     if error:
-        app.logger.error("Welcome email failed: %s", error)
+        app.logger.error("Confirmation email to user %s failed: %s", user["id"], error)
+    return error
+
+
+@app.post("/api/verify-email")
+def verify_email():
+    """The link in the confirmation email: confirms the address and logs the person in."""
+    user = user_for_verify_token(body().get("token"))
+    if not user:
+        return err("This confirmation link has expired or is not valid. Log in to get a new one.", 400)
+    token = uuid.uuid4().hex
+    db().run("UPDATE users SET email_verified = 1, token = ? WHERE id = ?", token, user["id"])
+    if not email_verified(user):
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'email_verified', ?, ?, ?)",
+                 user["id"], user["email"], request.remote_addr or "", utc_stamp())
+    return jsonify({**session_payload(user, token), "verified": True})
+
+
+@app.post("/api/verify-email/resend")
+def resend_verify_email():
+    """Always gives the same answer, so nobody can find out which addresses have an account."""
+    ident = str(body().get("email", "")).strip().lower()
+    if not ident:
+        return err("Enter your email address", 400)
+    if not RESEND_API_KEY:
+        return err("Email is not available right now. Please email Eliaz@rotaidem.com.", 503)
+    ip = request.remote_addr or ""
+    hour_ago = utc_stamp(3600)
+    recent = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND ip_address = ? AND created_at >= ?", ip, hour_ago)
+    if recent and recent["n"] >= RESET_PER_IP:
+        return err("Too many requests. Please wait an hour and try again.", 429)
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", ident, ident)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'verify_email_request', ?, ?, ?)",
+             user["id"] if user else None, ident[:200], ip, utc_stamp())
+    answer = jsonify({"ok": True, "message": "If that account still needs confirming, a new link is on its way. Check your inbox (and spam)."})
+    if not user or email_verified(user):
+        return answer
+    sent_lately = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND admin_id = ? AND created_at >= ?",
+                             user["id"], hour_ago)
+    if sent_lately and sent_lately["n"] > RESET_PER_ACCOUNT:
+        return answer
+    if send_verify_email(user):
+        return err("The email could not be sent right now. Please try again later.", 502)
+    return answer
 
 
 @app.post("/api/logout")
@@ -625,7 +713,7 @@ def password_reset():
     if len(password) < 6:
         return err("The new password must be at least 6 characters", 400)
     token = uuid.uuid4().hex  # signs out every other browser and signs this one in
-    db().run("UPDATE users SET password_hash = ?, token = ? WHERE id = ?", hash_password(password), token, user["id"])
+    db().run("UPDATE users SET password_hash = ?, token = ?, email_verified = 1 WHERE id = ?", hash_password(password), token, user["id"])
     db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)",
              user["id"], user["email"] or "", request.remote_addr or "", utc_stamp())
     return jsonify(session_payload(user, token))
@@ -844,7 +932,7 @@ def admin_overview():
 def admin_customers():
     if not staff_user():
         return err("Admin only", 403)
-    return jsonify({"customers": db().all("SELECT id, name, email, role, created_at FROM users ORDER BY id DESC")})
+    return jsonify({"customers": db().all("SELECT id, name, email, role, created_at, email_verified FROM users ORDER BY id DESC")})
 
 
 @app.post("/api/admin/users/<int:user_id>/role")
@@ -1958,13 +2046,24 @@ def admin_backup():
 def admin_user_detail(user_id):
     if not staff_user():
         return err("Admin only", 403)
-    u = db().first("SELECT id, name, email, role, created_at FROM users WHERE id = ?", user_id)
+    u = db().first("SELECT id, name, email, role, created_at, email_verified FROM users WHERE id = ?", user_id)
     if not u:
         return err("User not found", 404)
     u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
     u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                              "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
     return jsonify({"user": u})
+
+
+@app.post("/api/admin/users/<int:user_id>/verify")
+def admin_verify_user(user_id):
+    """Staff confirm an address by hand, e.g. for someone whose confirmation email never arrived."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    db().run("UPDATE users SET email_verified = 1 WHERE id = ?", user_id)
+    audit(user, "verify_user", user_id)
+    return jsonify({"ok": True})
 
 
 @app.post("/api/admin/users/<int:user_id>/sign-out")

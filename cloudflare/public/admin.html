@@ -544,7 +544,7 @@
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
-    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-resend">Resend confirmation</button><button class="btn btn-ghost" type="button" id="um-verify">Mark email as confirmed</button><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="gate" id="gate" hidden>
@@ -1070,7 +1070,8 @@ function renderUsers() {
         const role = state.role === "Owner"
             ? `<select style="width:auto;padding:6px 10px" data-role="${u.id}">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
             : esc(u.role);
-        return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button></td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
+        const unconfirmed = u.email_verified != null && !Number(u.email_verified) ? ' <span class="badge in_development" title="Has not clicked the link in the confirmation email yet">Email not confirmed</span>' : "";
+        return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button>${unconfirmed}</td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
     }).join("") : empty(4, "No users found.");
 }
 $("user-search").oninput = renderUsers;
@@ -1079,7 +1080,16 @@ async function openUser(id) {
     try {
         const u = (await api("/api/admin/users/" + id)).user;
         $("um-name").textContent = u.name;
-        $("um-meta").textContent = `${u.email} · ${u.role} · joined ${String(u.created_at || "").slice(0, 10)}`;
+        const unconfirmed = u.email_verified != null && !Number(u.email_verified);
+        $("um-meta").textContent = `${u.email} · ${u.role} · joined ${String(u.created_at || "").slice(0, 10)}` + (unconfirmed ? " · email not confirmed yet (cannot log in)" : "");
+        $("um-resend").style.display = $("um-verify").style.display = unconfirmed ? "" : "none";
+        $("um-resend").onclick = async () => {
+            try { await post("/api/verify-email/resend", { email: u.email }); toast("New confirmation link sent to " + u.email); } catch (err) { toast(err.message, true); }
+        };
+        $("um-verify").onclick = async () => {
+            if (!await confirmBox("Mark " + u.email + " as confirmed?", "Only do this when you know the address belongs to this person, e.g. they emailed you from it. They can then log in straight away.", "Mark as confirmed")) return;
+            try { await post(`/api/admin/users/${id}/verify`, {}); toast("Email marked as confirmed"); $("user-modal").classList.remove("show"); loadUsers(); } catch (err) { toast(err.message, true); }
+        };
         $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
         $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
         $("um-mail").href = "mailto:" + u.email;
@@ -1539,7 +1549,8 @@ function exportAudit() { downloadCsv("rotaidem-activity.csv", [["when", "who", "
 function auditLabel(a) {
     const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password",
         sign_out_user: "Signed a user out", send_reset_link: "Sent a password reset link", add_subscribers: "Added subscribers", message_handled: "Marked a message handled",
-        message_reopened: "Reopened a message" }[a] || a);
+        message_reopened: "Reopened a message", verify_user: "Confirmed a user's email", email_verified: "Confirmed their email",
+        verify_email_request: "Asked for a new confirmation link" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
