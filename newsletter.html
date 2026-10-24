@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>News | Rotaidem</title>
+    <meta name="description" content="Development news from Rotaidem.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/rsg.com/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/rsg.com/">Home</a> / News</div><h1 data-text="newsletter.news">News</h1><p data-text="newsletter.development-updates-and-release">Development updates and release notes.</p></div></section>
+<section class="section-tight"><div class="wrap"><div class="prose" id="posts"><p class="muted">Loading…</p></div></div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const none = '<div class="empty"><h3>No news yet</h3><p>The first update will be posted here.</p></div>';
+fetch("/rsg.com/api/newsletter").then(r => r.json()).then(d => {
+    const posts = d.posts || [];
+    document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `<article class="post"><div class="muted" style="font-size:14px">${esc(p.date)}</div><h2>${esc(p.title)}</h2>${p.image_url ? `<img src="${esc(safeImage(p.image_url))}" alt="">` : ""}<p style="white-space:pre-line">${esc(p.content)}</p></article>`).join("") : none;
+}).catch(() => { document.getElementById("posts").innerHTML = none; });
+</script>
+</body>
+</html>

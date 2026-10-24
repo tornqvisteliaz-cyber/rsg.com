@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Create account | Rotaidem</title>
+    <meta name="description" content="Create account to your Rotaidem account.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+</head>
+<body data-footer="off">
+<main class="auth">
+    <div class="auth-side" data-image="login" style="background-image:url('/rsg.com/img/clouds.jpg')"><div><h2 data-text="signup.join-rotaidem">Join Rotaidem</h2><p data-text="signup.get-release-news-first">Get release news first and keep all your licences in one place.</p></div></div>
+    <div class="auth-form">
+        <form id="form">
+            <h1 style="font-size:32px" data-text="signup.create-your-account">Create your account</h1>
+            <p class="muted" style="margin-bottom:26px" data-text="signup.it-is-free-and">It is free and takes less than a minute.</p>
+            <div class="field"><label for="name">Name</label><input id="name" autocomplete="name" required></div>
+            <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+            <div class="field"><label for="password">Password</label><input id="password" type="password" minlength="6" autocomplete="new-password" required><span class="muted" style="font-size:13px">At least 6 characters</span></div>
+            <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:4px 0 20px"><input id="terms" type="checkbox"> I agree to the <a href="/rsg.com/terms">terms</a> and <a href="/rsg.com/privacy">privacy policy</a></label>
+            <button class="btn btn-block">Create account</button>
+            <p id="error" class="msg"></p>
+            <p class="alt-link">Already have an account? <a href="/rsg.com/login">Log in</a></p>
+        </form>
+    </div>
+</main>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+$("form").onsubmit = async e => {
+    e.preventDefault();
+    const msg = $("error");
+    if (!$("terms").checked) { msg.className = "msg error"; msg.textContent = "Please accept the terms first."; return; }
+    const res = await fetch("/rsg.com/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("name").value, email: $("email").value, password: $("password").value }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Sign-up is not available right now."; return; }
+    saveSession(data);
+    location.href = "/rsg.com/account";
+};
+</script>
+</body>
+</html>

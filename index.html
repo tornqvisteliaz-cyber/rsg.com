@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rotaidem | HeavyPro for Microsoft Flight Simulator 2024</title>
+    <meta name="description" content="Rotaidem makes HeavyPro, a Windows app that gives your joystick the response of a heavy airliner in Microsoft Flight Simulator 2024.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+</head>
+<body>
+<section class="welcome" data-image="hero" style="background-image:url('/rsg.com/img/hero.jpg')">
+    <div class="wrap">
+        <span class="pre">Microsoft Flight Simulator 2024</span>
+        <h1 data-text="index.welcome-to-rotaidem">Welcome to<br>Rotaidem</h1>
+        <div class="rule"></div>
+        <p data-text="index.we-make-software-that">We make software that brings the feel of real airliner flying to your desk. Our first product, HeavyPro, is on its way.</p>
+        <div class="countdown" data-countdown hidden></div>
+        <div class="actions"><a href="/rsg.com/heavypro" class="btn btn-light">Discover HeavyPro</a><a href="/rsg.com/about" class="btn btn-ghost">About us</a></div>
+    </div>
+</section>
+
+<section class="section">
+    <div class="wrap split">
+        <div>
+            <h2 data-text="index.a-joystick-is-not">A joystick is not a yoke</h2>
+            <p class="lead" data-text="index.a-short-desktop-stick">A short desktop stick reacts instantly. An A320 or a 777 does not. HeavyPro calculates how the real aircraft would answer your stick, from its type, weight, airspeed and flight phase, and gives your controls that heavy, realistic feel: pitch and roll build up and settle the way they do on a real airliner.</p>
+            <p class="muted" data-text="index.it-does-not-touch">It does not touch aircraft files or flight models, and it steps aside whenever the autopilot is flying.</p>
+            <a href="/rsg.com/heavypro" class="more">How HeavyPro works</a>
+        </div>
+        <img src="/rsg.com/img/approach.jpg" data-image="feature" alt="Airliner on final approach">
+    </div>
+</section>
+
+<section class="section dark" data-section="profiles">
+    <div class="wrap">
+        <h2 data-text="index.made-for-the-aircraft">Made for the aircraft you already fly</h2>
+        <p class="lead" style="margin-bottom:40px" data-text="index.heavypro-recognises-the-aircraft">HeavyPro recognises the aircraft you load and picks a matching profile. Every profile can be tuned.</p>
+        <div class="facts">
+            <div><strong>Fenix A320</strong><span>Airbus profile tuned for the A320 family</span></div>
+            <div><strong>PMDG 737 and 777</strong><span>Boeing narrow-body and wide-body profiles</span></div>
+            <div><strong>Asobo 787 and others</strong><span>Default airliner and general aviation profiles</span></div>
+        </div>
+    </div>
+</section>
+
+<section class="section" data-section="products">
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="index.products">Products</h2><a href="/rsg.com/addons/" class="more">All products</a></div>
+        <div class="grid grid-3" id="home-products"><p class="muted">Loading products…</p></div>
+    </div>
+</section>
+
+<section class="section alt" data-section="news">
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="index.latest-news">Latest news</h2><a href="/rsg.com/newsletter" class="more">All news</a></div>
+        <div class="grid grid-3" id="home-news"><p class="muted">Loading news…</p></div>
+    </div>
+</section>
+
+<section class="section-tight" data-section="signup">
+    <div class="wrap signup-band">
+        <div><h2 data-text="index.hear-about-heavypro-first">Hear about HeavyPro first</h2><p class="muted" style="margin:0" data-text="index.one-email-when-it">One email when it launches, and the occasional development update. No spam.</p></div>
+        <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Your email address" required><button class="btn">Subscribe</button><p class="msg"></p></form>
+    </div>
+</section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+fetch("/rsg.com/api/products").then(r => r.json()).then(d => {
+    const items = (d.products || []).slice(0, 3);
+    document.getElementById("home-products").innerHTML = items.length ? items.map(productCard).join("")
+        : '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>';
+}).catch(() => { document.getElementById("home-products").innerHTML = '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>'; });
+fetch("/rsg.com/api/newsletter").then(r => r.json()).then(d => {
+    const posts = (d.posts || []).slice(0, 3);
+    document.getElementById("home-news").innerHTML = posts.length ? posts.map(p => `<a class="news-card" href="/rsg.com/newsletter"><div class="tile"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div><div class="date">${esc(p.date)}</div><h3>${esc(p.title)}</h3></a>`).join("")
+        : '<p class="muted">No news yet.</p>';
+}).catch(() => { document.getElementById("home-news").innerHTML = '<p class="muted">No news yet.</p>'; });
+</script>
+</body>
+</html>

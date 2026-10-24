@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Products | Rotaidem</title>
+    <meta name="description" content="Rotaidem products for Microsoft Flight Simulator 2024.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/rsg.com/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/rsg.com/">Home</a> / Products</div><h1 data-text="addons.products">Products</h1><p data-text="addons.software-for-microsoft-flight">Software for Microsoft Flight Simulator 2024.</p></div></section>
+<section class="section-tight"><div class="wrap"><div class="grid grid-3" id="list"><p class="muted">Loading products…</p></div></div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const none = '<div class="empty" style="grid-column:1/-1"><h3>Nothing to show yet</h3><p>HeavyPro is our first product. It will appear here at launch. <a href="/rsg.com/heavypro">Read about HeavyPro</a>.</p></div>';
+fetch("/rsg.com/api/products").then(r => r.json()).then(d => {
+    const items = d.products || [];
+    document.getElementById("list").innerHTML = items.length ? items.map(productCard).join("") : none;
+}).catch(() => { document.getElementById("list").innerHTML = none; });
+</script>
+</body>
+</html>

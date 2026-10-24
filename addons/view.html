@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Product | Rotaidem</title>
+    <meta name="description" content="A Rotaidem product for Microsoft Flight Simulator 2024.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+</head>
+<body>
+<section class="page-head" id="hero" style="background-image:url('/rsg.com/img/approach.jpg')"><div class="wrap" style="padding-top:110px;padding-bottom:70px">
+    <div class="crumbs"><a href="/rsg.com/">Home</a> / <a href="/rsg.com/addons/">Products</a> / <span id="crumb"></span></div>
+    <h1 id="title">Loading…</h1><p id="tagline"></p>
+</div></section>
+<section class="section">
+    <div class="wrap split" style="align-items:start">
+        <div><h2 data-text="product.overview">Overview</h2><p id="description" class="lead" style="white-space:pre-line"></p><ul class="list-plain" id="features"></ul></div>
+        <div class="box">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><span class="stat-num" id="price"></span><span class="badge" id="status"></span></div>
+            <a id="buy" class="btn btn-accent btn-block" href="mailto:Eliaz@rotaidem.com">Buy now</a>
+            <a id="download" class="btn btn-ghost btn-block" style="margin-top:10px;display:none" rel="noopener">Download installer</a>
+            <p id="download-help" style="margin:8px 0 0;font-size:13px;text-align:center;display:none"><a class="muted" href="/rsg.com/downloads#help">Trouble downloading or installing?</a></p>
+            <table class="table" style="margin-top:22px"><tbody id="specs"></tbody></table>
+        </div>
+    </div>
+</section>
+<section class="section alt" id="gallery-section"><div class="wrap"><h2 data-text="product.screenshots">Screenshots</h2><div class="grid grid-3" id="gallery" style="margin-top:28px"></div></div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const id = new URLSearchParams(location.search).get("id") || "";
+function show(p) {
+    document.title = p.name + " | Rotaidem";
+    const hero = safeImage(p.image_url);
+    document.getElementById("hero").style.backgroundImage = "url('" + hero.replace(/'/rsg.com/g, "%27") + "')";
+    for (const [k, v] of [["title", p.name], ["crumb", p.name], ["tagline", p.tagline], ["description", p.description], ["price", p.price]]) document.getElementById(k).textContent = v || "";
+    const st = document.getElementById("status");
+    st.textContent = STATUS_LABEL[p.status] || p.status || ""; st.className = "badge " + (p.status || "");
+    const buy = document.getElementById("buy");
+    if (p.buy_url && /^(https?:|mailto:)/.test(p.buy_url)) buy.href = p.buy_url;
+    if (p.status !== "published") buy.textContent = "Notify me";
+    if (/^https:\/\//.test(p.download_url || "")) { const dl = document.getElementById("download"); dl.href = p.download_url; dl.style.display = ""; document.getElementById("download-help").style.display = ""; }
+    document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
+    document.getElementById("features").innerHTML = (p.features || []).map(f => `<li>${esc(f)}</li>`).join("");
+    const imgs = [hero].concat((p.images || []).map(safeImage)).filter((u, i, l) => l.indexOf(u) === i);
+    document.getElementById("gallery").innerHTML = imgs.map(u => `<a class="tile" href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt=""></a>`).join("");
+}
+fetch("/rsg.com/api/products").then(r => r.json()).then(d => {
+    const p = (d.products || []).find(x => x.id === id);
+    if (!p) { document.getElementById("title").textContent = "Product not found"; document.getElementById("gallery-section").remove(); return; }
+    show(p);
+}).catch(() => { document.getElementById("title").textContent = "Product not found"; document.getElementById("gallery-section").remove(); });
+</script>
+</body>
+</html>

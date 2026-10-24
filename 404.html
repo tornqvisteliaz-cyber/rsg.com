@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page not found | Rotaidem</title>
+    <meta name="description" content="Page not found.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script>
+    // Short links from the admin (rotaidem.com/discord and so on) land here first: forward them.
+    (function () {
+        var links = (window.RSG_SITE || {}).links || {}, slug = location.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(links, slug)) location.replace(links[slug]);
+    })();
+    </script>
+</head>
+<body>
+<section class="section"><div class="wrap center" style="padding:60px 24px"><h1>Page not found</h1><p class="lead" style="margin:0 auto 28px">The page you are looking for does not exist or has moved.</p><a class="btn" href="/rsg.com/">Go to the home page</a></div></section>
+<script src="/rsg.com/auth.js"></script>
+</body>
+</html>
