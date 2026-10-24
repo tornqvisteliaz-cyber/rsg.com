@@ -69,6 +69,14 @@
         .link-row .slug { display: flex; align-items: center; }
         .link-row .slug span { color: var(--muted); font-size: 14px; padding-right: 6px; white-space: nowrap; }
         @media (max-width: 700px) { .list-row .fields.two-col, .link-row { grid-template-columns: 1fr; } }
+        .layouts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .layout-card { text-align: left; border: 1px solid var(--line); background: var(--bg-2); padding: 10px 12px; cursor: pointer; color: var(--text); font: inherit; font-size: 14px; }
+        .layout-card strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 2px; }
+        .layout-card small { color: var(--muted); font-size: 12px; line-height: 1.4; display: block; }
+        .layout-card.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+        .tpl-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-bottom: 16px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+        .tpl-row select { flex: 1 1 200px; width: auto; }
+        #mail-frame { width: 100%; height: 820px; border: 0; background: #f3f4f6; display: block; }
         .email-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; margin-bottom: 10px; }
         .email-pic { border: 1px solid var(--line); background: var(--bg-2); }
         .email-pic img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
@@ -387,6 +395,14 @@
             <form class="panel" id="email-form">
                 <div class="panel-head"><h2>Compose</h2><span class="muted" style="font-size:13px" id="e-from"></span></div>
                 <div class="panel-body">
+                    <div class="tpl-row"><select id="e-tpl" aria-label="Saved templates"><option value="">Start from a saved template…</option></select>
+                        <button class="btn btn-ghost btn-sm" type="button" id="e-tpl-save">Save as template</button><button class="btn btn-ghost btn-sm" type="button" id="e-tpl-del" style="display:none">Delete template</button></div>
+                    <div class="field"><label>Layout</label><div class="layouts" id="e-layouts">
+                        <button type="button" class="layout-card on" data-layout="classic"><strong>Product announcement</strong><small>Message, pictures, the product's card and a button</small></button>
+                        <button type="button" class="layout-card" data-layout="update"><strong>Update notes</strong><small>Headline from the subject; lines starting with - become a list</small></button>
+                        <button type="button" class="layout-card" data-layout="launch"><strong>Launch</strong><small>First picture big on top, large headline and button</small></button>
+                        <button type="button" class="layout-card" data-layout="plain"><strong>Personal letter</strong><small>Plain text, signed by you, no banner</small></button>
+                    </div></div>
                     <div class="field"><label for="e-product">Product to feature</label><select id="e-product"></select></div>
                     <div class="field"><label for="e-subject">Subject</label><input id="e-subject" required placeholder="HeavyPro is now available"></div>
                     <div class="field"><label for="e-message">Message</label><textarea id="e-message" rows="7" required placeholder="Write a short note. The product's picture, name, price and a button are added below it."></textarea></div>
@@ -394,6 +410,11 @@
                         <div class="email-pics" id="e-pics" style="display:none"></div>
                         <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="e-pics-up">Upload pictures</button><button class="btn btn-ghost btn-sm" type="button" id="e-pics-lib">From library</button></div>
                         <div class="hint">Shown under your message, in this order. Pick several files at once; up to 12.</div></div>
+                    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+                        <div class="field"><label for="e-btn-text">Button text (optional)</label><input id="e-btn-text" maxlength="60" placeholder="e.g. Download HeavyPro"></div>
+                        <div class="field"><label for="e-btn-url">Button link (optional)</label><input id="e-btn-url" maxlength="500" placeholder="/downloads or https://..."></div>
+                    </div>
+                    <div class="hint" style="margin:-8px 0 16px">Leave them empty for the layout's own button.</div>
                     <div class="sub">Who receives it</div>
                     <div class="checks">
                         <label><span><input type="checkbox" value="accounts" checked><span>Everyone with an account<small>Customers, staff, all registered users</small></span></span><span class="muted" data-count="accounts">0</span></label>
@@ -410,7 +431,7 @@
                     <p class="msg" id="e-msg"></p>
                 </div>
             </form>
-            <div class="panel"><div class="panel-head"><h2>Preview</h2></div><div class="preview-mail"><div class="mail"><div class="mail-head">ROTAIDEM</div><div class="mail-body" id="mail-preview"></div><div class="mail-foot">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news. <u>Unsubscribe</u></div></div></div></div>
+            <div class="panel"><div class="panel-head"><h2>Preview</h2><span class="muted" style="font-size:13px">Exactly as it will arrive</span></div><iframe id="mail-frame" title="Email preview" sandbox=""></iframe></div>
         </div>
         <div class="panel" style="margin-top:24px"><div class="panel-head"><h2>Sent emails</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Subject</th><th>Product</th><th>Audience</th><th>Sent</th><th>By</th></tr></thead><tbody id="campaigns-list"></tbody></table></div></div>
     </section>
@@ -544,6 +565,7 @@
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
+    <div class="sub" style="margin-top:18px">Logged in on</div><div class="table-wrap"><table class="table"><tbody id="um-sessions"></tbody></table></div>
     <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-resend">Resend confirmation</button><button class="btn btn-ghost" type="button" id="um-verify">Mark email as confirmed</button><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
@@ -913,20 +935,65 @@ $("e-pics").onclick = e => {
     else return;
     renderEmailPics();
 };
-function renderPreview() {
-    const p = state.products.find(x => x.id === $("e-product").value);
-    const msg = esc($("e-message").value || "Your message appears here.").replace(/\n/g, "<br>");
-    const pictures = state.emailImages.map(u => `<img src="${esc(safeImage(u))}" alt="">`).join("");
-    let block = "";
-    if (p) block = (IMAGE_RE.test(p.image_url || "") ? `<img src="${esc(safeImage(p.image_url))}" alt="">` : "") +
-        `<div style="font-size:20px;font-weight:bold;color:#141517">${esc(p.name)}</div><div style="color:#6b7480">${esc(p.tagline || "")}</div><div style="font-weight:bold;margin:4px 0 16px;color:#141517">${esc(p.price || "")}</div>`;
-    $("mail-preview").innerHTML = `<p style="margin:0 0 18px">${msg}</p>${pictures}${block}<span style="display:inline-block;background:#141517;color:#fff;padding:11px 20px;font-weight:bold">${p ? "View " + esc(p.name) : "Visit rotaidem.com"}</span>`;
+// The preview is drawn by the server, so it is exactly the email that will be sent.
+state.layout = "classic";
+let previewTimer = null;
+function emailDraft() {
+    return { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, images: state.emailImages,
+        layout: state.layout, button: { text: val("e-btn-text"), url: val("e-btn-url") } };
 }
+function renderPreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+        try { $("mail-frame").srcdoc = (await post("/api/admin/email-preview", emailDraft())).html; }
+        catch (err) { $("mail-frame").srcdoc = `<p style="font:14px Arial;color:#b00;padding:20px">${esc(err.message)}</p>`; }
+    }, 350);
+}
+function setLayout(layout) {
+    state.layout = layout;
+    document.querySelectorAll("#e-layouts [data-layout]").forEach(b => b.classList.toggle("on", b.dataset.layout === layout));
+    renderPreview();
+}
+$("e-layouts").onclick = e => { const b = e.target.closest("[data-layout]"); if (b) setLayout(b.dataset.layout); };
+["e-subject", "e-btn-text", "e-btn-url"].forEach(id => $(id).addEventListener("input", renderPreview));
+
+// Saved templates: the whole composed email under a name.
+state.templates = [];
+async function loadTemplates() {
+    try { state.templates = (await api("/api/admin/email-templates")).templates || []; } catch (err) { state.templates = []; }
+    renderTemplates();
+}
+function renderTemplates(selected = "") {
+    $("e-tpl").innerHTML = '<option value="">Start from a saved template…</option>' + state.templates.map(t => `<option${t.name === selected ? " selected" : ""}>${esc(t.name)}</option>`).join("");
+    $("e-tpl-del").style.display = selected ? "" : "none";
+}
+$("e-tpl").onchange = () => {
+    const t = state.templates.find(x => x.name === $("e-tpl").value);
+    $("e-tpl-del").style.display = t ? "" : "none";
+    if (!t) return;
+    $("e-product").value = t.product_id || ""; $("e-subject").value = t.subject || ""; $("e-message").value = t.message || "";
+    $("e-btn-text").value = (t.button || {}).text || ""; $("e-btn-url").value = (t.button || {}).url || "";
+    state.emailImages = [...(t.images || [])];
+    renderEmailPics(); setLayout(t.layout || "classic");
+    toast(`Loaded "${t.name}"`);
+};
+$("e-tpl-save").onclick = async () => {
+    const name = (prompt("Name for this template", $("e-tpl").value || val("e-subject")) || "").trim();
+    if (!name) return;
+    try { state.templates = (await post("/api/admin/email-templates", { name, ...emailDraft() })).templates; renderTemplates(name); toast(`Saved "${name}"`); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+$("e-tpl-del").onclick = async () => {
+    const name = $("e-tpl").value;
+    if (!name || !await confirmBox(`Delete the template "${name}"?`, "Emails already sent are not affected.", "Delete", true)) return;
+    try { state.templates = (await api("/api/admin/email-templates?name=" + encodeURIComponent(name), { method: "DELETE" })).templates; renderTemplates(); toast("Template deleted"); }
+    catch (err) { toast(err.message, true); }
+};
 ["e-product", "e-message"].forEach(id => $(id).addEventListener("input", renderPreview));
 async function sendEmail(test) {
     const msg = $("e-msg");
     if (!val("e-subject") || !val("e-message")) { msg.className = "msg error"; msg.textContent = "Add a subject and a message first."; return; }
-    const payload = { product_id: $("e-product").value, subject: val("e-subject"), message: $("e-message").value, images: state.emailImages, groups: groups(), extra: $("e-extra").value };
+    const payload = { ...emailDraft(), groups: groups(), extra: $("e-extra").value };
     if (test) {
         payload.test_email = val("e-test-to");
         if (!payload.test_email) { msg.className = "msg error"; msg.textContent = "Enter the address to send the test to."; return; }
@@ -1093,6 +1160,14 @@ async function openUser(id) {
         $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
         $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
         $("um-mail").href = "mailto:" + u.email;
+        const canEnd = ["Owner", "Admin"].includes(state.role);
+        $("um-sessions").innerHTML = (u.sessions || []).length ? u.sessions.map(se => `<tr><td>${esc(se.device)}<div class="muted" style="font-size:13px">since ${date(se.created_at)}</div></td>` +
+            `<td class="muted" style="font-family:ui-monospace,Consolas,monospace;font-size:13px">${esc(se.ip_address || "-")}</td><td class="muted">last active ${date(se.last_seen)}</td>` +
+            `<td style="text-align:right">${canEnd ? `<button class="btn btn-ghost btn-sm" type="button" data-end-session="${se.id}">Log out</button>` : ""}</td></tr>`).join("") : empty(4, "Not logged in anywhere.");
+        $("um-sessions").onclick = async e => {
+            const b = e.target.closest("[data-end-session]"); if (!b) return;
+            try { await api(`/api/admin/users/${id}/sessions/${b.dataset.endSession}`, { method: "DELETE" }); toast("Logged out on that device"); openUser(id); } catch (err) { toast(err.message, true); }
+        };
         $("um-license").onclick = () => { $("user-modal").classList.remove("show"); showTab("licenses"); $("l-email").value = u.email; $("l-count").value = 1; $("l-email").focus(); };
         $("um-reset").onclick = async () => {
             if (!await confirmBox("Send a password reset link?", `${u.email} gets an email with a link to choose a new password. Their current password keeps working until they use it.`, "Send link")) return;
@@ -1550,7 +1625,8 @@ function auditLabel(a) {
     const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password",
         sign_out_user: "Signed a user out", send_reset_link: "Sent a password reset link", add_subscribers: "Added subscribers", message_handled: "Marked a message handled",
         message_reopened: "Reopened a message", verify_user: "Confirmed a user's email", email_verified: "Confirmed their email",
-        verify_email_request: "Asked for a new confirmation link" }[a] || a);
+        verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device",
+        save_email_template: "Saved an email template", delete_email_template: "Deleted an email template" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
@@ -1559,7 +1635,7 @@ $("audit-search").oninput = renderAudit;
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

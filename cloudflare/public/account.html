@@ -31,6 +31,13 @@
                     <h3 style="padding:24px 24px 0">Order history</h3>
                     <div class="table-wrap"><table class="table"><thead><tr><th>Order</th><th>Product</th><th>Payment</th><th>Amount</th><th>Date</th></tr></thead><tbody id="orders"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
                 </div>
+                <div class="box" style="padding:0;margin-bottom:24px">
+                    <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;padding:24px 24px 0;flex-wrap:wrap">
+                        <div><h3 style="margin:0">Where you are logged in</h3><p class="muted" style="font-size:14px;margin:4px 0 0">Do not recognise one? Log it out and change your password.</p></div>
+                        <button class="btn btn-ghost btn-sm" type="button" id="end-others">Log out everywhere else</button>
+                    </div>
+                    <div class="table-wrap"><table class="table"><thead><tr><th>Device</th><th>IP address</th><th>Last active</th><th></th></tr></thead><tbody id="sessions"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
+                </div>
             </div>
             <form class="box" id="settings-form">
                 <h3>Settings</h3>
@@ -69,6 +76,37 @@ async function init() {
     ).join("") : '<tr><td colspan="5" class="muted">No orders yet.</td></tr>';
 }
 
+// Where you are logged in: each browser or computer that has logged in to this account.
+function ago(stamp) {
+    const t = Date.parse(String(stamp || "").replace(" ", "T") + "Z");
+    if (isNaN(t)) return "";
+    const min = Math.round((Date.now() - t) / 6e4);
+    return min < 2 ? "Now" : min < 60 ? `${min} minutes ago` : min < 1440 ? `${Math.round(min / 60)} hours ago` : `${Math.round(min / 1440)} days ago`;
+}
+async function loadSessions() {
+    const res = await fetch("/api/account/sessions", { headers });
+    const list = ((await res.json().catch(() => ({}))).sessions || []).sort((a, b) => b.current - a.current); // this device first
+    document.getElementById("sessions").innerHTML = list.map(s =>
+        `<tr><td><strong style="color:var(--ink);font-weight:500">${esc(s.device)}</strong>${s.current ? ' <span class="badge published">This device</span>' : ""}<div class="muted" style="font-size:13px">Logged in ${esc(String(s.created_at || "").slice(0, 10))}</div></td>` +
+        `<td class="muted" style="font-family:ui-monospace,Consolas,monospace;font-size:13px">${esc(s.ip_address || "-")}</td><td class="muted">${esc(s.current ? "Now" : ago(s.last_seen))}</td>` +
+        `<td style="text-align:right"><button class="btn btn-ghost btn-sm" data-session="${s.id}" data-current="${s.current ? 1 : 0}">Log out</button></td></tr>`).join("")
+        || '<tr><td colspan="4" class="muted">No logins.</td></tr>';
+    document.getElementById("end-others").style.display = list.length > 1 ? "" : "none";
+}
+document.getElementById("sessions").onclick = async e => {
+    const b = e.target.closest("[data-session]");
+    if (!b) return;
+    if (b.dataset.current === "1" && !confirm("Log out on this device?")) return;
+    await fetch("/api/account/sessions/" + b.dataset.session, { method: "DELETE", headers });
+    if (b.dataset.current === "1") { rsgLogout(); return; }
+    loadSessions();
+};
+document.getElementById("end-others").onclick = async () => {
+    if (!confirm("Log out on every other device? You stay logged in here.")) return;
+    await fetch("/api/account/sessions/others", { method: "POST", headers });
+    loadSessions();
+};
+
 document.getElementById("settings-form").onsubmit = async e => {
     e.preventDefault();
     const msg = document.getElementById("s-msg");
@@ -79,10 +117,11 @@ document.getElementById("settings-form").onsubmit = async e => {
     })});
     const data = await res.json().catch(() => ({}));
     msg.className = "msg " + (res.ok ? "ok" : "error");
-    msg.textContent = res.ok ? "Saved." : (data.error || "Could not save.");
+    msg.textContent = res.ok ? (document.getElementById("s-new").value ? "Saved. Your other devices have been logged out." : "Saved.") : (data.error || "Could not save.");
     if (res.ok) { localStorage.setItem("rsg_name", data.name); document.getElementById("s-cur").value = ""; document.getElementById("s-new").value = ""; init(); paintAuth(); }
 };
 init();
+loadSessions();
 </script>
 </body>
 </html>

@@ -755,6 +755,94 @@ class StratoCGITests:
         self.assertEqual(r.status, 400)
         self.assertIn("cut off", r.json()["error"])
 
+    def test_logged_in_devices(self):
+        laptop, email = self.customer("traveller")
+        phone = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"},
+                                   headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1"}))["token"]
+        self.ok(self.w.cgi("GET", "/api/me", token=laptop))  # logging in on the phone did not log the laptop out
+        rows = self.ok(self.w.cgi("GET", "/api/account/sessions", token=phone))["sessions"]
+        self.assertEqual(len(rows), 2)
+        this = next(r for r in rows if r["current"])
+        self.assertEqual((this["device"], this["ip_address"]), ("Safari on iPhone", "203.0.113.5"))
+        other = next(r for r in rows if not r["current"])
+        self.ok(self.w.cgi("DELETE", f"/api/account/sessions/{other['id']}", token=phone))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=laptop).status, 401, "the removed device is logged out")
+        self.ok(self.w.cgi("GET", "/api/me", token=phone))
+        # someone else's device cannot be removed
+        intruder, _ = self.customer("intruder")
+        self.ok(self.w.cgi("DELETE", f"/api/account/sessions/{this['id']}", token=intruder))
+        self.ok(self.w.cgi("GET", "/api/me", token=phone))
+        # log out everywhere else
+        second = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}))["token"]
+        self.ok(self.w.cgi("POST", "/api/account/sessions/others", {}, token=second))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=phone).status, 401)
+        self.ok(self.w.cgi("GET", "/api/me", token=second))
+        # a new password logs out the other devices too
+        third = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}))["token"]
+        self.ok(self.w.cgi("POST", "/api/account/settings", {"name": "traveller", "current_password": "customer-pass-1", "new_password": "customer-pass-2"}, token=second))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=third).status, 401)
+        self.ok(self.w.cgi("GET", "/api/me", token=second))
+        # the admin sees them and can end one
+        t = self.owner_token
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        sessions = self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.ok(self.w.cgi("DELETE", f"/api/admin/users/{user['id']}/sessions/{sessions[0]['id']}", token=t))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=second).status, 401)
+
+    def test_logins_from_before_sessions_keep_working(self):
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if not os.path.exists(db_file):
+            self.skipTest("writes the old token straight into the SQLite file")
+        import sqlite3
+        _, email = self.customer("oldtimer")
+        conn = sqlite3.connect(db_file)
+        conn.execute("UPDATE users SET token = 'legacy-token-123' WHERE email = ?", (email,))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token="legacy-token-123"))["user"]["email"], email)
+        conn = sqlite3.connect(db_file)
+        left = conn.execute("SELECT token FROM users WHERE email = ?", (email,)).fetchone()[0]
+        conn.close()
+        self.assertIsNone(left, "the old token moved into a session; only its hash is stored")
+        self.ok(self.w.cgi("GET", "/api/me", token="legacy-token-123"))
+        self.ok(self.w.cgi("POST", "/api/logout", token="legacy-token-123"))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token="legacy-token-123").status, 401)
+
+    def test_email_layouts_preview_and_templates(self):
+        t = self.owner_token
+        draft = {"subject": "HeavyPro 0.5", "message": "What changed:\n- Faster start\n- Realistic rudder\n\nThanks for testing!", "images": ["/img/hero.jpg", "/img/clouds.jpg"]}
+        html = lambda **x: self.ok(self.w.cgi("POST", "/api/admin/email-preview", {**draft, **x}, token=t))["html"]  # noqa: E731
+        update = html(layout="update")
+        self.assertIn(">UPDATE<", update)
+        self.assertIn("<li style=\"margin:0 0 6px\">Faster start</li>", update)
+        self.assertIn("https://rotaidem.test/downloads", update)
+        self.assertIn("Download the update", update)
+        launch = html(layout="launch", button={"text": "Get HeavyPro", "url": "/heavypro"})
+        self.assertIn("<h1", launch)
+        self.assertIn("https://rotaidem.test/heavypro", launch)
+        self.assertLess(launch.find("https://rotaidem.test/img/hero.jpg"), launch.find("HeavyPro 0.5"), "the first picture is on top")
+        plain = html(layout="plain")
+        self.assertNotIn(">ROTAIDEM<", plain)
+        self.assertIn("Eliaz", plain)
+        self.assertIn("Unsubscribe", plain)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/email-preview", {**draft, "button": {"url": "javascript:alert(1)"}}, token=t).status, 400)
+        # the real email uses the same layout
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/admin/broadcast", {**draft, "layout": "update", "test_email": "test@example.com"}, token=t))
+        self.assertIn(">UPDATE<", self.resend.requests[-1]["body"][0]["html"])
+        # saved templates
+        r = self.ok(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": "Patch notes", "layout": "update"}, token=t))
+        self.assertEqual([x["name"] for x in r["templates"]], ["Patch notes"])
+        self.ok(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": "Patch notes", "layout": "plain"}, token=t))
+        templates = self.ok(self.w.cgi("GET", "/api/admin/email-templates", token=t))["templates"]
+        self.assertEqual((len(templates), templates[0]["layout"], templates[0]["images"]), (1, "plain", draft["images"]), "the same name replaces it")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": " "}, token=t).status, 400)
+        r = self.ok(self.w.cgi("DELETE", "/api/admin/email-templates", token=t, query="name=Patch%20notes"))
+        self.assertEqual(r["templates"], [])
+        customer, _ = self.customer("templater")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/email-templates", token=customer).status, 403)
+
     def test_page_texts(self):
         t = self.owner_token
         key = "index.welcome-to-rotaidem"

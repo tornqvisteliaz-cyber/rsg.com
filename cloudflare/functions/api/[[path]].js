@@ -28,6 +28,14 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/password/check") return passwordCheck(request, env);
     if (method === "POST" && path === "/api/password/reset") return passwordReset(request, env);
     if (method === "POST" && path === "/api/verify-email") return verifyEmail(request, env);
+    if (method === "GET" && path === "/api/account/sessions") return accountSessions(request, env);
+    if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
+    if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
+    if (method === "DELETE" && /^\/api\/admin\/users\/\d+\/sessions\/\d+$/.test(path)) return adminEndSession(request, env, Number(path.split("/")[4]), Number(path.split("/")[6]));
+    if (method === "POST" && path === "/api/admin/email-preview") return adminEmailPreview(request, env);
+    if (method === "GET" && path === "/api/admin/email-templates") return adminEmailTemplates(request, env);
+    if (method === "POST" && path === "/api/admin/email-templates") return adminSaveEmailTemplate(request, env);
+    if (method === "DELETE" && path === "/api/admin/email-templates") return adminDeleteEmailTemplate(request, env);
     if (method === "POST" && path === "/api/verify-email/resend") return resendVerifyEmail(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/verify$/.test(path)) return adminVerifyUser(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/settings") return updateSettings(request, env);
@@ -108,6 +116,8 @@ async function ensure(env) {
   try { await env.DB.prepare("ALTER TABLE messages ADD COLUMN handled INTEGER DEFAULT 0").run(); } catch (err) {}
   // accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1").run(); } catch (err) {}
+  // One row per logged-in browser; only a hash of the token is stored.
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -127,10 +137,11 @@ async function login(request, env) {
     const adminUser = (env.ADMIN_USERNAME || "eliaz").toLowerCase();
     if (input === adminEmail || input === adminUser) {
       const hash = await hashPassword(password);
-      const token = crypto.randomUUID();
-      await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Owner', ?)").bind(
-        env.ADMIN_USERNAME || "eliaz", env.ADMIN_EMAIL || "admin@rsgsoftware.com", hash, token
+      await env.DB.prepare("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'Owner')").bind(
+        env.ADMIN_USERNAME || "eliaz", env.ADMIN_EMAIL || "admin@rsgsoftware.com", hash
       ).run();
+      const owner = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ?").bind(adminEmail).first();
+      const token = await newSession(request, env, owner.id);
       return json({ token, name: env.ADMIN_USERNAME || "eliaz", email: env.ADMIN_EMAIL || "admin@rsgsoftware.com", role: "Owner", is_admin: true });
     }
   }
@@ -138,8 +149,7 @@ async function login(request, env) {
   if (user.email_verified != null && !Number(user.email_verified)) {
     return json({ error: "Confirm your email address first: click the link in the email we sent you when you signed up.", unverified: true, email: user.email }, 403);
   }
-  const token = crypto.randomUUID();
-  await env.DB.prepare("UPDATE users SET token = ? WHERE id = ?").bind(token, user.id).run();
+  const token = await newSession(request, env, user.id);
   const isAdmin = ["Owner", "Admin", "Support"].includes(user.role);
   return json({ token, name: user.name, email: user.email, role: user.role, is_admin: isAdmin });
 }
@@ -153,11 +163,11 @@ async function signup(request, env) {
   if (!EMAIL_RE.test(email)) return json({ error: "Enter a valid email address" }, 400);
   if (!resendKey(env)) {
     // Without email there is no way to confirm an address: the account works at once, as before.
-    const token = crypto.randomUUID();
     try {
-      await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, token, email_verified) VALUES (?, ?, ?, 'Customer', ?, 1)").bind(name, email, await hashPassword(password), token).run();
+      await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 1)").bind(name, email, await hashPassword(password)).run();
     } catch { return json({ error: "Email already exists" }, 400); }
-    return json({ token, name, email, role: "Customer", is_admin: false });
+    const created = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ?").bind(email).first();
+    return json({ token: await newSession(request, env, created.id), name, email, role: "Customer", is_admin: false });
   }
   try {
     await env.DB.prepare("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)").bind(name, email, await hashPassword(password)).run();
@@ -219,8 +229,8 @@ async function verifyEmail(request, env) {
   const body = await request.json().catch(() => ({}));
   const user = await userForVerifyToken(env, body.token);
   if (!user) return json({ error: "This confirmation link has expired or is not valid. Log in to get a new one." }, 400);
-  const token = crypto.randomUUID();
-  await env.DB.prepare("UPDATE users SET email_verified = 1, token = ? WHERE id = ?").bind(token, user.id).run();
+  await env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(user.id).run();
+  const token = await newSession(request, env, user.id);
   if (user.email_verified != null && !Number(user.email_verified)) {
     await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'email_verified', ?, ?, ?)")
       .bind(user.id, user.email, request.headers.get("CF-Connecting-IP") || "", utcStamp()).run();
@@ -258,7 +268,10 @@ async function adminVerifyUser(request, env, id) {
 
 async function logout(request, env) {
   const token = bearerToken(request);
-  if (token) await env.DB.prepare("UPDATE users SET token = NULL WHERE token = ?").bind(token).run();
+  if (token) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await tokenHash(token)).run();
+    await env.DB.prepare("UPDATE users SET token = NULL WHERE token = ?").bind(token).run(); // a login from before sessions
+  }
   return json({ ok: true });
 }
 
@@ -282,6 +295,7 @@ async function updateSettings(request, env) {
     if (newPassword.length < 6) return json({ error: "New password must be at least 6 characters" }, 400);
     if (!currentPassword || !(await verifyPassword(currentPassword, user.password_hash))) return json({ error: "Current password is required and must be correct" }, 400);
     await env.DB.prepare("UPDATE users SET name = ?, password_hash = ? WHERE id = ?").bind(name, await hashPassword(newPassword), user.id).run();
+    await endSessions(env, user.id, user.session_id); // a new password logs out the other browsers
   } else {
     await env.DB.prepare("UPDATE users SET name = ? WHERE id = ?").bind(name, user.id).run();
   }
@@ -487,7 +501,8 @@ async function adminSetRole(request, env, id) {
   const body = await request.json();
   if (!["Customer", "Support", "Admin", "Owner"].includes(body.role)) return json({ error: "Unknown role" }, 400);
   if (id === user.id) return json({ error: "You cannot change your own role" }, 400);
-  await env.DB.prepare("UPDATE users SET role = ?, token = NULL WHERE id = ?").bind(body.role, id).run();
+  await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?").bind(body.role, id).run();
+  await endSessions(env, id);
   await audit(env, user, "set_role", id + ":" + body.role);
   return json({ ok: true });
 }
@@ -699,7 +714,35 @@ async function adminUserDetail(request, env, id) {
   u.orders = (await env.DB.prepare("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC").bind(id).all()).results || [];
   u.licenses = (await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC")
     .bind(id, String(u.email || "").toLowerCase()).all()).results || [];
+  u.sessions = await sessionRows(env, id);
   return json({ user: u });
+}
+
+async function adminEndSession(request, env, userId, sessionId) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can log users out" }, 403);
+  await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?").bind(sessionId, userId).run();
+  await audit(env, user, "end_session", `user ${userId}`);
+  return json({ ok: true });
+}
+
+// ---------- where you are logged in ----------
+async function accountSessions(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  return json({ sessions: await sessionRows(env, user.id, user.session_id) });
+}
+async function accountEndSession(request, env, id) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+  return json({ ok: true, current: id === user.session_id });
+}
+async function accountEndOtherSessions(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  await endSessions(env, user.id, user.session_id);
+  return json({ ok: true });
 }
 
 async function adminDeleteUser(request, env, id) {
@@ -711,6 +754,7 @@ async function adminDeleteUser(request, env, id) {
   // Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
   await env.DB.prepare("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?").bind(id).run();
   await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id).run();
   await audit(env, user, "delete_user", target.email);
   return json({ ok: true });
 }
@@ -1226,8 +1270,9 @@ async function passwordReset(request, env) {
   if (!user) return json({ error: RESET_EXPIRED }, 400);
   const password = String(body.password || "");
   if (password.length < 6) return json({ error: "The new password must be at least 6 characters" }, 400);
-  const token = crypto.randomUUID(); // signs out every other browser and signs this one in
-  await env.DB.prepare("UPDATE users SET password_hash = ?, token = ?, email_verified = 1 WHERE id = ?").bind(await hashPassword(password), token, user.id).run();
+  await env.DB.prepare("UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?").bind(await hashPassword(password), user.id).run();
+  await endSessions(env, user.id); // a new password logs out every other browser
+  const token = await newSession(request, env, user.id);
   await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)")
     .bind(user.id, user.email || "", request.headers.get("CF-Connecting-IP") || "", utcStamp()).run();
   return json({ token, name: user.name, email: user.email, role: user.role, is_admin: ["Owner", "Admin", "Support"].includes(user.role) });
@@ -1264,25 +1309,120 @@ function emailImageTag(base, url) {
   const src = /^\/(media|img)\//.test(url || "") ? base + url : url || "";
   return /^https:\/\//.test(src) ? `<img src="${escHtml(src)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">` : "";
 }
-async function productEmailHtml(env, base, product, message, email, images = []) {
-  const link = product ? `${base}/addons/view?id=${encodeURIComponent(product.id)}` : base;
+// "Email a product" in four layouts (same as server.py).
+const EMAIL_LAYOUTS = ["classic", "update", "launch", "plain"];
+const BUTTON_STYLE = "display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold";
+const BULLET = /^[-*•]\s+/;
+function emailParagraphs(message, bullets = false) {
+  const out = [];
+  for (const block of String(message || "").trim().split(/\n\s*\n/)) {
+    let items = [];
+    for (const line of block.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
+      if (bullets && BULLET.test(line)) { items.push(`<li style="margin:0 0 6px">${escHtml(line.replace(BULLET, ""))}</li>`); continue; }
+      if (items.length) { out.push(`<ul style="margin:0 0 16px;padding-left:22px">${items.join("")}</ul>`); items = []; }
+      out.push(`<p style="margin:0 0 14px">${escHtml(line)}</p>`);
+    }
+    if (items.length) out.push(`<ul style="margin:0 0 16px;padding-left:22px">${items.join("")}</ul>`);
+  }
+  return out.join("");
+}
+function emailButton(base, button, product, layout) {
+  button = button || {};
+  let url = String(button.url || "").trim();
+  if (url.startsWith("/")) url = base + url;
+  if (!url) url = layout === "update" ? `${base}/downloads` : product ? `${base}/addons/view?id=${encodeURIComponent(product.id)}` : base;
+  const text = String(button.text || "").trim() || (layout === "update" ? "Download the update" : product ? `View ${product.name}` : "Visit rotaidem.com");
+  return [url, text];
+}
+async function productEmailHtml(env, base, product, message, email, images = [], layout = "classic", subject = "", button = null) {
+  layout = EMAIL_LAYOUTS.includes(layout) ? layout : "classic";
   const unsub = `${base}/unsubscribe?email=${encodeURIComponent(email)}&token=${await unsubscribeToken(env, email)}`;
-  const text = String(message || "").split(/\r?\n/).map(escHtml).join("<br>");
-  const pictures = images.map(url => emailImageTag(base, url)).join("");
-  let block = "";
-  if (product) {
-    const img = emailImageTag(base, product.image_url);
-    block = `${img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#141517">${escHtml(product.price || "")}</p>`;
+  const [url, label] = emailButton(base, button, product, layout);
+  const pictures = images.map(u => emailImageTag(base, u));
+  const head = `<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>`;
+  const footer = `<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.\n<a href="${escHtml(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>`;
+  const productBlock = product ? `${emailImageTag(base, product.image_url)}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">${escHtml(product.name)}</h2><p style="margin:0 0 6px;color:#6b7480">${escHtml(product.tagline || "")}</p><p style="margin:0 0 22px;font-weight:600;color:#141517">${escHtml(product.price || "")}</p>` : "";
+  let rows;
+  if (layout === "update") {
+    rows = `${head}<tr><td style="padding:28px 28px 0"><div style="font-size:12px;font-weight:bold;letter-spacing:2px;color:#6b7480">UPDATE</div><h1 style="margin:6px 0 18px;font-size:24px;color:#141517">${escHtml(subject)}</h1></td></tr>` +
+      `<tr><td style="padding:0 28px 8px;font-size:16px;line-height:1.6">${emailParagraphs(message, true)}</td></tr>` +
+      `<tr><td style="padding:8px 28px 28px">${pictures.join("")}<a href="${escHtml(url)}" style="${BUTTON_STYLE}">${escHtml(label)}</a></td></tr>`;
+  } else if (layout === "launch") {
+    const hero = (pictures[0] || "").replace("margin:0 0 20px", "margin:0"), rest = pictures.slice(1);
+    rows = `${head}<tr><td style="padding:0">${hero}</td></tr>` +
+      `<tr><td align="center" style="padding:34px 32px 6px;text-align:center"><h1 style="margin:0 0 14px;font-size:30px;line-height:1.2;color:#141517">${escHtml(subject)}</h1><div style="font-size:17px;line-height:1.6;color:#39424e">${emailParagraphs(message)}</div></td></tr>` +
+      `<tr><td align="center" style="padding:6px 32px 34px;text-align:center"><a href="${escHtml(url)}" style="${BUTTON_STYLE};padding:16px 34px;font-size:17px">${escHtml(label)}</a></td></tr>` +
+      (rest.length ? `<tr><td style="padding:0 28px 12px">${rest.join("")}</td></tr>` : "");
+  } else if (layout === "plain") {
+    const link = button && (button.url || button.text) ? `<p style="margin:0 0 14px"><a href="${escHtml(url)}" style="color:#141517">${escHtml(label)}</a></p>` : "";
+    rows = `<tr><td style="padding:32px 32px 8px;font-size:16px;line-height:1.7;color:#222">${emailParagraphs(message)}${link}<p style="margin:18px 0 0">Eliaz<br><span style="color:#6b7480">Rotaidem</span></p></td></tr>` +
+      (pictures.length ? `<tr><td style="padding:12px 32px 20px">${pictures.join("")}</td></tr>` : "");
+  } else {
+    const text = String(message || "").split(/\r?\n/).map(escHtml).join("<br>");
+    rows = `${head}<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">${text}</td></tr>` +
+      `<tr><td style="padding:12px 28px 28px">${pictures.join("")}${productBlock}<a href="${escHtml(url)}" style="${BUTTON_STYLE}">${escHtml(label)}</a></td></tr>`;
   }
   return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
-<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
-<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">${text}</td></tr>
-<tr><td style="padding:12px 28px 28px">${pictures}${block}<a href="${escHtml(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">${product ? "View " + escHtml(product.name) : "Visit rotaidem.com"}</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
-<a href="${escHtml(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+${rows}
+${footer}
 </table></td></tr></table></body></html>`;
+}
+// Pictures, layout and button of an email from the admin, checked; throws an Error for the admin.
+function emailOptions(body) {
+  const images = [];
+  for (const url of body.images || []) {
+    const clean = validImageUrl(url);
+    if (!clean) throw new Error("Each picture must be uploaded or an https:// link");
+    images.push(clean);
+  }
+  if (images.length > EMAIL_IMAGES_MAX) throw new Error(`At most ${EMAIL_IMAGES_MAX} pictures per email`);
+  const layout = EMAIL_LAYOUTS.includes(body.layout) ? body.layout : "classic";
+  const b = body.button || {}, url = String(b.url || "").trim(), text = String(b.text || "").trim().slice(0, 60);
+  if (url && !(url.startsWith("https://") || (url.startsWith("/") && !url.startsWith("//")))) throw new Error("The button link must start with https:// or be a page like /downloads");
+  return { images, layout, button: { url: url.slice(0, 500), text } };
+}
+async function adminEmailPreview(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
+  const body = await request.json().catch(() => ({}));
+  let o;
+  try { o = emailOptions(body); } catch (err) { return json({ error: err.message }, 400); }
+  const product = body.product_id ? await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(body.product_id).first() : null;
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  return json({ html: await productEmailHtml(env, base, product, String(body.message || "").trim() || "Your message appears here.", "preview@example.com", o.images, o.layout, String(body.subject || "").trim() || "Your subject", o.button) });
+}
+const TEMPLATES_MAX = 30;
+async function adminEmailTemplates(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
+  return json({ templates: (await getSetting(env, "email.templates", [])) || [] });
+}
+async function adminSaveEmailTemplate(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const name = String(body.name || "").trim().slice(0, 60);
+  if (!name) return json({ error: "Give the template a name" }, 400);
+  let o;
+  try { o = emailOptions(body); } catch (err) { return json({ error: err.message }, 400); }
+  const item = { name, subject: String(body.subject || "").slice(0, 200), message: String(body.message || "").slice(0, 20000), product_id: String(body.product_id || "").slice(0, 100), ...o };
+  const templates = ((await getSetting(env, "email.templates", [])) || []).filter(t => t.name !== name);
+  if (templates.length >= TEMPLATES_MAX) return json({ error: `At most ${TEMPLATES_MAX} templates. Delete one first.` }, 400);
+  const all = [...templates, item].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  await setSetting(env, "email.templates", all);
+  await audit(env, user, "save_email_template", name);
+  return json({ ok: true, templates: all });
+}
+async function adminDeleteEmailTemplate(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can send emails" }, 403);
+  const name = new URL(request.url).searchParams.get("name") || "";
+  const all = ((await getSetting(env, "email.templates", [])) || []).filter(t => t.name !== name);
+  await setSetting(env, "email.templates", all);
+  await audit(env, user, "delete_email_template", name);
+  return json({ ok: true, templates: all });
 }
 
 async function adminAudience(request, env) {
@@ -1308,13 +1448,8 @@ async function adminBroadcast(request, env) {
     product = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(body.product_id).first();
     if (!product) return json({ error: "That product no longer exists" }, 400);
   }
-  const images = [];
-  for (const url of body.images || []) {
-    const clean = validImageUrl(url);
-    if (!clean) return json({ error: "Each picture must be uploaded or an https:// link" }, 400);
-    images.push(clean);
-  }
-  if (images.length > EMAIL_IMAGES_MAX) return json({ error: `At most ${EMAIL_IMAGES_MAX} pictures per email` }, 400);
+  let o;
+  try { o = emailOptions(body); } catch (err) { return json({ error: err.message }, 400); }
   const test = String(body.test_email || "").trim().toLowerCase();
   if (test && !EMAIL_RE.test(test)) return json({ error: "Enter a valid test address" }, 400);
   const groups = (body.groups || []).filter(g => AUDIENCES.includes(g));
@@ -1325,7 +1460,7 @@ async function adminBroadcast(request, env) {
   for (let i = 0; i < recipients.length; i += 100) {
     const chunk = recipients.slice(i, i + 100);
     const messages = [];
-    for (const r of chunk) messages.push({ from: mailFrom(env), to: [r], subject, html: await productEmailHtml(env, base, product, message, r, images) });
+    for (const r of chunk) messages.push({ from: mailFrom(env), to: [r], subject, html: await productEmailHtml(env, base, product, message, r, o.images, o.layout, subject, o.button) });
     const res = await fetch("https://api.resend.com/emails/batch", { method: "POST", headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(messages) });
     if (res.ok) sent += chunk.length; else { failed += chunk.length; lastError = explainResendError(env, res.status, await res.text()); }
   }
@@ -1369,7 +1504,7 @@ async function adminSignOutUser(request, env, id) {
   const user = await currentUser(request, env);
   if (!isManager(user)) return json({ error: "Only the Owner or an Admin can sign users out" }, 403);
   if (id === user.id) return json({ error: "Use Log out to sign yourself out" }, 400);
-  await env.DB.prepare("UPDATE users SET token = NULL WHERE id = ?").bind(id).run();
+  await endSessions(env, id);
   await audit(env, user, "sign_out_user", id);
   return json({ ok: true });
 }
@@ -1426,10 +1561,65 @@ function bearerToken(request) {
   // X-Rotaidem-Token is what the site sends; Authorization stays supported for other clients.
   return (request.headers.get("Authorization") || "").replace("Bearer ", "").trim() || (request.headers.get("X-Rotaidem-Token") || "").trim();
 }
+const SESSION_DAYS = 60, SESSIONS_MAX = 20;
+async function tokenHash(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(token)));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+// Logs this browser in: a new token, of which only the hash is stored. Returns the token.
+async function newSession(request, env, userId) {
+  const token = crypto.randomUUID().replace(/-/g, ""), now = utcStamp();
+  await env.DB.prepare("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(userId, await tokenHash(token), (request.headers.get("CF-Connecting-IP") || "").slice(0, 64), (request.headers.get("User-Agent") || "").slice(0, 300), now, now).run();
+  const old = ((await env.DB.prepare("SELECT id FROM sessions WHERE user_id = ? ORDER BY id DESC").bind(userId).all()).results || []).slice(SESSIONS_MAX);
+  for (const o of old) await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(o.id).run();
+  return token;
+}
+async function endSessions(env, userId, keep = null) {
+  if (keep) await env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND id <> ?").bind(userId, keep).run();
+  else await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+  await env.DB.prepare("UPDATE users SET token = NULL WHERE id = ?").bind(userId).run();
+}
+function deviceLabel(ua) {
+  ua = String(ua || "");
+  const browser = ([["Edg/", "Edge"], ["OPR/", "Opera"], ["Firefox/", "Firefox"], ["Chrome/", "Chrome"], ["Safari/", "Safari"]].find(([k]) => ua.includes(k)) || [0, "A browser"])[1];
+  const system = ([["Windows", "Windows"], ["iPhone", "iPhone"], ["iPad", "iPad"], ["Android", "Android"], ["Mac OS X", "Mac"], ["CrOS", "Chromebook"], ["Linux", "Linux"]].find(([k]) => ua.includes(k)) || [0, ""])[1];
+  return system ? `${browser} on ${system}` : browser;
+}
+async function sessionRows(env, userId, currentId = null) {
+  const rows = (await env.DB.prepare("SELECT id, ip_address, user_agent, created_at, last_seen FROM sessions WHERE user_id = ? ORDER BY last_seen DESC").bind(userId).all()).results || [];
+  return rows.map(r => ({ id: r.id, device: deviceLabel(r.user_agent), ip_address: r.ip_address || "", created_at: r.created_at, last_seen: r.last_seen, current: r.id === currentId }));
+}
+async function sessionUser(request, env, token) {
+  const hash = await tokenHash(token);
+  let session = await env.DB.prepare("SELECT * FROM sessions WHERE token_hash = ?").bind(hash).first();
+  if (session && String(session.last_seen || "") < utcStamp(SESSION_DAYS * 86400)) {
+    await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.id).run();
+    session = null;
+  }
+  let user = null;
+  if (session) {
+    user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+    if (user && String(session.last_seen || "") < utcStamp(300)) {
+      await env.DB.prepare("UPDATE sessions SET last_seen = ?, ip_address = ? WHERE id = ?").bind(utcStamp(), (request.headers.get("CF-Connecting-IP") || "").slice(0, 64), session.id).run();
+    }
+  } else {
+    // Logged in before sessions existed: the token is still on the user. Move it into a session.
+    user = await env.DB.prepare("SELECT * FROM users WHERE token = ?").bind(token).first();
+    if (user) {
+      const now = utcStamp();
+      await env.DB.prepare("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(user.id, hash, (request.headers.get("CF-Connecting-IP") || "").slice(0, 64), (request.headers.get("User-Agent") || "").slice(0, 300), now, now).run();
+      await env.DB.prepare("UPDATE users SET token = NULL WHERE id = ?").bind(user.id).run();
+      session = await env.DB.prepare("SELECT * FROM sessions WHERE token_hash = ?").bind(hash).first();
+    }
+  }
+  return user ? { ...user, token, session_id: session ? session.id : null } : null;
+}
 async function currentUser(request, env, { ignoreGate = false } = {}) {
   const token = bearerToken(request);
   if (!token || !env.DB) return null;
-  const user = await env.DB.prepare("SELECT * FROM users WHERE token = ?").bind(token).first();
+  const user = await sessionUser(request, env, token);
   if (!user || ignoreGate || !STAFF_ROLES.includes(user.role) || (await adminUnlocked(request, env, user))) return user;
   LOCKED.add(request);
   return { ...user, role: "Customer" };

@@ -145,7 +145,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-24-email-verify"
+SCHEMA_VERSION = "2026-10-24-sessions"
 
 
 def ensure_schema():
@@ -181,6 +181,9 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
         f"CREATE TABLE IF NOT EXISTS license_failures (id {pk}, ip_address {ident}, created_at {word})",
+        # One row per logged-in browser; only a hash of the token is stored.
+        f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
+        f"user_agent TEXT, created_at {word}, last_seen {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -229,11 +232,77 @@ def bearer():
     return token or request.headers.get("X-Rotaidem-Token", "").strip()
 
 
+SESSION_DAYS = 60    # a browser not used for this long is logged out
+SESSIONS_MAX = 20    # newest logins kept per account
+
+
+def token_hash(token):
+    return hashlib.sha256(str(token).encode()).hexdigest()
+
+
+def new_session(user_id):
+    """Logs this browser in: a new token, of which only the hash is stored. Returns the token."""
+    token = uuid.uuid4().hex
+    now = utc_stamp()
+    db().run("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+             user_id, token_hash(token), (request.remote_addr or "")[:64], request.headers.get("User-Agent", "")[:300], now, now)
+    for old in db().all("SELECT id FROM sessions WHERE user_id = ? ORDER BY id DESC", user_id)[SESSIONS_MAX:]:
+        db().run("DELETE FROM sessions WHERE id = ?", old["id"])
+    return token
+
+
+def end_sessions(user_id, keep=None):
+    """Logs the account out everywhere (or everywhere but session `keep`)."""
+    if keep:
+        db().run("DELETE FROM sessions WHERE user_id = ? AND id <> ?", user_id, keep)
+    else:
+        db().run("DELETE FROM sessions WHERE user_id = ?", user_id)
+    db().run("UPDATE users SET token = NULL WHERE id = ?", user_id)
+
+
 def current_user():
-    token = bearer()
-    if not token:
-        return None
-    return db().first("SELECT * FROM users WHERE token = ?", token)
+    if "current_user" in g:
+        return g.current_user
+    token, user = bearer(), None
+    if token:
+        session = db().first("SELECT * FROM sessions WHERE token_hash = ?", token_hash(token))
+        if session and str(session["last_seen"] or "") < utc_stamp(SESSION_DAYS * 86400):
+            db().run("DELETE FROM sessions WHERE id = ?", session["id"])
+            session = None
+        if session:
+            user = db().first("SELECT * FROM users WHERE id = ?", session["user_id"])
+            if user and str(session["last_seen"] or "") < utc_stamp(300):  # at most one write per 5 minutes
+                db().run("UPDATE sessions SET last_seen = ?, ip_address = ? WHERE id = ?", utc_stamp(), (request.remote_addr or "")[:64], session["id"])
+        else:
+            # Logged in before sessions existed: the token is still on the user. Move it into a session.
+            user = db().first("SELECT * FROM users WHERE token = ?", token)
+            if user:
+                now = utc_stamp()
+                db().run("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+                         user["id"], token_hash(token), (request.remote_addr or "")[:64], request.headers.get("User-Agent", "")[:300], now, now)
+                db().run("UPDATE users SET token = NULL WHERE id = ?", user["id"])
+                session = db().first("SELECT * FROM sessions WHERE token_hash = ?", token_hash(token))
+        if user:
+            user["token"] = token  # the admin password unlock is tied to this browser's login
+            user["session_id"] = session["id"] if session else None
+    g.current_user = user
+    return user
+
+
+def device_label(user_agent):
+    """"Chrome on Windows" and so on, from the browser's User-Agent."""
+    ua = str(user_agent or "")
+    browser = next((name for key, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
+                                           ("Safari/", "Safari")) if key in ua), "A browser")
+    system = next((name for key, name in (("Windows", "Windows"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
+                                          ("Mac OS X", "Mac"), ("CrOS", "Chromebook"), ("Linux", "Linux")) if key in ua), "")
+    return f"{browser} on {system}" if system else browser
+
+
+def session_rows(user_id, current_id=None):
+    rows = db().all("SELECT id, ip_address, user_agent, created_at, last_seen FROM sessions WHERE user_id = ? ORDER BY last_seen DESC", user_id)
+    return [{"id": r["id"], "device": device_label(r["user_agent"]), "ip_address": r["ip_address"] or "", "created_at": r["created_at"],
+             "last_seen": r["last_seen"], "current": r["id"] == current_id} for r in rows]
 
 
 def staff_user():
@@ -305,18 +374,16 @@ def login():
     admin_email = os.environ.get("ADMIN_EMAIL", "Eliaz@rotaidem.com")
     admin_name = os.environ.get("ADMIN_USERNAME", "eliaz")
     if not user and admin_pw and hmac.compare_digest(password, admin_pw) and ident in (admin_email.lower(), admin_name.lower()):
-        token = uuid.uuid4().hex
-        db().run("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Owner', ?)",
-                 admin_name, admin_email, hash_password(password), token)
-        return jsonify(session_payload({"name": admin_name, "email": admin_email, "role": "Owner"}, token))
+        db().run("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'Owner')",
+                 admin_name, admin_email, hash_password(password))
+        owner = db().first("SELECT id FROM users WHERE LOWER(email) = ?", admin_email.lower())
+        return jsonify(session_payload({"name": admin_name, "email": admin_email, "role": "Owner"}, new_session(owner["id"])))
     if not user or not verify_password(password, user["password_hash"]):
         return err("Invalid email or password", 401)
     if not email_verified(user):
         return jsonify({"error": "Confirm your email address first: click the link in the email we sent you when you signed up.",
                         "unverified": True, "email": user["email"]}), 403
-    token = uuid.uuid4().hex
-    db().run("UPDATE users SET token = ? WHERE id = ?", token, user["id"])
-    return jsonify(session_payload(user, token))
+    return jsonify(session_payload(user, new_session(user["id"])))
 
 
 def email_verified(user):
@@ -339,10 +406,10 @@ def signup():
     if not RESEND_API_KEY:
         # Without email there is no way to confirm an address: the account works at once, as before.
         app.logger.warning("Sign-up without email confirmation: RESEND_API_KEY is not set")
-        token = uuid.uuid4().hex
-        db().run("INSERT INTO users (name, email, password_hash, role, token, email_verified) VALUES (?, ?, ?, 'Customer', ?, 1)",
-                 name, email, hash_password(password), token)
-        return jsonify({"token": token, "name": name, "email": email, "role": "Customer", "is_admin": False})
+        db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 1)",
+                 name, email, hash_password(password))
+        new_user = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email)
+        return jsonify({"token": new_session(new_user["id"]), "name": name, "email": email, "role": "Customer", "is_admin": False})
     db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)",
              name, email, hash_password(password))
     user = db().first("SELECT * FROM users WHERE LOWER(email) = ?", email)
@@ -414,8 +481,8 @@ def verify_email():
     user = user_for_verify_token(body().get("token"))
     if not user:
         return err("This confirmation link has expired or is not valid. Log in to get a new one.", 400)
-    token = uuid.uuid4().hex
-    db().run("UPDATE users SET email_verified = 1, token = ? WHERE id = ?", token, user["id"])
+    db().run("UPDATE users SET email_verified = 1 WHERE id = ?", user["id"])
+    token = new_session(user["id"])
     if not email_verified(user):
         db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'email_verified', ?, ?, ?)",
                  user["id"], user["email"], request.remote_addr or "", utc_stamp())
@@ -454,7 +521,36 @@ def resend_verify_email():
 def logout():
     token = bearer()
     if token:
-        db().run("UPDATE users SET token = NULL WHERE token = ?", token)
+        db().run("DELETE FROM sessions WHERE token_hash = ?", token_hash(token))
+        db().run("UPDATE users SET token = NULL WHERE token = ?", token)  # a login from before sessions
+    return jsonify({"ok": True})
+
+
+# ---------- where you are logged in ----------
+
+@app.get("/api/account/sessions")
+def account_sessions():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    return jsonify({"sessions": session_rows(user["id"], user.get("session_id"))})
+
+
+@app.delete("/api/account/sessions/<int:session_id>")
+def account_end_session(session_id):
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    db().run("DELETE FROM sessions WHERE id = ? AND user_id = ?", session_id, user["id"])
+    return jsonify({"ok": True, "current": session_id == user.get("session_id")})
+
+
+@app.post("/api/account/sessions/others")
+def account_end_other_sessions():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    end_sessions(user["id"], keep=user.get("session_id"))
     return jsonify({"ok": True})
 
 
@@ -712,8 +808,9 @@ def password_reset():
     password = str(b.get("password", ""))
     if len(password) < 6:
         return err("The new password must be at least 6 characters", 400)
-    token = uuid.uuid4().hex  # signs out every other browser and signs this one in
-    db().run("UPDATE users SET password_hash = ?, token = ?, email_verified = 1 WHERE id = ?", hash_password(password), token, user["id"])
+    db().run("UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?", hash_password(password), user["id"])
+    end_sessions(user["id"])  # a new password logs out every other browser
+    token = new_session(user["id"])
     db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)",
              user["id"], user["email"] or "", request.remote_addr or "", utc_stamp())
     return jsonify(session_payload(user, token))
@@ -736,6 +833,7 @@ def account_settings():
         if not verify_password(current, user["password_hash"]):
             return err("Current password is required and must be correct", 400)
         db().run("UPDATE users SET name = ?, password_hash = ? WHERE id = ?", name, hash_password(new), user["id"])
+        end_sessions(user["id"], keep=user.get("session_id"))  # a new password logs out the other browsers
     else:
         db().run("UPDATE users SET name = ? WHERE id = ?", name, user["id"])
     return jsonify({"ok": True, "name": name})
@@ -945,7 +1043,8 @@ def admin_set_role(user_id):
         return err("Unknown role", 400)
     if user_id == user["id"]:
         return err("You cannot change your own role", 400)
-    db().run("UPDATE users SET role = ?, token = NULL WHERE id = ?", role, user_id)
+    db().run("UPDATE users SET role = ? WHERE id = ?", role, user_id)
+    end_sessions(user_id)
     audit(user, "set_role", f"{user_id}:{role}")
     return jsonify({"ok": True})
 
@@ -2052,7 +2151,18 @@ def admin_user_detail(user_id):
     u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
     u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                              "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
+    u["sessions"] = session_rows(user_id)
     return jsonify({"user": u})
+
+
+@app.delete("/api/admin/users/<int:user_id>/sessions/<int:session_id>")
+def admin_end_session(user_id, session_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can log users out", 403)
+    db().run("DELETE FROM sessions WHERE id = ? AND user_id = ?", session_id, user_id)
+    audit(user, "end_session", f"user {user_id}")
+    return jsonify({"ok": True})
 
 
 @app.post("/api/admin/users/<int:user_id>/verify")
@@ -2074,7 +2184,7 @@ def admin_sign_out_user(user_id):
         return err("Only the Owner or an Admin can sign users out", 403)
     if user_id == user["id"]:
         return err("Use Log out to sign yourself out", 400)
-    db().run("UPDATE users SET token = NULL WHERE id = ?", user_id)
+    end_sessions(user_id)
     audit(user, "sign_out_user", user_id)
     return jsonify({"ok": True})
 
@@ -2092,6 +2202,7 @@ def admin_delete_user(user_id):
     # Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
     db().run("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?", user_id)
     db().run("DELETE FROM users WHERE id = ?", user_id)
+    db().run("DELETE FROM sessions WHERE user_id = ?", user_id)
     audit(user, "delete_user", target["email"])
     return jsonify({"ok": True})
 
@@ -2143,26 +2254,86 @@ def email_image_tag(base, url):
     return f'<img src="{escape(url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">'
 
 
-def product_email_html(product, message, email, images=()):
+EMAIL_LAYOUTS = ("classic", "update", "launch", "plain")
+BULLET = re.compile(r"^[-*\u2022]\s+")
+BUTTON_STYLE = "display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold"
+
+
+def email_paragraphs(message, bullets=False):
+    """The message as HTML: blank lines split paragraphs; with bullets, lines starting with - or * become a list."""
+    out, items = [], []
+    for block in re.split(r"\n\s*\n", (message or "").strip()):
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        for line in lines:
+            if bullets and BULLET.match(line):
+                item = escape(BULLET.sub("", line))
+                items.append(f'<li style="margin:0 0 6px">{item}</li>')
+                continue
+            if items:
+                out.append(f'<ul style="margin:0 0 16px;padding-left:22px">{"".join(items)}</ul>')
+                items = []
+            out.append(f'<p style="margin:0 0 14px">{escape(line)}</p>')
+        if items:
+            out.append(f'<ul style="margin:0 0 16px;padding-left:22px">{"".join(items)}</ul>')
+            items = []
+    return "".join(out)
+
+
+def email_button(base, button, product, layout):
+    """The button: the admin's own text and link, or a sensible default for the layout."""
+    button = button or {}
+    url = str(button.get("url") or "").strip()
+    if url.startswith("/"):
+        url = base + url
+    if not url:
+        url = f"{base}/downloads" if layout == "update" else (f"{base}/addons/view?id={product['id']}" if product else base)
+    text = str(button.get("text") or "").strip() or ("Download the update" if layout == "update" else
+                                                     f"View {product['name']}" if product else "Visit rotaidem.com")
+    return url, text
+
+
+def product_email_html(product, message, email, images=(), layout="classic", subject="", button=None):
+    """The email of "Email a product", in one of four layouts."""
     base = site_url()
-    link = f"{base}/addons/view?id={product['id']}" if product else base
+    layout = layout if layout in EMAIL_LAYOUTS else "classic"
     unsub = f"{base}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
-    text = "<br>".join(escape(line) for line in (message or "").splitlines())
-    pictures = "".join(email_image_tag(base, url) for url in images)
-    block = ""
+    url, label = email_button(base, button, product, layout)
+    pictures = [email_image_tag(base, u) for u in images]
+    footer = (f'<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have '
+              f'an account with Rotaidem, contacted us or subscribed to our news.\n<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>')
+    head = '<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>'
+    product_block = ""
     if product:
-        img = email_image_tag(base, product.get("image_url") or "")
-        block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
-                 f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
-                 f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
+        product_block = (f'{email_image_tag(base, product.get("image_url") or "")}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
+                         f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
+                         f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
+    if layout == "update":
+        rows = (f'{head}<tr><td style="padding:28px 28px 0"><div style="font-size:12px;font-weight:bold;letter-spacing:2px;color:#6b7480">UPDATE</div>'
+                f'<h1 style="margin:6px 0 18px;font-size:24px;color:#141517">{escape(subject)}</h1></td></tr>'
+                f'<tr><td style="padding:0 28px 8px;font-size:16px;line-height:1.6">{email_paragraphs(message, bullets=True)}</td></tr>'
+                f'<tr><td style="padding:8px 28px 28px">{"".join(pictures)}<a href="{escape(url)}" style="{BUTTON_STYLE}">{escape(label)}</a></td></tr>')
+    elif layout == "launch":
+        hero, rest = (pictures[0], pictures[1:]) if pictures else ("", [])
+        hero = hero.replace("margin:0 0 20px", "margin:0")
+        rows = (f'{head}<tr><td style="padding:0">{hero}</td></tr>'
+                f'<tr><td align="center" style="padding:34px 32px 6px;text-align:center"><h1 style="margin:0 0 14px;font-size:30px;line-height:1.2;color:#141517">{escape(subject)}</h1>'
+                f'<div style="font-size:17px;line-height:1.6;color:#39424e">{email_paragraphs(message)}</div></td></tr>'
+                f'<tr><td align="center" style="padding:6px 32px 34px;text-align:center"><a href="{escape(url)}" style="{BUTTON_STYLE};padding:16px 34px;font-size:17px">{escape(label)}</a></td></tr>'
+                + (f'<tr><td style="padding:0 28px 12px">{"".join(rest)}</td></tr>' if rest else ""))
+    elif layout == "plain":
+        link = f'<p style="margin:0 0 14px"><a href="{escape(url)}" style="color:#141517">{escape(label)}</a></p>' if (button or {}).get("url") or (button or {}).get("text") else ""
+        rows = (f'<tr><td style="padding:32px 32px 8px;font-size:16px;line-height:1.7;color:#222">{email_paragraphs(message)}{link}'
+                f'<p style="margin:18px 0 0">Eliaz<br><span style="color:#6b7480">Rotaidem</span></p></td></tr>'
+                + (f'<tr><td style="padding:12px 32px 20px">{"".join(pictures)}</td></tr>' if pictures else ""))
+    else:
+        text = "<br>".join(escape(line) for line in (message or "").splitlines())
+        rows = (f'{head}<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>'
+                f'<tr><td style="padding:12px 28px 28px">{"".join(pictures)}{product_block}<a href="{escape(url)}" style="{BUTTON_STYLE}">{escape(label)}</a></td></tr>')
     return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
-<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
-<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>
-<tr><td style="padding:12px 28px 28px">{pictures}{block}<a href="{escape(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
-<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+{rows}
+{footer}
 </table></td></tr></table></body></html>"""
 
 
@@ -2220,6 +2391,88 @@ def admin_audience():
                     "email_ready": bool(RESEND_API_KEY), "from": MAIL_FROM})
 
 
+def email_options(b):
+    """Pictures, layout and button of an email from the admin, checked; raises ValueError for the admin."""
+    images = []
+    for url in b.get("images") or []:
+        clean = valid_image_url(url)
+        if not clean:
+            raise ValueError("Each picture must be uploaded or an https:// link")
+        images.append(clean)
+    if len(images) > EMAIL_IMAGES_MAX:
+        raise ValueError(f"At most {EMAIL_IMAGES_MAX} pictures per email")
+    layout = b.get("layout") if b.get("layout") in EMAIL_LAYOUTS else "classic"
+    button = b.get("button") or {}
+    url, text = str(button.get("url") or "").strip(), str(button.get("text") or "").strip()[:60]
+    if url and not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//"))):
+        raise ValueError("The button link must start with https:// or be a page like /downloads")
+    return images, layout, {"url": url[:500], "text": text}
+
+
+@app.post("/api/admin/email-preview")
+def admin_email_preview():
+    """The email exactly as it will be sent, for the preview in the admin."""
+    if not manager_user():
+        return err("Only the Owner or an Admin can send emails", 403)
+    b = body()
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"]) if b.get("product_id") else None
+    message = str(b.get("message") or "").strip() or "Your message appears here."
+    return jsonify({"html": product_email_html(product, message, "preview@example.com", images, layout,
+                                               str(b.get("subject") or "").strip() or "Your subject", button)})
+
+
+TEMPLATES_MAX = 30
+
+
+@app.get("/api/admin/email-templates")
+def admin_email_templates():
+    if not manager_user():
+        return err("Only the Owner or an Admin can send emails", 403)
+    return jsonify({"templates": get_setting("email.templates", []) or []})
+
+
+@app.post("/api/admin/email-templates")
+def admin_save_email_template():
+    """Saves the composed email under a name (the same name replaces it)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    b = body()
+    name = str(b.get("name") or "").strip()[:60]
+    if not name:
+        return err("Give the template a name", 400)
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    item = {"name": name, "subject": str(b.get("subject") or "")[:200], "message": str(b.get("message") or "")[:20000],
+            "product_id": str(b.get("product_id") or "")[:100], "images": images, "layout": layout, "button": button}
+    templates = [t for t in (get_setting("email.templates", []) or []) if t.get("name") != name]
+    if len(templates) >= TEMPLATES_MAX:
+        return err(f"At most {TEMPLATES_MAX} templates. Delete one first.", 400)
+    templates = sorted(templates + [item], key=lambda t: t["name"].lower())
+    if len(json.dumps(templates)) > 60000:  # the settings column holds 64 KB on MySQL
+        return err("There is no room for this template. Delete an old one or shorten the message.", 400)
+    set_setting("email.templates", templates)
+    audit(user, "save_email_template", name)
+    return jsonify({"ok": True, "templates": get_setting("email.templates", [])})
+
+
+@app.delete("/api/admin/email-templates")
+def admin_delete_email_template():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    name = str(request.args.get("name") or "")
+    set_setting("email.templates", [t for t in (get_setting("email.templates", []) or []) if t.get("name") != name])
+    audit(user, "delete_email_template", name)
+    return jsonify({"ok": True, "templates": get_setting("email.templates", [])})
+
+
 @app.post("/api/admin/broadcast")
 def admin_broadcast():
     user = manager_user()
@@ -2237,14 +2490,10 @@ def admin_broadcast():
         product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"])
         if not product:
             return err("That product no longer exists", 400)
-    images = []
-    for url in b.get("images") or []:
-        clean = valid_image_url(url)
-        if not clean:
-            return err("Each picture must be uploaded or an https:// link", 400)
-        images.append(clean)
-    if len(images) > EMAIL_IMAGES_MAX:
-        return err(f"At most {EMAIL_IMAGES_MAX} pictures per email", 400)
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
     test = str(b.get("test_email", "")).strip().lower()
     if test:
         if not EMAIL_RE.match(test):
@@ -2258,7 +2507,7 @@ def admin_broadcast():
     sent, failed, last_error = 0, 0, ""
     for i in range(0, len(recipients), 100):
         chunk = recipients[i:i + 100]
-        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images)} for r in chunk]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images, layout, subject, button)} for r in chunk]
         ok, error = send_batch(messages)
         sent += ok
         if error:
