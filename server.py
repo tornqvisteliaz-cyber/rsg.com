@@ -828,6 +828,7 @@ def admin_overview():
     return jsonify({"id": user["id"], "name": user["name"], "role": user["role"],
                     "products": n("SELECT COUNT(*) AS n FROM products"),
                     "customers": n("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'"),
+                    "new_users_7d": n(f"SELECT COUNT(*) AS n FROM users WHERE created_at >= '{utc_stamp(7 * 86400)}'"),
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
                     "drafts": n("SELECT COUNT(*) AS n FROM posts WHERE status = 'draft'"),
@@ -1596,13 +1597,66 @@ def clean_config(c):
             "maintenance": {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "").strip()[:500]}}
 
 
+ROADMAP_STAGES = ("Done", "In progress", "Next", "Later")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+LINK_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def clean_roadmap(items):
+    """The roadmap page from the admin: [{stage, title, text}], at most 40 steps."""
+    if not isinstance(items, list) or len(items) > 40:
+        raise ValueError("The roadmap can have at most 40 steps")
+    out = []
+    for i in items:
+        title = str((i or {}).get("title") or "").strip()[:120]
+        if not title:
+            continue
+        stage = i.get("stage") if i.get("stage") in ROADMAP_STAGES else "Next"
+        out.append({"stage": stage, "title": title, "text": str(i.get("text") or "").strip()[:600]})
+    return out
+
+
+def clean_faq(items):
+    """The questions on the Support page: [{q, a}], at most 60."""
+    if not isinstance(items, list) or len(items) > 60:
+        raise ValueError("The FAQ can have at most 60 questions")
+    out = []
+    for i in items:
+        q, a = str((i or {}).get("q") or "").strip()[:200], str((i or {}).get("a") or "").strip()[:2000]
+        if q and a:
+            out.append({"q": q, "a": a})
+    return out
+
+
+def clean_links(links):
+    """Short links like rotaidem.com/discord: {slug: target}. A slug may not be an existing page."""
+    if not isinstance(links, dict) or len(links) > 100:
+        raise ValueError("At most 100 short links")
+    out = {}
+    for slug, target in links.items():
+        slug, target = str(slug).strip().strip("/").lower(), str(target or "").strip()
+        if not slug and not target:
+            continue
+        if not LINK_SLUG.match(slug):
+            raise ValueError(f"Short link /{slug}: use lowercase letters, digits and dashes")
+        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health"):
+            raise ValueError(f"/{slug} is already a page on the site")
+        if not (target.startswith("https://") or (target.startswith("/") and not target.startswith("//"))) or len(target) > 500:
+            raise ValueError(f"Short link /{slug} must point to an https:// address or a page like /downloads")
+        out[slug] = target
+    return out
+
+
 def site_settings():
     images = dict(IMAGE_SLOTS)
     images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
     banner = get_setting("site.announcement", {}) or {}
     texts = get_setting("site.texts", {}) or {}
     return {"images": images, "defaults": IMAGE_SLOTS, "texts": texts if isinstance(texts, dict) else {}, "config": site_config(),
-            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
+            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
+                             "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
+            "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
+            "links": get_setting("site.links", {}) or {}}
 
 
 # Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their
@@ -1649,12 +1703,21 @@ def admin_save_settings():
         link = str(a.get("link") or "").strip()
         if link and not (link.startswith("https://") or link.startswith("/")):
             return err("The banner link must start with https:// or /", 400)
-        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
-    if "config" in b:
-        try:
+        window = {k: str(a.get(k) or "").strip() for k in ("from", "until")}
+        if any(v and not DATE_RE.match(v) for v in window.values()):
+            return err("Banner dates must look like 2026-11-01", 400)
+        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300], **window})
+    try:
+        if "config" in b:
             set_setting("site.config", clean_config(b.get("config") or {}))
-        except ValueError as exc:
-            return err(str(exc), 400)
+        if "roadmap" in b:
+            set_setting("site.roadmap", clean_roadmap(b.get("roadmap")))
+        if "faq" in b:
+            set_setting("site.faq", clean_faq(b.get("faq")))
+        if "links" in b:
+            set_setting("site.links", clean_links(b.get("links")))
+    except ValueError as exc:
+        return err(str(exc), 400)
     if "texts" in b:
         # A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
         changes = b.get("texts")
@@ -1675,7 +1738,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
@@ -1846,6 +1909,19 @@ def admin_user_detail(user_id):
     u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                              "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
     return jsonify({"user": u})
+
+
+@app.post("/api/admin/users/<int:user_id>/sign-out")
+def admin_sign_out_user(user_id):
+    """Ends the user's session on every device (e.g. a shared or lost computer)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can sign users out", 403)
+    if user_id == user["id"]:
+        return err("Use Log out to sign yourself out", 400)
+    db().run("UPDATE users SET token = NULL WHERE id = ?", user_id)
+    audit(user, "sign_out_user", user_id)
+    return jsonify({"ok": True})
 
 
 @app.delete("/api/admin/users/<int:user_id>")

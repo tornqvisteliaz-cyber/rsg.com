@@ -70,6 +70,7 @@ async function handleRequest(context) {
     if (method === "DELETE" && path.startsWith("/api/admin/subscribers/")) return adminDeleteSubscriber(request, env, Number(path.split("/").pop()));
     if (method === "POST" && path === "/api/admin/subscribers") return adminAddSubscribers(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/reset-link$/.test(path)) return adminSendResetLink(request, env, Number(path.split("/")[4]));
+    if (method === "POST" && /^\/api\/admin\/users\/\d+\/sign-out$/.test(path)) return adminSignOutUser(request, env, Number(path.split("/")[4]));
     if (method === "GET" && path === "/api/site") return json(await siteSettings(env));
     if (method === "GET" && path === "/api/admin/settings") return adminSettings(request, env);
     if (method === "POST" && path === "/api/admin/settings") return adminSaveSettings(request, env);
@@ -322,6 +323,7 @@ async function adminOverview(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const prodCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM products").first();
   const custCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'").first();
+  const newUsers = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE created_at >= ?").bind(utcStamp(7 * 86400)).first();
   const orderCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM orders").first();
   const postCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first();
   const msgCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages").first();
@@ -330,7 +332,7 @@ async function adminOverview(request, env) {
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
   const licCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -459,13 +461,41 @@ function cleanConfig(c) {
   return { contact_email: email || CONFIG_DEFAULT.contact_email, footer_text: String(c.footer_text || "").trim().slice(0, 300) || CONFIG_DEFAULT.footer_text,
     socials, maintenance: { enabled: !!m.enabled, message: String(m.message || "").trim().slice(0, 500) } };
 }
+const ROADMAP_STAGES = ["Done", "In progress", "Next", "Later"];
+// Pages and folders of the site: a short link may not take their address.
+const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "health", "heavypro", "img", "index",
+  "installation", "login", "media", "newsletter", "privacy", "reset-password", "roadmap", "signup", "support", "terms", "unsubscribe", "work-at-rsg", "files", "fonts"];
+function cleanRoadmap(items) {
+  if (!Array.isArray(items) || items.length > 40) throw new Error("The roadmap can have at most 40 steps");
+  return items.map(i => ({ stage: ROADMAP_STAGES.includes((i || {}).stage) ? i.stage : "Next", title: String((i || {}).title || "").trim().slice(0, 120), text: String((i || {}).text || "").trim().slice(0, 600) }))
+    .filter(i => i.title);
+}
+function cleanFaq(items) {
+  if (!Array.isArray(items) || items.length > 60) throw new Error("The FAQ can have at most 60 questions");
+  return items.map(i => ({ q: String((i || {}).q || "").trim().slice(0, 200), a: String((i || {}).a || "").trim().slice(0, 2000) })).filter(i => i.q && i.a);
+}
+function cleanLinks(links) {
+  if (!links || typeof links !== "object" || Array.isArray(links) || Object.keys(links).length > 100) throw new Error("At most 100 short links");
+  const out = {};
+  for (const [raw, rawTarget] of Object.entries(links)) {
+    const slug = String(raw).trim().replace(/^\/+|\/+$/g, "").toLowerCase(), target = String(rawTarget || "").trim();
+    if (!slug && !target) continue;
+    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`Short link /${slug}: use lowercase letters, digits and dashes`);
+    if (SITE_PAGES.includes(slug)) throw new Error(`/${slug} is already a page on the site`);
+    if (!(target.startsWith("https://") || (target.startsWith("/") && !target.startsWith("//"))) || target.length > 500) throw new Error(`Short link /${slug} must point to an https:// address or a page like /downloads`);
+    out[slug] = target;
+  }
+  return out;
+}
 async function siteSettings(env) {
   const saved = (await getSetting(env, "site.images", {})) || {};
   const images = { ...IMAGE_SLOTS };
   for (const [k, v] of Object.entries(saved)) if (k in IMAGE_SLOTS && v) images[k] = v;
   const banner = (await getSetting(env, "site.announcement", {})) || {};
   const texts = (await getSetting(env, "site.texts", {})) || {};
-  return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env), announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || "") } };
+  return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
+    announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
+    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {} };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -496,11 +526,16 @@ async function adminSaveSettings(request, env) {
     const a = body.announcement || {};
     const link = String(a.link || "").trim();
     if (link && !(link.startsWith("https://") || link.startsWith("/"))) return json({ error: "The banner link must start with https:// or /" }, 400);
-    await setSetting(env, "site.announcement", { enabled: !!a.enabled, text: String(a.text || "").slice(0, 200), link: link.slice(0, 300) });
+    const from = String(a.from || "").trim(), until = String(a.until || "").trim();
+    if ([from, until].some(v => v && !/^\d{4}-\d{2}-\d{2}$/.test(v))) return json({ error: "Banner dates must look like 2026-11-01" }, 400);
+    await setSetting(env, "site.announcement", { enabled: !!a.enabled, text: String(a.text || "").slice(0, 200), link: link.slice(0, 300), from, until });
   }
-  if ("config" in body) {
-    try { await setSetting(env, "site.config", cleanConfig(body.config || {})); } catch (err) { return json({ error: err.message }, 400); }
-  }
+  try {
+    if ("config" in body) await setSetting(env, "site.config", cleanConfig(body.config || {}));
+    if ("roadmap" in body) await setSetting(env, "site.roadmap", cleanRoadmap(body.roadmap));
+    if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
+    if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
+  } catch (err) { return json({ error: err.message }, 400); }
   if ("texts" in body) {
     // A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
     const changes = body.texts;
@@ -515,7 +550,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "links", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
@@ -1226,6 +1261,16 @@ async function adminAddSubscribers(request, env) {
   }
   if (added) await audit(env, user, "add_subscribers", `${added} added`);
   return json({ ok: true, added, skipped, invalid: invalid.slice(0, 50) });
+}
+
+// Ends the user's session on every device (e.g. a shared or lost computer).
+async function adminSignOutUser(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can sign users out" }, 403);
+  if (id === user.id) return json({ error: "Use Log out to sign yourself out" }, 400);
+  await env.DB.prepare("UPDATE users SET token = NULL WHERE id = ?").bind(id).run();
+  await audit(env, user, "sign_out_user", id);
+  return json({ ok: true });
 }
 
 // Staff send a user the same reset email as Forgot password.

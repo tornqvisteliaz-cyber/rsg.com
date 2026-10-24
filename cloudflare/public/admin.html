@@ -51,6 +51,18 @@
         .preview-mail .mail-body { padding: 22px; line-height: 1.6; }
         .preview-mail .mail-foot { padding: 14px 22px; border-top: 1px solid #e4e4e7; font-size: 12px; color: #6d6f75; }
         .preview-mail img { width: 100%; margin-bottom: 14px; }
+        .list-edit { display: grid; gap: 10px; margin-bottom: 14px; }
+        .list-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; border: 1px solid var(--line); background: var(--bg-2); padding: 12px; }
+        .list-row .fields { display: grid; gap: 8px; }
+        .list-row .fields.two-col { grid-template-columns: 150px 1fr; }
+        .list-row .tools { display: flex; flex-direction: column; gap: 4px; }
+        .list-row .tools button { background: none; border: 1px solid var(--line); color: var(--text); width: 32px; height: 28px; cursor: pointer; font: inherit; }
+        .list-row .tools button:hover:not([disabled]) { background: var(--navy-hover); color: var(--ink); }
+        .list-row .tools button[disabled] { opacity: .3; cursor: default; }
+        .link-row { display: grid; grid-template-columns: 220px 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+        .link-row .slug { display: flex; align-items: center; }
+        .link-row .slug span { color: var(--muted); font-size: 14px; padding-right: 6px; white-space: nowrap; }
+        @media (max-width: 700px) { .list-row .fields.two-col, .link-row { grid-template-columns: 1fr; } }
         .email-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; margin-bottom: 10px; }
         .email-pic { border: 1px solid var(--line); background: var(--bg-2); }
         .email-pic img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
@@ -140,6 +152,7 @@
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
     <div class="group">Website</div>
     <button class="tab" data-tab="texts">Page texts</button>
+    <button class="tab" data-tab="pages">Roadmap &amp; FAQ</button>
     <button class="tab" data-tab="site">Site settings</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
     <div class="group">Marketing</div>
@@ -166,7 +179,7 @@
             <div><span>Orders</span><strong id="s-orders">0</strong></div>
             <div><span>Customers</span><strong id="s-customers">0</strong></div>
             <div><span>Subscribers</span><strong id="s-subscribers">0</strong></div>
-            <div><span>Products</span><strong id="s-products">0</strong></div>
+            <div><span>New accounts, 7 days</span><strong id="s-new_users_7d">0</strong></div>
         </div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Orders, last 30 days</h2><span class="muted" style="font-size:13px" id="chart-total"></span></div><div class="bars" id="chart"></div><div class="bars-legend"><span id="chart-start"></span><span>Today</span></div></div>
         <div class="two">
@@ -234,11 +247,21 @@
                 <div class="full"><div class="hint" style="margin:0 0 12px">Leave a link empty to hide it.</div><button class="btn">Save</button></div>
             </div>
         </form>
+        <form class="panel" id="links-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Short links</h2><span class="muted" style="font-size:13px">Easy addresses to share, like rotaidem.com/discord</span></div>
+            <div class="panel-body">
+                <div id="links-list"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="links-add">Add short link</button><button class="btn">Save short links</button></div>
+                <div class="hint">Points to any https:// address or a page on the site (like /downloads). Addresses that are already pages cannot be used.</div>
+            </div>
+        </form>
         <form class="panel" id="banner-form" style="margin-bottom:24px">
             <div class="panel-head"><h2>Announcement banner</h2><span class="muted" style="font-size:13px">A thin bar above the menu on every page</span></div>
             <div class="panel-body form-grid">
                 <div class="field full"><label for="b-text">Text</label><input id="b-text" maxlength="200" placeholder="HeavyPro 1.0 is out now"></div>
                 <div class="field"><label for="b-link">Link (optional)</label><input id="b-link" placeholder="/heavypro or https://"></div>
+                <div class="field"><label for="b-from">Show from (optional)</label><input id="b-from" type="date"></div>
+                <div class="field"><label for="b-until">Show until (optional)</label><input id="b-until" type="date"><div class="hint">Leave both empty to show it until you switch it off.</div></div>
                 <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:28px 0 0"><input type="checkbox" id="b-on"> Show the banner</label>
                 <div class="full"><button class="btn">Save banner</button></div>
             </div>
@@ -246,6 +269,25 @@
         <div class="panel">
             <div class="panel-head"><h2>Site images</h2><span class="muted" style="font-size:13px">Upload your own screenshots or photos for each place on the site</span></div>
             <div class="panel-body"><div class="slots" id="slots"></div></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-pages" data-title="Roadmap & FAQ">
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Roadmap</h2><a class="btn btn-ghost btn-sm" href="/roadmap" target="_blank" rel="noopener">View page</a></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">The steps on the Roadmap page, top to bottom. Move a step from Next to In progress to Done as you go.</p>
+                <div class="list-edit" id="rm-list"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="rm-add">Add step</button><button class="btn" type="button" id="rm-save">Save roadmap</button><button class="btn btn-ghost btn-sm" type="button" id="rm-reset">Back to the original</button></div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-head"><h2>Frequently asked questions</h2><a class="btn btn-ghost btn-sm" href="/support" target="_blank" rel="noopener">View page</a></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">The questions on the Support page. Add the ones testers ask you most.</p>
+                <div class="list-edit" id="faq-list"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="faq-add">Add question</button><button class="btn" type="button" id="faq-save">Save FAQ</button><button class="btn btn-ghost btn-sm" type="button" id="faq-reset">Back to the original</button></div>
+            </div>
         </div>
     </section>
 
@@ -392,7 +434,8 @@
     <section class="pane" id="pane-activity" data-title="Activity log">
         <div class="panel" id="backup-panel" style="margin-bottom:24px;display:none"><div class="panel-head"><h2>Backup</h2><button class="btn btn-ghost btn-sm" type="button" id="backup-btn">Download backup</button></div>
             <div class="panel-body muted" style="font-size:14px">One file with every account, product, order, licence, image and setting. Keep it somewhere safe; it can also move the site to another host.</div></div>
-        <div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><h2>Recent activity</h2><div class="actions"><input class="search" id="audit-search" placeholder="Search person, action or detail"><button class="btn btn-ghost btn-sm" type="button" onclick="exportAudit()">Export CSV</button></div></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
     </section>
     </div>
 </main>
@@ -445,7 +488,7 @@
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
-    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+    <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="gate" id="gate" hidden>
@@ -603,7 +646,7 @@ async function loadOverview() {
     state.role = o.role; state.me = o.id; $("backup-panel").style.display = o.role === "Owner" ? "" : "none"; state.emailReady = !!o.email_ready;
     $("who-name").textContent = o.name; $("who-role").textContent = o.role;
     $("s-revenue").textContent = money(o.revenue);
-    for (const k of ["orders", "customers", "products", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
+    for (const k of ["orders", "customers", "new_users_7d", "subscribers"]) $("s-" + k).textContent = o[k] || 0;
     for (const k of ["products", "posts", "orders", "subscribers"]) $("c-" + k).textContent = o[k] || "";
     $("c-messages").textContent = o.open_messages ?? o.messages ?? "";
     $("email-setup").style.display = state.emailReady ? "none" : "";
@@ -966,6 +1009,11 @@ async function openUser(id) {
             if (!await confirmBox("Send a password reset link?", `${u.email} gets an email with a link to choose a new password. Their current password keeps working until they use it.`, "Send link")) return;
             try { const r = await post(`/api/admin/users/${id}/reset-link`, {}); toast("Reset link sent to " + r.sent_to); } catch (err) { toast(err.message, true); }
         };
+        $("um-signout").style.display = ["Owner", "Admin"].includes(state.role) && u.id !== state.me ? "" : "none";
+        $("um-signout").onclick = async () => {
+            if (!await confirmBox("Sign " + u.name + " out everywhere?", "They are logged out on every computer and phone and must log in again. Useful for a lost or shared computer.", "Sign out")) return;
+            try { await post(`/api/admin/users/${id}/sign-out`, {}); toast(u.name + " is signed out everywhere"); } catch (err) { toast(err.message, true); }
+        };
         $("um-delete").style.display = state.role === "Owner" && u.id !== state.me ? "" : "none";
         $("um-delete").onclick = async () => {
             $("user-modal").classList.remove("show");
@@ -1106,9 +1154,80 @@ async function loadSite() {
     state.site = await api("/api/admin/settings");
     const a = state.site.announcement || {};
     $("b-text").value = a.text || ""; $("b-link").value = a.link || ""; $("b-on").checked = !!a.enabled;
+    $("b-from").value = a.from || ""; $("b-until").value = a.until || "";
+    state.links = Object.entries(state.site.links || {}).map(([slug, target]) => ({ slug, target }));
+    renderLinks();
     renderConfig();
     renderSlots();
+    loadPagesEditor();
 }
+
+// Roadmap and FAQ: start from what is saved, or from the steps and questions the pages show now.
+async function pageItems(path, read) {
+    try { return read(new DOMParser().parseFromString(await (await fetch(path)).text(), "text/html")); } catch (err) { return []; }
+}
+async function loadPagesEditor() {
+    state.roadmap = (state.site.roadmap || []).length ? state.site.roadmap.map(i => ({ ...i }))
+        : await pageItems("/roadmap", doc => [...doc.querySelectorAll("[data-roadmap] > div")].map(d => ({ stage: (d.querySelector(".when") || {}).textContent || "Next", title: (d.querySelector("h3") || {}).textContent || "", text: (d.querySelector("p") || {}).textContent || "" })));
+    state.faq = (state.site.faq || []).length ? state.site.faq.map(i => ({ ...i }))
+        : await pageItems("/support", doc => [...doc.querySelectorAll("[data-faq] details")].map(d => ({ q: (d.querySelector("summary") || {}).textContent || "", a: (d.querySelector("p") || {}).textContent || "" })));
+    renderRoadmap(); renderFaq();
+}
+const STAGES = ["Done", "In progress", "Next", "Later"];
+function rowTools(kind, i, last) {
+    return `<div class="tools"><button type="button" data-${kind}-move="${i}" data-dir="-1" aria-label="Move up"${i === 0 ? " disabled" : ""}>&uarr;</button>` +
+        `<button type="button" data-${kind}-move="${i}" data-dir="1" aria-label="Move down"${i === last ? " disabled" : ""}>&darr;</button><button type="button" data-${kind}-del="${i}" aria-label="Remove">&times;</button></div>`;
+}
+function renderRoadmap() {
+    const last = state.roadmap.length - 1;
+    $("rm-list").innerHTML = state.roadmap.map((r, i) => `<div class="list-row"><div class="fields"><div class="fields two-col">` +
+        `<select data-rm="stage" data-i="${i}">${STAGES.map(s => `<option${s === r.stage ? " selected" : ""}>${s}</option>`).join("")}</select>` +
+        `<input data-rm="title" data-i="${i}" maxlength="120" placeholder="Step title" value="${esc(r.title)}"></div>` +
+        `<textarea data-rm="text" data-i="${i}" rows="2" maxlength="600" placeholder="Short description (optional)">${esc(r.text)}</textarea></div>${rowTools("rm", i, last)}</div>`).join("") || '<p class="muted">No steps. Add one.</p>';
+}
+function renderFaq() {
+    const last = state.faq.length - 1;
+    $("faq-list").innerHTML = state.faq.map((f, i) => `<div class="list-row"><div class="fields">` +
+        `<input data-fq="q" data-i="${i}" maxlength="200" placeholder="Question" value="${esc(f.q)}">` +
+        `<textarea data-fq="a" data-i="${i}" rows="3" maxlength="2000" placeholder="Answer">${esc(f.a)}</textarea></div>${rowTools("fq", i, last)}</div>`).join("") || '<p class="muted">No questions. Add one.</p>';
+}
+function listEditor(listId, kind, key, render) {
+    $(listId).oninput = $(listId).onchange = e => { const el = e.target.closest(`[data-${kind}]`); if (el) state[key][Number(el.dataset.i)][el.dataset[kind]] = el.value; };
+    $(listId).onclick = e => {
+        const list = state[key], move = e.target.closest(`[data-${kind}-move]`), del = e.target.closest(`[data-${kind}-del]`);
+        if (move && !move.disabled) { const i = Number(move.dataset[kind + "Move"]), j = i + Number(move.dataset.dir); [list[i], list[j]] = [list[j], list[i]]; render(); }
+        else if (del) { list.splice(Number(del.dataset[kind + "Del"]), 1); render(); }
+    };
+}
+listEditor("rm-list", "rm", "roadmap", renderRoadmap);
+listEditor("faq-list", "fq", "faq", renderFaq);
+$("rm-add").onclick = () => { state.roadmap.push({ stage: "Next", title: "", text: "" }); renderRoadmap(); $("rm-list").querySelector(`[data-i="${state.roadmap.length - 1}"][data-rm="title"]`).focus(); };
+$("faq-add").onclick = () => { state.faq.push({ q: "", a: "" }); renderFaq(); $("faq-list").querySelector(`[data-i="${state.faq.length - 1}"][data-fq="q"]`).focus(); };
+async function savePageList(key, list, done) {
+    try { state.site = await post("/api/admin/settings", { [key]: list }); toast(done); loadAudit(); loadPagesEditor(); } catch (err) { toast(err.message, true); }
+}
+$("rm-save").onclick = () => savePageList("roadmap", state.roadmap, "Roadmap saved");
+$("faq-save").onclick = () => savePageList("faq", state.faq, "FAQ saved");
+$("rm-reset").onclick = async () => { if (await confirmBox("Use the original roadmap?", "Your saved steps are removed and the page shows its built-in steps again.", "Use original")) savePageList("roadmap", [], "Roadmap is back to the original"); };
+$("faq-reset").onclick = async () => { if (await confirmBox("Use the original FAQ?", "Your saved questions are removed and the page shows its built-in questions again.", "Use original")) savePageList("faq", [], "FAQ is back to the original"); };
+
+// Short links: rotaidem.com/<slug> forwards to the target.
+function renderLinks() {
+    $("links-list").innerHTML = state.links.map((l, i) => `<div class="link-row"><div class="slug"><span>${esc(location.host)}/</span><input data-link="slug" data-i="${i}" maxlength="40" placeholder="discord" value="${esc(l.slug)}"></div>` +
+        `<input data-link="target" data-i="${i}" maxlength="500" placeholder="https://discord.gg/... or /downloads" value="${esc(l.target)}"><button class="btn btn-ghost btn-sm" type="button" data-link-del="${i}" aria-label="Remove">&times;</button></div>`).join("")
+        || '<p class="muted" style="margin-top:0">No short links yet.</p>';
+}
+$("links-list").oninput = e => { const el = e.target.closest("[data-link]"); if (el) state.links[Number(el.dataset.i)][el.dataset.link] = el.value.trim(); };
+$("links-list").onclick = e => { const b = e.target.closest("[data-link-del]"); if (b) { state.links.splice(Number(b.dataset.linkDel), 1); renderLinks(); } };
+$("links-add").onclick = () => { state.links.push({ slug: "", target: "" }); renderLinks(); $("links-list").querySelector(`[data-i="${state.links.length - 1}"][data-link="slug"]`).focus(); };
+$("links-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        state.site = await post("/api/admin/settings", { links: Object.fromEntries(state.links.filter(l => l.slug || l.target).map(l => [l.slug.replace(/^\/+/, "").toLowerCase(), l.target])) });
+        state.links = Object.entries(state.site.links || {}).map(([slug, target]) => ({ slug, target })); renderLinks();
+        toast("Short links saved"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
 function renderConfig() {
     const c = state.site.config || {}, m = c.maintenance || {};
     $("mt-on").checked = !!m.enabled; $("mt-msg").value = m.message || "";
@@ -1154,7 +1273,7 @@ $("slots").onclick = async e => {
 };
 $("banner-form").onsubmit = async e => {
     e.preventDefault();
-    try { state.site = await post("/api/admin/settings", { announcement: { text: val("b-text"), link: val("b-link"), enabled: $("b-on").checked } }); toast($("b-on").checked ? "Banner is live" : "Banner saved (hidden)"); loadAudit(); }
+    try { state.site = await post("/api/admin/settings", { announcement: { text: val("b-text"), link: val("b-link"), enabled: $("b-on").checked, from: $("b-from").value, until: $("b-until").value } }); toast($("b-on").checked ? "Banner is live" : "Banner saved (hidden)"); loadAudit(); }
     catch (err) { toast(err.message, true); }
 };
 
@@ -1273,11 +1392,24 @@ $("backup-btn").onclick = async () => {
     } catch (err) { toast(err.message, true); }
 };
 async function loadAudit() {
-    const logs = (await api("/api/admin/audit")).logs || [];
-    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password" }[a] || a);
-    $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(label(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("") : empty(4, "No activity yet.");
-    $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(label(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
+    const logs = state.audit = (await api("/api/admin/audit")).logs || [];
+    renderAudit();
+    $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(auditLabel(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
+function renderAudit() {
+    const q = val("audit-search").toLowerCase();
+    const logs = state.audit.filter(l => !q || [l.admin_name, auditLabel(l.action), l.action, l.target].some(v => String(v || "").toLowerCase().includes(q)));
+    $("audit-list").innerHTML = logs.length ? logs.map(l => `<tr><td class="muted">${date(l.created_at)}</td><td>${esc(l.admin_name || "-")}</td><td>${esc(auditLabel(l.action))}</td><td>${esc(l.target)}</td></tr>`).join("")
+        : empty(4, state.audit.length ? "Nothing matches your search." : "No activity yet.");
+}
+function exportAudit() { downloadCsv("rotaidem-activity.csv", [["when", "who", "action", "detail"], ...state.audit.map(l => [l.created_at, l.admin_name || "", auditLabel(l.action), l.target || ""])]); }
+function auditLabel(a) {
+    const label = a => ({ save_settings: "Changed site settings", upload_media: "Uploaded image", delete_media: "Deleted image", delete_user: "Deleted user", email_licenses: "Emailed licence", create_licenses: "Created licences", import_licenses: "Imported licences", update_license: "Changed licence", reset_activation: "Removed a computer", save_product: "Saved product", delete_product: "Deleted product", save_post: "Published post", delete_post: "Deleted post", set_role: "Changed role", create_order: "Added order", send_email: "Sent email", download_backup: "Downloaded backup", delete_subscriber: "Removed subscriber", admin_password: "Changed admin password", admin_unlock: "Unlocked admin page", admin_unlock_failed: "Wrong admin password", password_reset_request: "Asked for a password reset", password_reset: "Reset password",
+        sign_out_user: "Signed a user out", send_reset_link: "Sent a password reset link", add_subscribers: "Added subscribers", message_handled: "Marked a message handled",
+        message_reopened: "Reopened a message" }[a] || a);
+    return label(a);
+}
+$("audit-search").oninput = renderAudit;
 
 (async () => {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}

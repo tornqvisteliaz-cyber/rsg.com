@@ -148,9 +148,20 @@ function applyMaintenance(m) {
     if (!old) document.body.append(box);
 }
 
+// Roadmap and FAQ edited in the admin replace the built-in lists on those pages.
+function applyLists(site) {
+    const roadmap = document.querySelector("[data-roadmap]");
+    if (roadmap && (site.roadmap || []).length) roadmap.innerHTML = site.roadmap.map(i =>
+        `<div><span class="when">${esc(i.stage)}</span><div><h3>${esc(i.title)}</h3>${i.text ? `<p class="muted" style="white-space:pre-line">${esc(i.text)}</p>` : ""}</div></div>`).join("");
+    const faq = document.querySelector("[data-faq]");
+    if (faq && (site.faq || []).length) faq.innerHTML = site.faq.map(i =>
+        `<details><summary>${esc(i.q)}</summary><p style="white-space:pre-line">${esc(i.a)}</p></details>`).join("");
+}
+
 // Site settings from the admin panel: images per slot, page texts and the announcement banner.
 function applyContent(site) {
     applyTexts(site.texts || {});
+    applyLists(site);
     if (site.config) applyConfig(site.config);
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
@@ -165,7 +176,9 @@ function applyBanner(site) {
     const banner = site.announcement || {};
     let dismissed = "";
     try { dismissed = sessionStorage.getItem("rsg_banner_closed") || ""; } catch (err) {}
-    if (banner.enabled && banner.text && dismissed !== banner.text && document.body.dataset.layout !== "off") {
+    const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const inWindow = (!banner.from || today >= banner.from) && (!banner.until || today <= banner.until);
+    if (banner.enabled && banner.text && inWindow && dismissed !== banner.text && document.body.dataset.layout !== "off") {
         const bar = document.createElement("div");
         bar.className = "announce";
         const text = banner.link ? `<a href="${esc(banner.link)}">${esc(banner.text)}</a>` : esc(banner.text);

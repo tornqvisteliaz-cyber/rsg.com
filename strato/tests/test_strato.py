@@ -650,6 +650,39 @@ class StratoCGITests:
         customer, _ = self.customer("configy")
         self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=customer).status, 403)
 
+    def test_roadmap_faq_and_short_links(self):
+        t = self.owner_token
+        roadmap = [{"stage": "Done", "title": "Signed licences", "text": "Safer keys"}, {"stage": "Bogus", "title": "Public beta"}, {"stage": "Next", "title": "  "}]
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"roadmap": roadmap, "faq": [{"q": "Is it free?", "a": "No"}, {"q": "Empty answer", "a": ""}]}, token=t))
+        self.assertEqual(r["roadmap"], [{"stage": "Done", "title": "Signed licences", "text": "Safer keys"}, {"stage": "Next", "title": "Public beta", "text": ""}])
+        self.assertEqual(r["faq"], [{"q": "Is it free?", "a": "No"}])
+        site = self.ok(self.w.cgi("GET", "/api/site"))
+        self.assertEqual((len(site["roadmap"]), len(site["faq"])), (2, 1))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"roadmap": [{"title": "x"}] * 41}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {"discord": "https://discord.gg/rotaidem", "/Beta": "/downloads", "": ""}}, token=t))
+        self.assertEqual(r["links"], {"discord": "https://discord.gg/rotaidem", "beta": "/downloads"})
+        for bad in ({"downloads": "https://example.com"}, {"Bad Slug": "https://example.com"}, {"x": "javascript:alert(1)"}, {"y": "//evil.example"}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"links": bad}, token=t).status, 400, bad)
+        with open(os.path.join(self.w.public, "404.html")) as fh:
+            self.assertIn("location.replace(links[slug])", fh.read(), "the not-found page forwards short links")
+        customer, _ = self.customer("linky")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"links": {"free": "https://example.com"}}, token=customer).status, 403)
+
+    def test_banner_dates_sign_out_and_new_accounts(self):
+        t = self.owner_token
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"announcement": {"enabled": True, "text": "Beta weekend", "from": "2026-11-01", "until": "2026-11-03"}}, token=t))
+        self.assertEqual((r["announcement"]["from"], r["announcement"]["until"]), ("2026-11-01", "2026-11-03"))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"announcement": {"text": "x", "from": "next week"}}, token=t).status, 400)
+        before = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["new_users_7d"]
+        token, email = self.customer("signedin")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["new_users_7d"], before + 1)
+        self.ok(self.w.cgi("GET", "/api/me", token=token))
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/sign-out", {}, token=t))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=token).status, 401, "the old session no longer works")
+        owner = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["role"] == "Owner")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{owner['id']}/sign-out", {}, token=self.owner_token).status, 400)
+
     def test_page_texts(self):
         t = self.owner_token
         key = "index.welcome-to-rotaidem"
