@@ -87,6 +87,7 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/licenses/validate") return licenseValidate(request, env);
     if (method === "POST" && path === "/api/licenses/deactivate") return licenseDeactivate(request, env);
     if (method === "GET" && path === "/api/account/licenses") return accountLicenses(request, env);
+    if (method === "POST" && path === "/api/account/licenses/claim") return accountClaimLicense(request, env);
     if (method === "POST" && path === "/api/admin/licenses/generate") return adminGenerateLicenses(request, env);
     if (method === "GET" && path === "/api/admin/licenses") return adminLicenses(request, env);
     if (method === "GET" && /^\/api\/admin\/licenses\/\d+$/.test(path)) return adminLicenseDetail(request, env, Number(path.split("/")[4]));
@@ -1474,6 +1475,29 @@ async function accountLicenses(request, env) {
   return json({ licenses: rows.results || [] });
 }
 
+// Adds a key the customer has (bought with another address, a gift) to their account, so it shows
+// here and in RotaHub on every PC. A key already on another account stays there.
+async function accountClaimLicense(request, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const body = await request.json().catch(() => ({}));
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM license_failures WHERE ip_address = ? AND created_at >= ?").bind(licenseIp(request), utcStamp(3600)).first();
+  if (recent && recent.n >= LICENSE_FAILURES_PER_HOUR) return json({ error: "Too many wrong licence keys from this address. Try again in an hour." }, 429);
+  const key = normalizeKey(body.key);
+  if (!key) return licenseFailed(request, env, json({ error: "That is not a valid licence key." }, 400));
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE license_key = ?").bind(key).first();
+  if (!lic) return licenseFailed(request, env, json({ error: "This licence key does not exist." }, 404));
+  if (lic.status !== "active") return json({ error: "This licence key has been revoked." }, 403);
+  if (lic.customer_id && Number(lic.customer_id) !== Number(user.id)) return json({ error: "This key is on another Rotaidem account. It can still be activated on this PC." }, 409);
+  if (!lic.customer_id) {
+    await env.DB.prepare("UPDATE licenses SET customer_id = ? WHERE id = ?").bind(user.id, lic.id).run();
+    await env.DB.prepare("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)")
+      .bind(user.id, key, licenseIp(request), utcStamp()).run();
+  }
+  const row = await env.DB.prepare("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE id = ?").bind(lic.id).first();
+  return json({ license: row });
+}
+
 // ---------- email broadcasts ----------
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const AUDIENCES = ["accounts", "buyers", "subscribers", "contacts"];
@@ -1977,6 +2001,7 @@ async function endSessions(env, userId, keep = null) {
 }
 function deviceLabel(ua) {
   ua = String(ua || "");
+  if (ua.startsWith("RotaHub")) return "RotaHub on Windows"; // the desktop app logs in like a browser and says so
   const browser = ([["Edg/", "Edge"], ["OPR/", "Opera"], ["Firefox/", "Firefox"], ["Chrome/", "Chrome"], ["Safari/", "Safari"]].find(([k]) => ua.includes(k)) || [0, "A browser"])[1];
   const system = ([["Windows", "Windows"], ["iPhone", "iPhone"], ["iPad", "iPad"], ["Android", "Android"], ["Mac OS X", "Mac"], ["CrOS", "Chromebook"], ["Linux", "Linux"]].find(([k]) => ua.includes(k)) || [0, ""])[1];
   return system ? `${browser} on ${system}` : browser;

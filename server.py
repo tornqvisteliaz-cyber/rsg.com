@@ -297,6 +297,8 @@ def current_user():
 def device_label(user_agent):
     """"Chrome on Windows" and so on, from the browser's User-Agent."""
     ua = str(user_agent or "")
+    if ua.startswith("RotaHub"):  # the desktop app logs in like a browser and says so in its User-Agent
+        return "RotaHub on Windows"
     browser = next((name for key, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
                                            ("Safari/", "Safari")) if key in ua), "A browser")
     system = next((name for key, name in (("Windows", "Windows"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
@@ -2225,6 +2227,35 @@ def account_licenses():
                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                     "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
     return jsonify({"licenses": rows})
+
+
+@app.post("/api/account/licenses/claim")
+def account_claim_license():
+    """Adds a key the customer has (bought with another address, a gift) to their account, so it
+    shows here and in RotaHub on every PC. A key already on another account stays there."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if too_many_license_failures():
+        return err("Too many wrong licence keys from this address. Try again in an hour.", 429)
+    key = normalize_key(body().get("key"))
+    if not key:
+        return license_failed(jsonify({"error": "That is not a valid licence key."}), 400)
+    lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
+    if not lic:
+        return license_failed(jsonify({"error": "This licence key does not exist."}), 404)
+    if lic["status"] != "active":
+        return err("This licence key has been revoked.", 403)
+    if lic["customer_id"] and int(lic["customer_id"]) != int(user["id"]):
+        return err("This key is on another Rotaidem account. It can still be activated on this PC.", 409)
+    if not lic["customer_id"]:
+        db().run("UPDATE licenses SET customer_id = ? WHERE id = ?", user["id"], lic["id"])
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)",
+                 user["id"], key, request.remote_addr or "", utc_stamp())
+    row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                     "FROM licenses WHERE id = ?", lic["id"])
+    return jsonify({"license": row})
 
 
 # ---------- site settings & media ----------
