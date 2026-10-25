@@ -43,6 +43,7 @@ function show(p) {
     if (/^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "") || p.has_download) {
         const dl = document.getElementById("download");
         dl.href = p.download_url || "#"; dl.dataset.dl = p.id; dl.style.display = ""; // counted, and checked for licence-only downloads
+        if (((window.RSG_SITE || {}).hub || {}).hub_only) dl.textContent = "Get it in RotaHub";
         document.getElementById("download-help").style.display = "";
     }
     document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");

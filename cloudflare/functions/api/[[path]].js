@@ -50,6 +50,8 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/admin/goals") return adminSaveGoals(request, env);
     if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
     if (method === "GET" && path === "/api/hub") return json(await hubConfig(env));
+    if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
+    if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
     if (method === "POST" && path === "/api/admin/hub") return adminSaveHub(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
@@ -351,18 +353,19 @@ async function customerOrders(request, env) {
 }
 
 // A product for the website. A "licence holders only" download keeps its link hidden from visitors.
-function publicProduct(row, staff) {
+function publicProduct(row, staff, hubOnly = false) {
   const p = withImages(row);
   try { p.changelog = JSON.parse(p.changelog || "[]"); } catch (err) { p.changelog = []; }
   p.download_gate = p.download_gate || "public";
-  if (p.download_gate === "licence" && !staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  if ((p.download_gate === "licence" || hubOnly) && !staff) { p.has_download = !!p.download_url; p.download_url = ""; }
   return p;
 }
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   const viewer = await currentUser(request, env);
   const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
-  return json({ products: (rows.results || []).map(r => publicProduct(r, staff)) });
+  const hubOnly = (await hubConfig(env)).downloads.hub_only;
+  return json({ products: (rows.results || []).map(r => publicProduct(r, staff, hubOnly)) });
 }
 // Version history of a product: [{version, date, notes}], newest first, at most 50.
 function cleanChangelog(items) {
@@ -375,7 +378,9 @@ async function download(request, env, pid) {
   const url = String((product || {}).download_url || "");
   if (!product || !(url.startsWith("https://") || url.startsWith("/files/"))) return json({ error: "This product has no download yet" }, 404);
   const user = await currentUser(request, env, { ignoreGate: true });
-  if ((product.download_gate || "public") === "licence") {
+  const downloads = (await hubConfig(env)).downloads;
+  const viaHub = downloads.hub_only && !(request.headers.get("User-Agent") || "").startsWith("RotaHub");
+  if ((product.download_gate || "public") === "licence" && !viaHub) {
     if (!user) return json({ error: "Log in to download. The download is for licence holders.", login: true }, 401);
     if (!STAFF_ROLES.includes(user.role)) {
       const rows = (await env.DB.prepare("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)").bind(user.id, String(user.email || "").toLowerCase()).all()).results || [];
@@ -386,6 +391,8 @@ async function download(request, env, pid) {
   if (!(await env.DB.prepare("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?").bind(pid, ip, utcStamp(600)).first())) {
     await env.DB.prepare("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)").bind(pid, user ? user.id : null, ip, utcStamp()).run();
   }
+  // Downloads go through RotaHub: the website hands out RotaHub, RotaHub gets the installer (and checks the licence).
+  if (viaHub) return json({ hub: true, url: downloads.rotahub_url, product: product.name || pid });
   return json({ url });
 }
 // ---------- the fun part of the dashboard ----------
@@ -949,7 +956,7 @@ function cleanConfig(c) {
 }
 const ROADMAP_STAGES = ["Done", "In progress", "Next", "Later"];
 // Pages and folders of the site: a short link may not take their address.
-const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "health", "heavypro", "img", "index",
+const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "get-rotahub", "files", "health", "heavypro", "img", "index",
   "installation", "login", "media", "newsletter", "privacy", "reset-password", "roadmap", "signup", "support", "terms", "unsubscribe", "work-at-rsg", "files", "fonts"];
 function cleanRoadmap(items) {
   if (!Array.isArray(items) || items.length > 40) throw new Error("The roadmap can have at most 40 steps");
@@ -1005,7 +1012,7 @@ async function siteSettings(env) {
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
     roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
-    extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) } };
+    extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) }, hub: (await hubConfig(env)).downloads };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -1503,7 +1510,14 @@ async function accountClaimLicense(request, env) {
 
 // ---------- RotaHub: what the desktop app shows (same as server.py) ----------
 const HUB_ID = /^[a-z0-9][a-z0-9._-]{0,59}$/, HUB_PREFIX = /^[A-Z0-9]{2,8}$/, HUB_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/, HUB_LEVELS = ["info", "warning"];
-const HUB_PRODUCT_FIELDS = ["hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix"];
+const HUB_PRODUCT_FIELDS = ["hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix", "image"];
+const HUB_TEXTS = { login_title: 60, login_text: 300, library_title: 40, library_text: 300 }, HUB_IMAGES = ["login_image", "library_image", "product_image"];
+const ACCENT_HEX = { steel: "#aab6c2", amber: "#f2a900", sky: "#5ab0ff", mint: "#4cc38a", rose: "#ff6b81", violet: "#a78bfa" };
+function hubImage(value, what) {
+  const v = String(value || "").trim();
+  if (v && !validImageUrl(v)) throw new Error(`The ${what} must be an uploaded picture or an https:// link`);
+  return v;
+}
 function hubLink(value, what) {
   const v = String(value || "").trim();
   if (v && (v.length > 400 || !(v.startsWith("https://") || (v.startsWith("/") && !v.startsWith("//"))))) throw new Error(`The ${what} must start with https:// or / (a page on the site)`);
@@ -1530,11 +1544,22 @@ function cleanHub(b) {
     if (prefix && !HUB_PREFIX.test(prefix)) throw new Error(`${pid}: the key prefix is 2 to 8 letters or digits, like HPRO`);
     const manifest = String(p.manifest_url || "").trim();
     if (manifest && (!manifest.startsWith("https://") || manifest.length > 400)) throw new Error(`${pid}: the release file must be an https:// address`);
-    const entry = { id: pid, hidden: !!p.hidden, featured: !!p.featured, manifest_url: manifest, licence_ids: ids, licence_store: store, key_prefix: prefix };
+    const entry = { id: pid, hidden: !!p.hidden, featured: !!p.featured, manifest_url: manifest, licence_ids: ids, licence_store: store, key_prefix: prefix, image: hubImage(p.image, `${pid} picture`) };
     if (HUB_PRODUCT_FIELDS.some(k => Array.isArray(entry[k]) ? entry[k].length : entry[k])) products.push(entry);
   }
+  const lookIn = b.look || {}, accent = ACCENT_HEX[lookIn.accent] ? lookIn.accent : "";
+  const look = { accent, accent_color: accent ? ACCENT_HEX[accent] : "" };
+  for (const key of HUB_IMAGES) look[key] = hubImage(lookIn[key], key.replace(/_/g, " "));
+  for (const [key, limit] of Object.entries(HUB_TEXTS)) {
+    const value = String(lookIn[key] || "").trim();
+    if (value.length > limit) throw new Error(`The ${key.replace(/_/g, " ")} can be at most ${limit} characters`);
+    look[key] = value;
+  }
+  const d = b.downloads || {}, rotahubUrl = String(d.rotahub_url || "").trim();
+  if (rotahubUrl && (rotahubUrl.length > 400 || !(rotahubUrl.startsWith("https://") || /^\/files\/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$/.test(rotahubUrl)))) throw new Error("The RotaHub download link must start with https:// or be an uploaded file (/files/...)");
+  if (d.hub_only && !rotahubUrl) throw new Error("Add the RotaHub download link before sending downloads through RotaHub");
   return { message: { enabled: !!m.enabled, text, level: HUB_LEVELS.includes(m.level) ? m.level : "info", link: hubLink(m.link, "message link") },
-    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products };
+    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products, look, downloads: { rotahub_url: rotahubUrl, hub_only: !!d.hub_only } };
 }
 async function hubConfig(env) {
   try { return cleanHub((await getSetting(env, "hub.config", {})) || {}); } catch (err) { return cleanHub({}); }
@@ -1561,6 +1586,13 @@ async function adminHub(request, env) {
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
   const config = await hubConfig(env);
   return json({ ...config, stats: await hubStats(env, config.min_version) });
+}
+// Uploading download files needs a web space with folders (the STRATO website); Cloudflare Pages serves cloudflare/public/files.
+async function adminFilesUnavailable(request, env, listing) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can see the files" }, 403);
+  if (listing) return json({ files: [], unavailable: true });
+  return json({ error: "Uploading files works on the STRATO website. On Cloudflare, put files in cloudflare/public/files and deploy." }, 501);
 }
 async function adminSaveHub(request, env) {
   const user = await currentUser(request, env);

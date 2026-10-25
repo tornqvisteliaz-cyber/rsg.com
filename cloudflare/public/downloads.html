@@ -12,6 +12,7 @@
 <body>
 <section class="page-head" data-image="header" style="background-image:url('/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / <a href="/support">Support</a> / Downloads</div><h1 data-text="downloads.downloads">Downloads</h1><p data-text="downloads.installers-and-updates-for">Installers and updates for your products.</p></div></section>
 <section class="section"><div class="wrap">
+    <div class="box" id="hub-box" style="margin-bottom:24px" hidden><h3 style="margin-top:0">Get everything with RotaHub</h3><p class="muted">Rotaidem products install and update through RotaHub, our free app. Download it, log in with your Rotaidem account and press Install.</p><a class="btn" href="/get-rotahub">Download RotaHub</a></div>
     <div class="box box-flush"><div class="table-wrap"><table class="table">
         <thead><tr><th>Product</th><th>Version</th><th>Platform</th><th></th></tr></thead>
         <tbody id="downloads"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
@@ -55,14 +56,16 @@ function changelogRow(p) {
         (list.length > 1 ? `<details class="cl-older"><summary>Older versions (${list.length - 1})</summary>${list.slice(1).map(entry).join("")}</details>` : "") + "</details></td></tr>";
 }
 const token = localStorage.getItem("rsg_token");
+const viaHub = !!((window.RSG_SITE || {}).hub || {}).hub_only; // Admin -> RotaHub: downloads go through RotaHub
+document.getElementById("hub-box").hidden = !viaHub;
 fetch("/api/products", { headers: token ? { "X-Rotaidem-Token": token } : {} }).then(r => r.json()).then(d => {
     const items = d.products || [];
     const body = document.getElementById("downloads");
     body.innerHTML = items.length ? items.map((p, i) => {
         const link = /^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "");
         const ready = link || p.has_download; // has_download: "licence holders only", the link comes after logging in
-        const action = ready ? `<span class="dl-extra"><a class="btn btn-sm" href="${link ? esc(p.download_url) : "#"}" data-dl="${esc(p.id)}" rel="noopener">Download</a></span>` +
-            (p.has_download ? '<div class="muted" style="font-size:12px;margin-top:6px">For licence holders</div>' : "") : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
+        const action = ready ? `<span class="dl-extra"><a class="btn btn-sm" href="${link ? esc(p.download_url) : "#"}" data-dl="${esc(p.id)}" rel="noopener">${viaHub ? "Get it in RotaHub" : "Download"}</a></span>` +
+            (p.has_download && !viaHub ? '<div class="muted" style="font-size:12px;margin-top:6px">For licence holders</div>' : "") : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
         return `<tr data-i="${i}"><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right;white-space:nowrap">${action}</td></tr>` + changelogRow(p);
     }).join("") : fallback;
     items.forEach((p, i) => { const row = body.querySelector(`tr[data-i="${i}"]`); if (row && p.download_url) extras(p, row).catch(() => {}); });

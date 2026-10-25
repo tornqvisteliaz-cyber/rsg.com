@@ -1034,6 +1034,71 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"status": "revoked"}, token=t))
         self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[2]}, token=bob).status, 403)
 
+    def upload(self, name, data, token, chunk=300):
+        upload_id = os.urandom(10).hex()
+        pieces = [data[i:i + chunk] for i in range(0, len(data), chunk)] or [b""]
+        r = None
+        for i, piece in enumerate(pieces):
+            r = self.w.cgi("POST", "/api/admin/files", {"name": name, "upload_id": upload_id, "index": i, "total": len(pieces),
+                                                        "data": base64.b64encode(piece).decode()}, token=token)
+            if r.status != 200:
+                return r
+        return r
+
+    def test_files_uploaded_from_the_admin(self):
+        t = self.owner_token
+        setup = b"MZ" + os.urandom(1000)
+        r = self.upload("RotaHub.exe", setup, t)
+        self.assertEqual(r.status, 200, r.body)
+        f = r.json()["file"]
+        self.assertTrue(f["url"].startswith("/files/RotaHub.exe?v="))
+        with open(os.path.join(self.w.public, "files", "RotaHub.exe"), "rb") as fh:
+            self.assertEqual(fh.read(), setup, "all pieces, in order, in the website's files folder")
+        self.assertEqual(os.stat(os.path.join(self.w.public, "files", "RotaHub.exe")).st_mode & 0o777, 0o644)
+        self.assertIn("RotaHub.exe", [x["name"] for x in self.ok(self.w.cgi("GET", "/api/admin/files", token=t))["files"]])
+        self.assertEqual(self.upload("Fake.exe", b"not a program" * 10, t).status, 400, "an .exe must be a Windows program")
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "Fake.exe")))
+        self.assertEqual(self.upload("my setup.exe", setup, t).status, 400)
+        self.assertEqual(self.upload("../evil.exe", setup, t).status, 400)
+        self.assertEqual(self.upload("script.php", b"<?php", t).status, 400)
+        customer, _ = self.customer("filepeek")
+        self.assertEqual(self.upload("Other.exe", setup, customer).status, 403)
+        self.assertEqual(self.w.cgi("GET", "/api/admin/files", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=customer).status, 403)
+        self.ok(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t))
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "RotaHub.exe")))
+        self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t).status, 404)
+
+    def test_downloads_through_rotahub_and_the_apps_look(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Hub Product", "id": "hub-product", "status": "published",
+                                                         "download_url": "https://rotaidem.test/files/HubProductSetup.exe"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"downloads": {"hub_only": True}}, token=t).status, 400, "needs RotaHub's link")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"downloads": {"rotahub_url": "ftp://x/RotaHub.exe"}}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_image": "javascript:alert(1)"}}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_title": "x" * 61}}, token=t).status, 400)
+        saved = self.ok(self.w.cgi("POST", "/api/admin/hub", {
+            "downloads": {"rotahub_url": "/files/RotaHub.exe?v=abc123", "hub_only": True},
+            "look": {"accent": "mint", "login_image": "/media/3.jpg", "library_image": "https://cdn.example.com/banner.jpg", "login_title": "Hello pilot"},
+            "products": [{"id": "hub-product", "image": "/img/hero.jpg"}]}, token=t))
+        try:
+            self.assertEqual((saved["look"]["accent"], saved["look"]["accent_color"], saved["look"]["login_title"]), ("mint", "#4cc38a", "Hello pilot"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub"))["products"][0]["image"], "/img/hero.jpg")
+            # visitors get RotaHub, RotaHub gets the installer
+            r = self.ok(self.w.cgi("POST", "/api/download/hub-product"))
+            self.assertEqual((r["hub"], r["url"], r["product"]), (True, "/files/RotaHub.exe?v=abc123", "Hub Product"))
+            r = self.ok(self.w.cgi("POST", "/api/download/hub-product", headers={"User-Agent": "RotaHub/0.2.0 (Windows NT 10.0)"}))
+            self.assertEqual(r, {"url": "https://rotaidem.test/files/HubProductSetup.exe"})
+            listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "hub-product")
+            self.assertEqual((listed["download_url"], listed["has_download"]), ("", True), "the installer link stays out of the website")
+            staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "hub-product")
+            self.assertEqual(staff_view["download_url"], "https://rotaidem.test/files/HubProductSetup.exe")
+            with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+                self.assertIn('"hub_only": true', fh.read(), "the website's buttons learn about it at once")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/hub", {}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/hub-product"))["url"], "https://rotaidem.test/files/HubProductSetup.exe")
+
     def test_rotahub_settings_and_stats(self):
         t = self.owner_token
         public = self.ok(self.w.cgi("GET", "/api/hub"))

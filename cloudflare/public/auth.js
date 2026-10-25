@@ -72,6 +72,7 @@ async function rsgDownload(productId, fallback) {
     try {
         const res = await fetch(withBase("/api/download/" + encodeURIComponent(productId)), { method: "POST", headers: token ? { "X-Rotaidem-Token": token } : {} });
         const data = await res.json().catch(() => ({}));
+        if (res.ok && data.hub) { location.href = withBase("/get-rotahub?product=" + encodeURIComponent(data.product || "")); return; } // downloads go through RotaHub
         if (res.ok && data.url) { location.href = data.url; return; }
         if (data.login) { if (confirm(data.error + "\n\nLog in now?")) location.href = withBase("/login?next=" + encodeURIComponent(location.pathname)); return; }
         if (data.error) { alert(data.error); return; }

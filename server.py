@@ -16,6 +16,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import time
@@ -858,15 +859,16 @@ def account_orders():
 
 # ---------- catalog ----------
 
-def public_product(row, staff=False):
-    """A product for the website. A "licence holders only" download keeps its link hidden from visitors."""
+def public_product(row, staff=False, hub_only=False):
+    """A product for the website. A "licence holders only" download keeps its link hidden from visitors,
+    and so does every download while downloads go through RotaHub (Admin -> RotaHub)."""
     p = with_images(row)
     try:
         p["changelog"] = json.loads(p.get("changelog") or "[]")
     except ValueError:
         p["changelog"] = []
     p["download_gate"] = p.get("download_gate") or "public"
-    if p["download_gate"] == "licence" and not staff:
+    if (p["download_gate"] == "licence" or hub_only) and not staff:
         p["has_download"] = bool(p.get("download_url"))
         p["download_url"] = ""
     return p
@@ -877,7 +879,8 @@ def products():
     rows = db().all("SELECT * FROM products ORDER BY sort_order, name")
     viewer = current_user()
     staff = bool(viewer and viewer["role"] in STAFF)
-    return jsonify({"products": [public_product(r, staff) for r in rows]})
+    hub_only = hub_config()["downloads"]["hub_only"]
+    return jsonify({"products": [public_product(r, staff, hub_only) for r in rows]})
 
 
 def clean_changelog(items):
@@ -904,7 +907,9 @@ def download(pid):
     if not product or not (url.startswith("https://") or url.startswith("/files/")):
         return err("This product has no download yet", 404)
     user = current_user()
-    if (product.get("download_gate") or "public") == "licence":
+    downloads = hub_config()["downloads"]
+    via_hub = downloads["hub_only"] and not request.headers.get("User-Agent", "").startswith("RotaHub")
+    if (product.get("download_gate") or "public") == "licence" and not via_hub:
         if not user:
             return jsonify({"error": "Log in to download. The download is for licence holders.", "login": True}), 401
         if user["role"] not in STAFF:
@@ -917,6 +922,9 @@ def download(pid):
                       pid, ip, utc_stamp(DOWNLOAD_REPEAT_MINUTES * 60)):
         db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
                  pid, user["id"] if user else None, ip, utc_stamp())
+    if via_hub:
+        # Downloads go through RotaHub: the website hands out RotaHub, RotaHub gets the installer (and checks the licence).
+        return jsonify({"hub": True, "url": downloads["rotahub_url"], "product": product["name"] or pid})
     return jsonify({"url": url})
 
 
@@ -2264,7 +2272,16 @@ HUB_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
 HUB_PREFIX = re.compile(r"^[A-Z0-9]{2,8}$")
 HUB_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
 HUB_LEVELS = ("info", "warning")
-HUB_PRODUCT_FIELDS = ("hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix")
+HUB_PRODUCT_FIELDS = ("hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix", "image")
+HUB_TEXTS = {"login_title": 60, "login_text": 300, "library_title": 40, "library_text": 300}
+HUB_IMAGES = ("login_image", "library_image", "product_image")
+
+
+def hub_image(value, what):
+    v = str(value or "").strip()
+    if v and not valid_image_url(v):
+        raise ValueError(f"The {what} must be an uploaded picture or an https:// link")
+    return v
 
 
 def hub_link(value, what):
@@ -2307,11 +2324,28 @@ def clean_hub(b):
         if manifest and (not manifest.startswith("https://") or len(manifest) > 400):
             raise ValueError(f"{pid}: the release file must be an https:// address")
         entry = {"id": pid, "hidden": bool(p.get("hidden")), "featured": bool(p.get("featured")), "manifest_url": manifest,
-                 "licence_ids": ids, "licence_store": store, "key_prefix": prefix}
+                 "licence_ids": ids, "licence_store": store, "key_prefix": prefix, "image": hub_image(p.get("image"), f"{pid} picture")}
         if any(entry[k] for k in HUB_PRODUCT_FIELDS):
             products.append(entry)
+    look_in = b.get("look") or {}
+    accent = look_in.get("accent") if look_in.get("accent") in ACCENTS else ""
+    look = {"accent": accent, "accent_color": ACCENTS[accent][0] if accent else ""}
+    for key in HUB_IMAGES:
+        look[key] = hub_image(look_in.get(key), key.replace("_", " "))
+    for key, limit in HUB_TEXTS.items():
+        text_value = str(look_in.get(key) or "").strip()
+        if len(text_value) > limit:
+            raise ValueError(f"The {key.replace('_', ' ')} can be at most {limit} characters")
+        look[key] = text_value
+    d = b.get("downloads") or {}
+    rotahub_url = str(d.get("rotahub_url") or "").strip()
+    if rotahub_url and (len(rotahub_url) > 400 or not (rotahub_url.startswith("https://") or re.match(r"^/files/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$", rotahub_url))):
+        raise ValueError("The RotaHub download link must start with https:// or be an uploaded file (/files/...)")
+    if d.get("hub_only") and not rotahub_url:
+        raise ValueError("Add the RotaHub download link before sending downloads through RotaHub")
     return {"message": {"enabled": bool(m.get("enabled")), "text": text, "level": level, "link": hub_link(m.get("link"), "message link")},
-            "min_version": min_version, "help_url": hub_link(b.get("help_url"), "help link"), "products": products}
+            "min_version": min_version, "help_url": hub_link(b.get("help_url"), "help link"), "products": products, "look": look,
+            "downloads": {"rotahub_url": rotahub_url, "hub_only": bool(d.get("hub_only"))}}
 
 
 def hub_config():
@@ -2342,6 +2376,105 @@ def hub_stats(min_version=""):
             "versions": [{"version": v, "people": len(users)} for v, users in listed], "outdated": len(outdated)}
 
 
+# ---------- download files (Admin -> RotaHub -> Files) ----------
+# Uploaded in pieces from the browser (the host refuses big requests) into the website's files/
+# folder, where Apache sends them directly; elsewhere into the data folder, sent by /files/<name>.
+
+FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.(exe|msi|zip|7z|pdf)$")
+FILE_MAGIC = {".exe": b"MZ", ".zip": b"PK", ".msi": bytes.fromhex("d0cf11e0"), ".7z": b"7z", ".pdf": b"%PDF"}
+FILE_CHUNK_MAX = 1024 * 1024
+FILE_MAX = 300 * 1024 * 1024
+
+
+def files_dir():
+    public = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
+    folder = os.path.join(public, "files") if public and os.path.isdir(public) else os.path.join(str(DATA_DIR), "files")
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, 0o755)
+    return folder
+
+
+def file_row(name):
+    path = os.path.join(files_dir(), name)
+    st = os.stat(path)
+    return {"name": name, "size": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "url": f"/files/{name}?v={int(st.st_mtime):x}"}
+
+
+@app.get("/api/admin/files")
+def admin_files():
+    if not manager_user():
+        return err("Only the Owner or an Admin can see the files", 403)
+    names = sorted(n for n in os.listdir(files_dir()) if FILE_NAME.match(n))
+    return jsonify({"files": [file_row(n) for n in names]})
+
+
+@app.post("/api/admin/files")
+def admin_upload_file():
+    """One piece of a file: {name, upload_id, index, total, data (base64)}. The last piece puts the file in place."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can upload files", 403)
+    b = body()
+    name, upload_id = str(b.get("name") or "").strip(), str(b.get("upload_id") or "")
+    if not FILE_NAME.match(name):
+        return err("Use a file name without spaces that ends in .exe, .msi, .zip, .7z or .pdf, like MyProductSetup.exe", 400)
+    if not re.match(r"^[a-f0-9]{16,40}$", upload_id):
+        return err("Bad upload", 400)
+    try:
+        index, total = int(b.get("index")), int(b.get("total"))
+        piece = base64.b64decode(str(b.get("data") or ""), validate=True)
+    except (TypeError, ValueError):
+        return err("Bad upload", 400)
+    if not (0 <= index < total <= FILE_MAX // 1024) or len(piece) > FILE_CHUNK_MAX:
+        return err("Bad upload", 400)
+    uploads = os.path.join(str(DATA_DIR), "uploads")
+    os.makedirs(uploads, exist_ok=True)
+    part = os.path.join(uploads, upload_id + ".part")
+    done = os.path.getsize(part) if index and os.path.exists(part) else 0
+    if index and not os.path.exists(part):
+        return err("The upload was interrupted. Start it again.", 409)
+    if done + len(piece) > FILE_MAX:
+        os.remove(part)
+        return err("Files can be at most 300 MB", 400)
+    with open(part, "ab" if index else "wb") as fh:
+        fh.write(piece)
+    if index < total - 1:
+        return jsonify({"ok": True, "received": done + len(piece)})
+    with open(part, "rb") as fh:
+        head = fh.read(4)
+    magic = FILE_MAGIC[os.path.splitext(name)[1].lower()]
+    if not head.startswith(magic):
+        os.remove(part)
+        return err(f"That does not look like a real {os.path.splitext(name)[1]} file. Nothing was saved.", 400)
+    target = os.path.join(files_dir(), name)
+    os.chmod(part, 0o644)
+    shutil.move(part, target)
+    audit(user, "upload_file", name)
+    return jsonify({"ok": True, "file": file_row(name)})
+
+
+@app.delete("/api/admin/files/<name>")
+def admin_delete_file(name):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete files", 403)
+    path = os.path.join(files_dir(), name)
+    if not FILE_NAME.match(name) or not os.path.isfile(path):
+        return err("File not found", 404)
+    os.remove(path)
+    audit(user, "delete_file", name)
+    return jsonify({"ok": True})
+
+
+@app.get("/files/<name>")
+def download_file(name):
+    """Uploaded files when no web server sends them (local copies; on STRATO, Apache does)."""
+    if not FILE_NAME.match(name) or not os.path.isfile(os.path.join(files_dir(), name)):
+        abort(404)
+    return send_from_directory(files_dir(), name, as_attachment=True)
+
+
 @app.get("/api/hub")
 def hub_public():
     """Read by RotaHub at start and on refresh. Nothing secret: the same for everyone."""
@@ -2366,6 +2499,7 @@ def admin_save_hub():
     except ValueError as exc:
         return err(str(exc), 400)
     set_setting("hub.config", cleaned)
+    publish_site_settings()  # the website's Download buttons follow "downloads"
     audit(user, "save_hub", "message " + ("on" if cleaned["message"]["enabled"] else "off") + (f", lowest version {cleaned['min_version']}" if cleaned["min_version"] else ""))
     return jsonify({**cleaned, "stats": hub_stats(cleaned["min_version"])})
 
@@ -2479,7 +2613,7 @@ def clean_links(links):
             continue
         if not LINK_SLUG.match(slug):
             raise ValueError(f"Short link /{slug}: use lowercase letters, digits and dashes")
-        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health"):
+        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health", "files"):
             raise ValueError(f"/{slug} is already a page on the site")
         if not (target.startswith("https://") or (target.startswith("/") and not target.startswith("//"))) or len(target) > 500:
             raise ValueError(f"Short link /{slug} must point to an https:// address or a page like /downloads")
@@ -2545,7 +2679,7 @@ def site_settings():
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
-            "links": get_setting("site.links", {}) or {}, "extras": site_extras()}
+            "links": get_setting("site.links", {}) or {}, "extras": site_extras(), "hub": hub_config()["downloads"]}
 
 
 # Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their

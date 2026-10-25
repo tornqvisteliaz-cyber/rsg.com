@@ -142,6 +142,13 @@
         .app-preview.warning { background: #e2b04a; color: #1d1d1b; }
         .app-preview span:last-child { font-weight: 600; white-space: nowrap; }
         .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+        .app-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+        .app-pic img { width: 100%; aspect-ratio: 16/10; object-fit: cover; display: block; background: var(--bg-2); border: 1px solid var(--line); }
+        .app-pic strong { display: block; font-size: 14px; margin: 10px 0 2px; color: var(--ink); }
+        .app-pic small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+        .hub-pic { display: flex; gap: 10px; align-items: center; }
+        .hub-pic img { width: 64px; height: 40px; object-fit: cover; background: var(--bg); border: 1px solid var(--line); flex: none; }
+        .hub-pic input { flex: 1; }
         details.panel > summary { cursor: pointer; list-style: none; }
         details.panel > summary::-webkit-details-marker { display: none; }
         @media (max-width: 700px) { .sys { grid-template-columns: 1fr; gap: 2px; } .sys dd { margin-bottom: 10px; } .clock { display: none; } }
@@ -686,6 +693,35 @@
             <div class="panel-body"><div class="chips" id="hub-versions"></div><p class="hint" style="margin:12px 0 0">Counted from the logins RotaHub makes on the website, one per person per version.</p></div></div>
         <form id="hub-form">
             <p class="notice" id="hub-readonly" hidden>Only the Owner or an Admin can change RotaHub.</p>
+            <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Downloads</h2><span class="muted" style="font-size:13px">Send people to RotaHub instead of the product's .exe</span></div>
+                <div class="panel-body">
+                    <div class="field"><label for="hd-url">RotaHub download link</label>
+                        <div style="display:flex;gap:0"><input id="hd-url" maxlength="400" placeholder="/files/RotaHub.exe or https://..."><select id="hd-pick" style="width:auto;max-width:240px" aria-label="Uploaded files"><option value="">Uploaded files…</option></select></div>
+                        <div class="hint">Upload RotaHub.exe under Files below and pick it here, or paste a link.</div></div>
+                    <label style="font-weight:400;display:flex;gap:8px;align-items:flex-start;margin:0"><input type="checkbox" id="hd-only" style="margin-top:3px"> <span>The website's Download buttons give people RotaHub. Product installers are then only handed to RotaHub, which also checks the licence.<span class="hint" style="display:block">The buttons say "Get it in RotaHub" and lead to a page that downloads RotaHub and explains the next steps.</span></span></label>
+                </div></div>
+            <div class="panel" style="margin-bottom:24px" id="files-panel"><div class="panel-head"><h2>Files</h2><button class="btn btn-sm" type="button" id="hf-up">Upload a file</button></div>
+                <div class="panel-body" style="padding-bottom:6px">
+                    <p class="muted" style="margin-top:0;font-size:14px">Installers and other downloads, kept on rotaidem.com under /files/. Use a name without spaces, like <code>MyProductSetup.exe</code>. Uploading a file with the same name replaces it, and its link changes so browsers fetch the new one.</p>
+                    <input type="file" id="hf-file" accept=".exe,.msi,.zip,.7z,.pdf" hidden>
+                    <p class="msg" id="hf-progress" style="margin:0 0 10px"></p>
+                </div>
+                <div class="table-wrap"><table class="table"><thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th></th></tr></thead><tbody id="hf-list"></tbody></table></div></div>
+            <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Look of the app</h2><span class="muted" style="font-size:13px">Colour, pictures and texts in RotaHub</span></div>
+                <div class="panel-body">
+                    <div class="sub" style="border-top:0;padding-top:0;margin-top:0">Colour</div>
+                    <div class="swatches" id="hl-accents"></div>
+                    <div class="sub">Pictures</div>
+                    <div class="app-pics" id="hl-pics"></div>
+                    <div class="sub">Texts</div>
+                    <div class="form-grid">
+                        <div class="field"><label for="hl-login_title">Log in: heading</label><input id="hl-login_title" maxlength="60" placeholder="Welcome back"></div>
+                        <div class="field"><label for="hl-library_title">Library: heading</label><input id="hl-library_title" maxlength="40" placeholder="Library"></div>
+                        <div class="field"><label for="hl-login_text">Log in: text</label><textarea id="hl-login_text" rows="3" maxlength="300" placeholder="Your Rotaidem add-ons, licence keys and updates in one place. Install with one click and RotaHub keeps them up to date."></textarea></div>
+                        <div class="field"><label for="hl-library_text">Library: text</label><textarea id="hl-library_text" rows="3" maxlength="300" placeholder="Every Rotaidem add-on. Install one and RotaHub puts it in place, links its in-game part into your simulator and keeps it up to date."></textarea></div>
+                    </div>
+                    <div class="hint" style="margin-top:-6px">Leave a text empty to keep RotaHub's own. The app picks changes up when it starts or someone presses Refresh.</div>
+                </div></div>
             <div class="two" style="margin-bottom:24px">
                 <div class="panel"><div class="panel-head"><h2>Message in the app</h2><span class="muted" style="font-size:13px">A bar at the top of RotaHub</span></div>
                     <div class="panel-body">
@@ -738,7 +774,7 @@
             <div class="field"><label for="p-version">Version</label><input id="p-version" placeholder="1.0.0"></div>
         </div>
         <div class="sub">Download</div>
-        <div class="field"><label for="p-download">Installer download link</label><input id="p-download" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
+        <div class="field"><label for="p-download">Installer download link</label><input id="p-download" list="file-links" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
         <div class="field"><label for="p-gate">Who can download</label><select id="p-gate"><option value="public">Everyone</option><option value="licence">Only logged-in customers with a licence for this product</option></select>
             <div class="hint">With licence holders only, visitors see "For licence holders" and must log in. The file itself stays at its address, so do not share that link publicly.</div></div>
         <div class="sub">Version history</div>
@@ -766,6 +802,7 @@
     <div class="drawer-foot"><button class="btn" type="submit">Save product</button><a class="btn btn-ghost" id="p-open" target="_blank" rel="noopener">View page</a><button class="btn btn-ghost" type="button" id="p-dup">Duplicate</button><button class="btn btn-ghost" type="button" id="p-email">Email this product</button></div>
 </form>
 <div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
+<datalist id="file-links"></datalist>
 
 <div class="modal-bg" id="lic-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 class="key" id="ld-key" style="font-size:18px"></h3><p class="muted" id="ld-meta" style="font-size:14px;margin:0"></p></div><button class="x" type="button" onclick="$('lic-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="form-grid" style="margin-top:18px"><div class="field"><label for="ld-email">Customer email</label><input id="ld-email" type="email" list="user-emails"></div><div class="field"><label for="ld-max">Computers per key</label><input id="ld-max" type="number" min="1" max="100"></div><div class="field"><label for="ld-product">Product</label><select id="ld-product"></select></div><div class="field"><label for="ld-note">Note</label><input id="ld-note"></div></div>
@@ -2098,7 +2135,7 @@ function auditLabel(a) {
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
         reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist",
         update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals",
-        save_hub: "Changed RotaHub", license_claimed: "Added a key to their account" }[a] || a);
+        save_hub: "Changed RotaHub", license_claimed: "Added a key to their account", upload_file: "Uploaded a file", delete_file: "Deleted a file" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
@@ -2233,11 +2270,14 @@ function renderHub() {
         return `<div class="hub-prod" data-hp="${esc(id)}"><div class="hub-prod-head"><div><strong>${esc(site ? site.name : id)}</strong> <span class="muted" style="font-size:13px">${esc(id)}</span>` +
             (site ? (site.status === "published" ? "" : ` <span class="badge ${esc(site.status)}">${esc(String(site.status || "").replace("_", " "))}</span>`) : ' <span class="badge">Not on the website</span>') + `</div>` +
             `<div class="actions"><label><input type="checkbox" data-hf="show"${c.hidden ? "" : " checked"}> Show in RotaHub</label><label><input type="checkbox" data-hf="featured"${c.featured ? " checked" : ""}> Pin to the top</label></div></div>` +
-            `<details${c.manifest_url || (c.licence_ids || []).length || c.licence_store || c.key_prefix ? " open" : ""}><summary>Install settings</summary><div class="form-grid">` +
+            `<details${c.manifest_url || (c.licence_ids || []).length || c.licence_store || c.key_prefix || c.image ? " open" : ""}><summary>Install settings and picture</summary><div class="form-grid">` +
             field("manifest_url", "Release file (rotahub.jws)", "https://github.com/.../releases/latest/download/rotahub.jws", true) +
             field("licence_ids", "Licence product ids", "e.g. " + id) + field("licence_store", "Licence folder", "e.g. " + id) + field("key_prefix", "Key prefix", "e.g. HPRO") +
+            `<div class="field full"><label>Picture in RotaHub</label><div class="hub-pic"><img src="${esc(safeImage(c.image || (site && (site.images || [])[0]) || (site && site.image_url) || ""))}" alt="">` +
+            `<input data-hf="image" maxlength="400" value="${esc(c.image || "")}" placeholder="Empty: the product's picture from the website"><button class="btn btn-ghost btn-sm" type="button" data-hub-pic="up">Upload</button><button class="btn btn-ghost btn-sm" type="button" data-hub-pic="lib">Library</button></div></div>` +
             `</div><div class="hint">Leave a field empty to use what RotaHub has built in. Without a release file, RotaHub installs the product with its normal download. Releases must be signed with the Rotaidem release key, so a wrong link cannot install anything.</div></details></div>`;
     }).join("") : '<p class="muted">No products yet. Add one in the Products tab.</p>';
+    renderHubLook(); renderHubDownloads();
     $("hub-readonly").hidden = manager;
     [...$("hub-form").querySelectorAll("input, textarea, select, button")].forEach(el => el.disabled = !manager);
     renderHubPreview();
@@ -2256,13 +2296,114 @@ $("hub-form").onsubmit = async e => {
     const products = [...document.querySelectorAll("#hub-products [data-hp]")].map(row => {
         const f = k => row.querySelector(`[data-hf="${k}"]`);
         return { id: row.dataset.hp, hidden: !f("show").checked, featured: f("featured").checked, manifest_url: f("manifest_url").value.trim(),
-            licence_ids: f("licence_ids").value.trim(), licence_store: f("licence_store").value.trim(), key_prefix: f("key_prefix").value.trim() };
+            licence_ids: f("licence_ids").value.trim(), licence_store: f("licence_store").value.trim(), key_prefix: f("key_prefix").value.trim(), image: f("image").value.trim() };
     });
     try {
         state.hub = await post("/api/admin/hub", { message: { enabled: $("hb-on").checked, text: val("hb-text"), level: $("hb-level").value, link: val("hb-link") },
-            min_version: val("hb-min"), help_url: val("hb-help"), products });
+            min_version: val("hb-min"), help_url: val("hb-help"), products, look: hubLookDraft(), downloads: { rotahub_url: val("hd-url"), hub_only: $("hd-only").checked } });
         renderHub(); toast("RotaHub settings saved"); loadAudit();
     } catch (err) { toast(err.message, true); }
+};
+
+// RotaHub's look: colour, pictures and texts (kept in state.hubLook until saved)
+const HUB_PICS = [["login_image", "Log in picture", "Behind the welcome on the log in screen", "/img/clouds.jpg"],
+    ["library_image", "Library banner", "A wide picture at the top of the library (none by default)", ""],
+    ["product_image", "Product picture", "For products that have no picture of their own", "/img/approach.jpg"]];
+function renderHubLook() {
+    const look = state.hubLook = { ...((state.hub || {}).look || {}) };
+    for (const k of ["login_title", "login_text", "library_title", "library_text"]) $("hl-" + k).value = look[k] || "";
+    drawHubLook();
+}
+function drawHubLook() {
+    const look = state.hubLook;
+    $("hl-accents").innerHTML = [["", "RotaHub's own", "#aab6c2"], ...ACCENTS].map(([key, label, hex]) =>
+        `<button type="button" class="swatch${(look.accent || "") === key ? " on" : ""}" data-hub-accent="${key}"><i style="background:${hex}"></i>${esc(label)}</button>`).join("");
+    $("hl-pics").innerHTML = HUB_PICS.map(([key, label, hint, fallback]) => `<div class="app-pic"><img src="${esc(look[key] || fallback ? safeImage(look[key] || fallback) : "")}" alt=""${look[key] || fallback ? "" : ' style="visibility:hidden"'}>` +
+        `<strong>${esc(label)}</strong><small>${esc(hint)}</small><div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" data-hub-look="${key}" data-do="up">Upload</button>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-hub-look="${key}" data-do="lib">Library</button>${look[key] ? `<button class="btn btn-ghost btn-sm" type="button" data-hub-look="${key}" data-do="reset">${fallback ? "Use the default" : "Remove"}</button>` : ""}</div></div>`).join("");
+    [...$("hl-accents").querySelectorAll("button"), ...$("hl-pics").querySelectorAll("button")].forEach(b => b.disabled = !["Owner", "Admin"].includes(state.role));
+}
+function hubLookDraft() {
+    const look = { ...state.hubLook };
+    for (const k of ["login_title", "login_text", "library_title", "library_text"]) look[k] = val("hl-" + k);
+    return look;
+}
+$("hl-accents").onclick = e => { const b = e.target.closest("[data-hub-accent]"); if (b) { state.hubLook.accent = b.dataset.hubAccent; drawHubLook(); } };
+$("hl-pics").onclick = async e => {
+    const b = e.target.closest("[data-hub-look]"); if (!b) return;
+    const key = b.dataset.hubLook;
+    const url = b.dataset.do === "reset" ? "" : b.dataset.do === "lib" ? await pickImage() : (await uploadImages(await chooseFiles(false)))[0];
+    if (url === undefined || (url === null)) return;
+    state.hubLook[key] = url || ""; drawHubLook();
+    toast("Picture chosen. Press Save RotaHub settings.");
+};
+$("hub-products").addEventListener("click", async e => {
+    const b = e.target.closest("[data-hub-pic]"); if (!b) return;
+    const url = b.dataset.hubPic === "lib" ? await pickImage() : (await uploadImages(await chooseFiles(false)))[0];
+    if (!url) return;
+    const box = b.closest(".hub-pic");
+    box.querySelector("input").value = url; box.querySelector("img").src = safeImage(url);
+});
+
+// downloads: RotaHub's own link and whether the website's buttons give RotaHub
+function renderHubDownloads() {
+    const d = (state.hub || {}).downloads || {};
+    $("hd-url").value = d.rotahub_url || ""; $("hd-only").checked = !!d.hub_only;
+}
+$("hd-pick").onchange = () => { if ($("hd-pick").value) $("hd-url").value = $("hd-pick").value; $("hd-pick").value = ""; };
+
+// files on rotaidem.com/files/, uploaded in pieces (the host refuses big requests)
+const FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.(exe|msi|zip|7z|pdf)$/;
+const fileSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+async function loadFiles() {
+    let r;
+    try { r = await api("/api/admin/files"); } catch (err) { $("files-panel").hidden = true; state.files = []; return; }
+    state.files = r.files || [];
+    $("files-panel").hidden = false;
+    $("hf-up").disabled = !!r.unavailable;
+    if (r.unavailable) $("hf-progress").textContent = "Uploading works on the STRATO website.";
+    $("hf-list").innerHTML = state.files.length ? state.files.map(f => `<tr><td><a href="${esc(f.url)}" class="linkish">${esc(f.name)}</a></td><td class="muted">${fileSize(f.size)}</td><td class="muted">${date(f.modified)}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-file-copy="${esc(f.url)}">Copy link</button><button class="btn btn-ghost btn-sm" type="button" data-file-hub="${esc(f.url)}">Use for RotaHub</button>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-file-del="${esc(f.name)}">Delete</button></div></td></tr>`).join("") : empty(4, "No files yet.");
+    const opts = state.files.map(f => `<option value="${esc(f.url)}">${esc(f.name)}</option>`).join("");
+    $("hd-pick").innerHTML = '<option value="">Uploaded files…</option>' + opts;
+    $("file-links").innerHTML = opts;
+}
+async function uploadFile(file) {
+    if (!FILE_NAME_RE.test(file.name)) throw new Error("Rename the file first: no spaces, ending in .exe, .msi, .zip, .7z or .pdf (like MyProductSetup.exe).");
+    const CHUNK = 512 * 1024, total = Math.max(1, Math.ceil(file.size / CHUNK));
+    const id = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, "0")).join("");
+    let last = null;
+    for (let i = 0; i < total; i++) {
+        const buf = new Uint8Array(await file.slice(i * CHUNK, (i + 1) * CHUNK).arrayBuffer());
+        let bin = "";
+        for (let j = 0; j < buf.length; j += 0x8000) bin += String.fromCharCode(...buf.subarray(j, j + 0x8000));
+        last = await post("/api/admin/files", { name: file.name, upload_id: id, index: i, total, data: btoa(bin) });
+        $("hf-progress").className = "msg"; $("hf-progress").textContent = `Uploading ${file.name}: ${Math.round((i + 1) / total * 100)}% of ${fileSize(file.size)}`;
+    }
+    return last.file;
+}
+$("hf-up").onclick = () => $("hf-file").click();
+$("hf-file").onchange = async () => {
+    const file = $("hf-file").files[0]; $("hf-file").value = "";
+    if (!file) return;
+    if (state.files.some(f => f.name === file.name) && !await confirmBox(`Replace ${file.name}?`, "The file with this name is replaced. Links to it keep working and give the new file.", "Replace")) return;
+    $("hf-up").disabled = true;
+    try {
+        const f = await uploadFile(file);
+        $("hf-progress").className = "msg ok"; $("hf-progress").textContent = `${f.name} uploaded. Its link: ${location.origin}${f.url}`;
+        loadFiles(); loadAudit();
+    } catch (err) { $("hf-progress").className = "msg error"; $("hf-progress").textContent = err.message.includes("could not be read") || err.name === "NotReadableError" ? CANNOT_OPEN : err.message; }
+    finally { $("hf-up").disabled = false; }
+};
+$("hf-list").onclick = async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.fileCopy) navigator.clipboard.writeText(location.origin + b.dataset.fileCopy).then(() => toast("Link copied"));
+    if (b.dataset.fileHub) { $("hd-url").value = b.dataset.fileHub; $("hd-url").scrollIntoView({ block: "center" }); toast("Set as the RotaHub download link. Press Save RotaHub settings."); }
+    if (b.dataset.fileDel) {
+        if (!await confirmBox(`Delete ${b.dataset.fileDel}?`, "Download buttons and links that point to it stop working.", "Delete", true)) return;
+        try { await api("/api/admin/files/" + encodeURIComponent(b.dataset.fileDel), { method: "DELETE" }); toast("File deleted"); loadFiles(); loadAudit(); } catch (err) { toast(err.message, true); }
+    }
 };
 
 // clock in the top bar: Zulu like on a flight plan, and the local time
@@ -2449,7 +2590,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();
