@@ -49,6 +49,10 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/goals") return adminGoals(request, env);
     if (method === "POST" && path === "/api/admin/goals") return adminSaveGoals(request, env);
     if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
+    if (method === "POST" && path === "/api/account/licenses/claim") return accountClaimLicense(request, env);
+    if (method === "GET" && path === "/api/hub") return json(await hubConfig(env));
+    if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
+    if (method === "POST" && path === "/api/admin/hub") return adminSaveHub(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
@@ -1474,6 +1478,98 @@ async function accountLicenses(request, env) {
   return json({ licenses: rows.results || [] });
 }
 
+// RotaHub's "Add a key": puts a key the account does not list yet (e.g. bought with another address) on this account.
+async function accountClaimLicense(request, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM license_failures WHERE ip_address = ? AND created_at >= ?").bind(licenseIp(request), utcStamp(3600)).first();
+  if (recent && recent.n >= LICENSE_FAILURES_PER_HOUR) return json({ error: "Too many wrong licence keys from this address. Try again in an hour." }, 429);
+  const key = normalizeKey((await request.json().catch(() => ({}))).key);
+  if (!key) return licenseFailed(request, env, json({ error: "That is not a valid licence key." }, 400));
+  const lic = await env.DB.prepare("SELECT * FROM licenses WHERE license_key = ?").bind(key).first();
+  if (!lic) return licenseFailed(request, env, json({ error: "This licence key does not exist." }, 404));
+  if (lic.status !== "active") return json({ error: "This licence key has been revoked. Contact us if you think this is a mistake." }, 403);
+  const email = String(user.email || "").toLowerCase(), ownerEmail = String(lic.email || "").toLowerCase();
+  const taken = { error: "This key is on another account. Contact us if you think this is a mistake." };
+  if (lic.customer_id && lic.customer_id !== user.id) return json(taken, 409);
+  if (!lic.customer_id && ownerEmail && ownerEmail !== email && (await env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ?").bind(ownerEmail).first())) return json(taken, 409);
+  await env.DB.prepare("UPDATE licenses SET customer_id = ?, email = ? WHERE id = ?").bind(user.id, email, lic.id).run();
+  await audit(env, user, "claim_license", key);
+  const row = await env.DB.prepare("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE id = ?").bind(lic.id).first();
+  return json({ ok: true, license: row });
+}
+
+// ---------- RotaHub: what the desktop app shows (same as server.py) ----------
+const HUB_ID = /^[a-z0-9][a-z0-9._-]{0,59}$/, HUB_PREFIX = /^[A-Z0-9]{2,8}$/, HUB_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/, HUB_LEVELS = ["info", "warning"];
+const HUB_PRODUCT_FIELDS = ["hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix"];
+function hubLink(value, what) {
+  const v = String(value || "").trim();
+  if (v && (v.length > 400 || !(v.startsWith("https://") || (v.startsWith("/") && !v.startsWith("//"))))) throw new Error(`The ${what} must start with https:// or / (a page on the site)`);
+  return v;
+}
+function cleanHub(b) {
+  const m = b.message || {};
+  const text = String(m.text || "").trim();
+  if (text.length > 300) throw new Error("The message in the app can be at most 300 characters");
+  if (m.enabled && !text) throw new Error("Write the message before switching it on");
+  const minVersion = String(b.min_version || "").trim();
+  if (minVersion && !HUB_VERSION.test(minVersion)) throw new Error("The lowest version looks like 0.2.0");
+  const products = [], seen = new Set();
+  for (const p of (Array.isArray(b.products) ? b.products : []).slice(0, 60)) {
+    const pid = String((p || {}).id || "").trim().toLowerCase();
+    if (!HUB_ID.test(pid) || seen.has(pid)) continue;
+    seen.add(pid);
+    let ids = p.licence_ids || [];
+    ids = (typeof ids === "string" ? ids.split(",") : Array.isArray(ids) ? ids : []).map(x => String(x).trim().toLowerCase()).filter(Boolean);
+    if (ids.length > 5 || !ids.every(x => HUB_ID.test(x))) throw new Error(`${pid}: licence product ids are short ids like heavypro, separated by commas (at most 5)`);
+    const store = String(p.licence_store || "").trim().toLowerCase();
+    if (store && !HUB_ID.test(store)) throw new Error(`${pid}: the licence folder is one short name like heavypro, no slashes`);
+    const prefix = String(p.key_prefix || "").trim().toUpperCase();
+    if (prefix && !HUB_PREFIX.test(prefix)) throw new Error(`${pid}: the key prefix is 2 to 8 letters or digits, like HPRO`);
+    const manifest = String(p.manifest_url || "").trim();
+    if (manifest && (!manifest.startsWith("https://") || manifest.length > 400)) throw new Error(`${pid}: the release file must be an https:// address`);
+    const entry = { id: pid, hidden: !!p.hidden, featured: !!p.featured, manifest_url: manifest, licence_ids: ids, licence_store: store, key_prefix: prefix };
+    if (HUB_PRODUCT_FIELDS.some(k => Array.isArray(entry[k]) ? entry[k].length : entry[k])) products.push(entry);
+  }
+  return { message: { enabled: !!m.enabled, text, level: HUB_LEVELS.includes(m.level) ? m.level : "info", link: hubLink(m.link, "message link") },
+    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products };
+}
+async function hubConfig(env) {
+  try { return cleanHub((await getSetting(env, "hub.config", {})) || {}); } catch (err) { return cleanHub({}); }
+}
+const versionKey = v => v.split(".").map(Number);
+const versionLess = (a, b) => { const x = versionKey(a), y = versionKey(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i]; return false; };
+// Who uses RotaHub, from the website logins it makes (User-Agent RotaHub/0.2.0 ...).
+async function hubStats(env, minVersion = "") {
+  const rows = (await env.DB.prepare("SELECT user_id, user_agent, last_seen FROM sessions WHERE user_agent LIKE ?").bind("RotaHub%").all()).results || [];
+  const week = utcStamp(7 * 86400), versions = {};
+  for (const r of rows) {
+    const m = /^RotaHub\/(\d{1,4}\.\d{1,4}\.\d{1,4})/.exec(String(r.user_agent || ""));
+    const v = m ? m[1] : "older";
+    (versions[v] = versions[v] || new Set()).add(r.user_id);
+  }
+  const listed = Object.entries(versions).sort(([a], [b]) => a === "older" ? 1 : b === "older" ? -1 : versionLess(a, b) ? 1 : -1);
+  const outdated = new Set();
+  if (minVersion) for (const [v, users] of listed) if (v === "older" || versionLess(v, minVersion)) users.forEach(u => outdated.add(u));
+  return { people: new Set(rows.map(r => r.user_id)).size, logins: rows.length, active_7d: new Set(rows.filter(r => String(r.last_seen || "") >= week).map(r => r.user_id)).size,
+    versions: listed.map(([version, users]) => ({ version, people: users.size })), outdated: outdated.size };
+}
+async function adminHub(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const config = await hubConfig(env);
+  return json({ ...config, stats: await hubStats(env, config.min_version) });
+}
+async function adminSaveHub(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change RotaHub" }, 403);
+  let cleaned;
+  try { cleaned = cleanHub(await request.json().catch(() => ({}))); } catch (err) { return json({ error: err.message }, 400); }
+  await setSetting(env, "hub.config", cleaned);
+  await audit(env, user, "save_hub", "message " + (cleaned.message.enabled ? "on" : "off") + (cleaned.min_version ? `, lowest version ${cleaned.min_version}` : ""));
+  return json({ ...cleaned, stats: await hubStats(env, cleaned.min_version) });
+}
+
 // ---------- email broadcasts ----------
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const AUDIENCES = ["accounts", "buyers", "subscribers", "contacts"];
@@ -1977,7 +2073,7 @@ async function endSessions(env, userId, keep = null) {
 }
 function deviceLabel(ua) {
   ua = String(ua || "");
-  const browser = ([["Edg/", "Edge"], ["OPR/", "Opera"], ["Firefox/", "Firefox"], ["Chrome/", "Chrome"], ["Safari/", "Safari"]].find(([k]) => ua.includes(k)) || [0, "A browser"])[1];
+  const browser = ([["RotaHub", "RotaHub"], ["Edg/", "Edge"], ["OPR/", "Opera"], ["Firefox/", "Firefox"], ["Chrome/", "Chrome"], ["Safari/", "Safari"]].find(([k]) => ua.includes(k)) || [0, "A browser"])[1];
   const system = ([["Windows", "Windows"], ["iPhone", "iPhone"], ["iPad", "iPad"], ["Android", "Android"], ["Mac OS X", "Mac"], ["CrOS", "Chromebook"], ["Linux", "Linux"]].find(([k]) => ua.includes(k)) || [0, ""])[1];
   return system ? `${browser} on ${system}` : browser;
 }

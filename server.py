@@ -297,7 +297,7 @@ def current_user():
 def device_label(user_agent):
     """"Chrome on Windows" and so on, from the browser's User-Agent."""
     ua = str(user_agent or "")
-    browser = next((name for key, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
+    browser = next((name for key, name in (("RotaHub", "RotaHub"), ("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
                                            ("Safari/", "Safari")) if key in ua), "A browser")
     system = next((name for key, name in (("Windows", "Windows"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
                                           ("Mac OS X", "Mac"), ("CrOS", "Chromebook"), ("Linux", "Linux")) if key in ua), "")
@@ -2225,6 +2225,147 @@ def account_licenses():
                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                     "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
     return jsonify({"licenses": rows})
+
+
+@app.post("/api/account/licenses/claim")
+def account_claim_license():
+    """RotaHub's "Add a key": puts a key the account does not list yet (e.g. bought with another address) on this account."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if too_many_license_failures():
+        return err("Too many wrong licence keys from this address. Try again in an hour.", 429)
+    key = normalize_key(body().get("key"))
+    if not key:
+        return license_failed(*err("That is not a valid licence key.", 400))
+    lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
+    if not lic:
+        return license_failed(*err("This licence key does not exist.", 404))
+    if lic["status"] != "active":
+        return err("This licence key has been revoked. Contact us if you think this is a mistake.", 403)
+    email = (user["email"] or "").lower()
+    if lic["customer_id"] and lic["customer_id"] != user["id"]:
+        return err("This key is on another account. Contact us if you think this is a mistake.", 409)
+    owner_email = (lic["email"] or "").lower()
+    if not lic["customer_id"] and owner_email and owner_email != email and db().first("SELECT id FROM users WHERE LOWER(email) = ?", owner_email):
+        return err("This key is on another account. Contact us if you think this is a mistake.", 409)
+    db().run("UPDATE licenses SET customer_id = ?, email = ? WHERE id = ?", user["id"], email, lic["id"])
+    audit(user, "claim_license", key)
+    row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE id = ?", lic["id"])
+    return jsonify({"ok": True, "license": row})
+
+
+# ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
+
+HUB_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
+HUB_PREFIX = re.compile(r"^[A-Z0-9]{2,8}$")
+HUB_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
+HUB_LEVELS = ("info", "warning")
+HUB_PRODUCT_FIELDS = ("hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix")
+
+
+def hub_link(value, what):
+    """An https:// address or a page on the site (/downloads); '' for none."""
+    v = str(value or "").strip()
+    if v and (len(v) > 400 or not (v.startswith("https://") or (v.startswith("/") and not v.startswith("//")))):
+        raise ValueError(f"The {what} must start with https:// or / (a page on the site)")
+    return v
+
+
+def clean_hub(b):
+    """RotaHub settings from the admin, checked; raises ValueError with a message for the admin."""
+    m = b.get("message") or {}
+    text = str(m.get("text") or "").strip()
+    if len(text) > 300:
+        raise ValueError("The message in the app can be at most 300 characters")
+    if m.get("enabled") and not text:
+        raise ValueError("Write the message before switching it on")
+    level = m.get("level") if m.get("level") in HUB_LEVELS else "info"
+    min_version = str(b.get("min_version") or "").strip()
+    if min_version and not HUB_VERSION.match(min_version):
+        raise ValueError("The lowest version looks like 0.2.0")
+    products, seen = [], set()
+    for p in (b.get("products") or [])[:60]:
+        pid = str((p or {}).get("id") or "").strip().lower()
+        if not HUB_ID.match(pid) or pid in seen:
+            continue
+        seen.add(pid)
+        ids = p.get("licence_ids") or []
+        ids = [x.strip().lower() for x in (ids.split(",") if isinstance(ids, str) else ids) if str(x).strip()]
+        if len(ids) > 5 or not all(HUB_ID.match(x) for x in ids):
+            raise ValueError(f"{pid}: licence product ids are short ids like heavypro, separated by commas (at most 5)")
+        store = str(p.get("licence_store") or "").strip().lower()
+        if store and not HUB_ID.match(store):
+            raise ValueError(f"{pid}: the licence folder is one short name like heavypro, no slashes")
+        prefix = str(p.get("key_prefix") or "").strip().upper()
+        if prefix and not HUB_PREFIX.match(prefix):
+            raise ValueError(f"{pid}: the key prefix is 2 to 8 letters or digits, like HPRO")
+        manifest = str(p.get("manifest_url") or "").strip()
+        if manifest and (not manifest.startswith("https://") or len(manifest) > 400):
+            raise ValueError(f"{pid}: the release file must be an https:// address")
+        entry = {"id": pid, "hidden": bool(p.get("hidden")), "featured": bool(p.get("featured")), "manifest_url": manifest,
+                 "licence_ids": ids, "licence_store": store, "key_prefix": prefix}
+        if any(entry[k] for k in HUB_PRODUCT_FIELDS):
+            products.append(entry)
+    return {"message": {"enabled": bool(m.get("enabled")), "text": text, "level": level, "link": hub_link(m.get("link"), "message link")},
+            "min_version": min_version, "help_url": hub_link(b.get("help_url"), "help link"), "products": products}
+
+
+def hub_config():
+    saved = get_setting("hub.config", {}) or {}
+    try:
+        return clean_hub(saved)
+    except ValueError:  # saved by an older version with other rules: show nothing rather than fail
+        return clean_hub({})
+
+
+def version_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def hub_stats(min_version=""):
+    """Who uses RotaHub, from the website logins it makes (User-Agent RotaHub/0.2.0 ...)."""
+    rows = db().all("SELECT user_id, user_agent, last_seen FROM sessions WHERE user_agent LIKE ?", "RotaHub%")
+    week = utc_stamp(7 * 86400)
+    versions = {}
+    for r in rows:
+        m = re.match(r"RotaHub/(\d{1,4}\.\d{1,4}\.\d{1,4})", str(r["user_agent"] or ""))
+        v = m.group(1) if m else "older"
+        versions.setdefault(v, set()).add(r["user_id"])
+    listed = sorted(versions.items(), key=lambda kv: version_key(kv[0]) if kv[0] != "older" else (-1,), reverse=True)
+    outdated = {u for v, users in versions.items() if min_version and (v == "older" or version_key(v) < version_key(min_version)) for u in users}
+    return {"people": len({r["user_id"] for r in rows}), "logins": len(rows),
+            "active_7d": len({r["user_id"] for r in rows if str(r["last_seen"] or "") >= week}),
+            "versions": [{"version": v, "people": len(users)} for v, users in listed], "outdated": len(outdated)}
+
+
+@app.get("/api/hub")
+def hub_public():
+    """Read by RotaHub at start and on refresh. Nothing secret: the same for everyone."""
+    return jsonify(hub_config())
+
+
+@app.get("/api/admin/hub")
+def admin_hub():
+    if not staff_user():
+        return err("Admin only", 403)
+    config = hub_config()
+    return jsonify({**config, "stats": hub_stats(config["min_version"])})
+
+
+@app.post("/api/admin/hub")
+def admin_save_hub():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change RotaHub", 403)
+    try:
+        cleaned = clean_hub(body())
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("hub.config", cleaned)
+    audit(user, "save_hub", "message " + ("on" if cleaned["message"]["enabled"] else "off") + (f", lowest version {cleaned['min_version']}" if cleaned["min_version"] else ""))
+    return jsonify({**cleaned, "stats": hub_stats(cleaned["min_version"])})
 
 
 # ---------- site settings & media ----------

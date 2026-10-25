@@ -1013,6 +1013,62 @@ class StratoCGITests:
         for path in ("/api/admin/goals", "/api/admin/leaderboard", "/api/admin/link-hits"):
             self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403, path)
 
+    def test_rotahub_add_a_key(self):
+        t = self.owner_token
+        alice, alice_email = self.customer("hubalice")
+        bob, _ = self.customer("hubbob")
+        keys = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 3, "send_email": False}, token=t))["keys"]
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}).status, 401)
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": "HPRO-NOPE"}, token=alice).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0].lower()}, token=alice))
+        self.assertEqual((r["license"]["license_key"], r["license"]["status"], int(r["license"]["activations"])), (keys[0], "active", 0))
+        self.assertIn(keys[0], [l["license_key"] for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=alice))["licenses"]])
+        self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=alice))  # again: fine
+        r = self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=bob)
+        self.assertEqual(r.status, 409, "a key on another account stays there")
+        # a key sold to the email of another existing account is theirs too
+        lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[1])
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"email": alice_email}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[1]}, token=bob).status, 409)
+        lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[2])
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"status": "revoked"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[2]}, token=bob).status, 403)
+
+    def test_rotahub_settings_and_stats(self):
+        t = self.owner_token
+        public = self.ok(self.w.cgi("GET", "/api/hub"))
+        self.assertEqual((public["message"]["enabled"], public["min_version"], public["products"]), (False, "", []))
+        bad = [{"message": {"enabled": True, "text": ""}}, {"min_version": "two"}, {"help_url": "javascript:alert(1)"},
+               {"products": [{"id": "heavypro", "licence_store": "..\\\\evil"}]}, {"products": [{"id": "heavypro", "manifest_url": "http://plain.example/x.jws"}]},
+               {"products": [{"id": "heavypro", "key_prefix": "toolongprefix"}]}]
+        for b in bad:
+            self.assertEqual(self.w.cgi("POST", "/api/admin/hub", b, token=t).status, 400, b)
+        saved = self.ok(self.w.cgi("POST", "/api/admin/hub", {
+            "message": {"enabled": True, "text": "HeavyPro 0.6 is out", "level": "warning", "link": "/downloads"},
+            "min_version": "0.2.0", "help_url": "https://discord.gg/rotaidem",
+            "products": [{"id": "heavypro", "featured": True, "licence_ids": "heavypro, rotaidem-heavypro", "key_prefix": "hpro"},
+                         {"id": "secret-tool", "hidden": True}, {"id": "plain"}]}, token=t))
+        try:
+            public = self.ok(self.w.cgi("GET", "/api/hub"))
+            self.assertEqual(public["message"], {"enabled": True, "text": "HeavyPro 0.6 is out", "level": "warning", "link": "/downloads"})
+            self.assertEqual(public["min_version"], "0.2.0")
+            self.assertEqual([p["id"] for p in public["products"]], ["heavypro", "secret-tool"], "entries with nothing set are left out")
+            self.assertEqual((public["products"][0]["licence_ids"], public["products"][0]["key_prefix"]), (["heavypro", "rotaidem-heavypro"], "HPRO"))
+            self.assertNotIn("stats", public)
+            # app logins: counted per version, and shown as RotaHub on the account page
+            customer, email = self.customer("hubuser")
+            app = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}, headers={"User-Agent": "RotaHub/0.1.0 (Windows NT 10.0)"}))["token"]
+            devices = [s["device"] for s in self.ok(self.w.cgi("GET", "/api/account/sessions", token=customer))["sessions"]]
+            self.assertIn("RotaHub on Windows", devices)
+            stats = self.ok(self.w.cgi("GET", "/api/admin/hub", token=t))["stats"]
+            self.assertGreaterEqual(stats["people"], 1)
+            self.assertIn({"version": "0.1.0", "people": 1}, stats["versions"])
+            self.assertGreaterEqual(stats["outdated"], 1, "0.1.0 is below the lowest version 0.2.0")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {}, token=app).status, 403)
+            self.assertEqual(self.w.cgi("GET", "/api/admin/hub", token=app).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/hub", {}, token=t))
+
     def test_user_notes_and_scheduled_posts(self):
         t = self.owner_token
         _, email = self.customer("noted")

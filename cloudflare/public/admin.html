@@ -132,6 +132,16 @@
         .timeline small { color: var(--muted); font-size: 13px; white-space: nowrap; }
         .timeline .what { overflow: hidden; text-overflow: ellipsis; }
         .link-row .hits { font-size: 13px; color: var(--muted); white-space: nowrap; min-width: 70px; text-align: right; }
+        .hub-prod { border: 1px solid var(--line); background: var(--bg-2); padding: 14px 16px; margin-bottom: 10px; }
+        .hub-prod-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .hub-prod-head label { font-weight: 400; display: flex; gap: 6px; align-items: center; margin: 0; font-size: 14px; }
+        .hub-prod details { margin-top: 10px; }
+        .hub-prod summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+        .hub-prod .form-grid { margin-top: 12px; }
+        .app-preview { background: var(--ink); color: var(--bg); padding: 12px 16px; font-size: 14px; display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-top: 4px; }
+        .app-preview.warning { background: #e2b04a; color: #1d1d1b; }
+        .app-preview span:last-child { font-weight: 600; white-space: nowrap; }
+        .chips { display: flex; gap: 8px; flex-wrap: wrap; }
         details.panel > summary { cursor: pointer; list-style: none; }
         details.panel > summary::-webkit-details-marker { display: none; }
         @media (max-width: 700px) { .sys { grid-template-columns: 1fr; gap: 2px; } .sys dd { margin-bottom: 10px; } .clock { display: none; } }
@@ -283,6 +293,8 @@
     <button class="tab" data-tab="users">Users <span class="count" id="c-users"></span></button>
     <button class="tab" data-tab="licenses">Licences <span class="count" id="c-licenses"></span></button>
     <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
+    <div class="group">Apps</div>
+    <button class="tab" data-tab="hub">RotaHub</button>
     <div class="group">System</div>
     <button class="tab" data-tab="activity">Activity log</button>
     <button class="tab" data-tab="security">Security</button>
@@ -668,6 +680,40 @@
         <div id="messages-list"></div>
     </section>
 
+    <section class="pane" id="pane-hub" data-title="RotaHub">
+        <div class="stats" id="hub-stats" style="grid-template-columns:repeat(4,1fr)"></div>
+        <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Versions in use</h2><div class="actions"><a class="btn btn-ghost btn-sm" href="https://github.com/tornqvisteliaz-cyber/rotahub/releases" target="_blank" rel="noopener">Releases on GitHub</a><a class="btn btn-ghost btn-sm" href="https://github.com/tornqvisteliaz-cyber/rotahub/releases/latest/download/RotaHub.exe" rel="noopener">Download RotaHub.exe</a></div></div>
+            <div class="panel-body"><div class="chips" id="hub-versions"></div><p class="hint" style="margin:12px 0 0">Counted from the logins RotaHub makes on the website, one per person per version.</p></div></div>
+        <form id="hub-form">
+            <p class="notice" id="hub-readonly" hidden>Only the Owner or an Admin can change RotaHub.</p>
+            <div class="two" style="margin-bottom:24px">
+                <div class="panel"><div class="panel-head"><h2>Message in the app</h2><span class="muted" style="font-size:13px">A bar at the top of RotaHub</span></div>
+                    <div class="panel-body">
+                        <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 14px"><input type="checkbox" id="hb-on"> Show the message</label>
+                        <div class="field"><label for="hb-text">Text</label><textarea id="hb-text" rows="2" maxlength="300" placeholder="HeavyPro 0.6 is out: press Update in your library."></textarea></div>
+                        <div class="form-grid">
+                            <div class="field"><label for="hb-level">Look</label><select id="hb-level"><option value="info">Normal</option><option value="warning">Warning (yellow)</option></select></div>
+                            <div class="field"><label for="hb-link">Link (optional)</label><input id="hb-link" maxlength="400" placeholder="/downloads or https://"></div>
+                        </div>
+                        <div class="sub" style="margin-top:0">Preview</div>
+                        <div class="app-preview" id="hb-preview"><span></span><span></span></div>
+                    </div></div>
+                <div class="panel"><div class="panel-head"><h2>Updates and help</h2></div>
+                    <div class="panel-body">
+                        <div class="field"><label for="hb-min">Lowest version allowed</label><input id="hb-min" maxlength="14" placeholder="e.g. 0.2.0"><div class="hint">Older copies of RotaHub show a bar asking people to update first. Leave empty to allow every version.</div></div>
+                        <div class="field"><label for="hb-help">Help link</label><input id="hb-help" maxlength="400" placeholder="/support or https://discord.gg/..."><div class="hint">Shown as Help in the RotaHub menu. Empty: the website's support page.</div></div>
+                    </div></div>
+            </div>
+            <div class="panel" style="margin-bottom:20px"><div class="panel-head"><h2>Products in RotaHub</h2><a class="more" href="#products" data-go="products">Edit products</a></div>
+                <div class="panel-body">
+                    <p class="muted" style="margin-top:0;font-size:14px">Every product from the Products tab shows in RotaHub's library. Hide one, or pin it to the top. Install settings are only needed for a product that has its own RotaHub release.</p>
+                    <div id="hub-products"></div>
+                </div></div>
+            <button class="btn" id="hub-save">Save RotaHub settings</button>
+            <span class="muted" style="font-size:13px;margin-left:12px">RotaHub picks changes up when it starts or when someone presses Refresh.</span>
+        </form>
+    </section>
+
     <section class="pane" id="pane-activity" data-title="Activity log">
         <div class="panel" id="backup-panel" style="margin-bottom:24px;display:none"><div class="panel-head"><h2>Backup</h2><button class="btn btn-ghost btn-sm" type="button" id="backup-btn">Download backup</button></div>
             <div class="panel-body muted" style="font-size:14px">One file with every account, product, order, licence, image and setting. Keep it somewhere safe; it can also move the site to another host.</div></div>
@@ -738,7 +784,7 @@
     <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-resend">Resend confirmation</button><button class="btn btn-ghost" type="button" id="um-verify">Mark email as confirmed</button><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="keys-modal"><div class="modal"><div style="display:flex;justify-content:space-between;align-items:start"><h3 style="margin:0">Keyboard shortcuts</h3><button class="x" type="button" onclick="$('keys-modal').classList.remove('show')" aria-label="Close">×</button></div>
-    <div class="keys"><kbd>g</kbd><span>then a letter to go: <b>d</b>ashboard, <b>p</b>roducts, <b>n</b>ews, <b>e</b>mail, <b>u</b>sers, <b>l</b>icences, <b>m</b>essages, <b>s</b>ite settings, <b>a</b>ctivity</span>
+    <div class="keys"><kbd>g</kbd><span>then a letter to go: <b>d</b>ashboard, <b>p</b>roducts, <b>n</b>ews, <b>e</b>mail, <b>u</b>sers, <b>l</b>icences, <b>m</b>essages, <b>s</b>ite settings, <b>a</b>ctivity, Rota<b>h</b>ub</span>
     <kbd>/</kbd><span>Search on the current page</span><kbd>c</kbd><span>New product</span><kbd>w</kbd><span>Write a note on the team board</span><kbd>Ctrl K</kbd><span>Search everything</span><kbd>?</kbd><span>This list</span><kbd>Esc</kbd><span>Close a window</span></div>
     <p class="muted" style="font-size:13px;margin:16px 0 0">Pilots may find one more hidden somewhere.</p></div></div>
 <canvas id="confetti" hidden></canvas>
@@ -1048,7 +1094,7 @@ $("board").onclick = async e => {
 };
 // keyboard shortcuts
 function showKeys() { $("keys-modal").classList.add("show"); }
-const GO = { d: "dashboard", p: "products", n: "news", e: "email", u: "users", l: "licenses", m: "messages", s: "site", a: "activity", o: "orders" };
+const GO = { h: "hub", d: "dashboard", p: "products", n: "news", e: "email", u: "users", l: "licenses", m: "messages", s: "site", a: "activity", o: "orders" };
 let goPending = 0, eggBuffer = "";
 document.addEventListener("keydown", e => {
     if (e.target.closest("input, textarea, select, [contenteditable]") || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1091,6 +1137,7 @@ async function loadProducts() {
     state.products = (await api("/api/products")).products || [];
     renderProducts();
     renderChecklist();
+    if (state.hub) renderHub();
     const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     $("o-product").innerHTML = '<option value="">None</option>' + opts;
     const licOpts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (id: ${esc(p.id)})</option>`).join("");
@@ -2050,7 +2097,8 @@ function auditLabel(a) {
         verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device", user_note: "Changed a note on a user",
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
         reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist",
-        update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals" }[a] || a);
+        update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals",
+        save_hub: "Changed RotaHub", claim_license: "Added a key to their account" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
@@ -2165,6 +2213,57 @@ async function loadCrew() {
     $("crew").innerHTML = ranked.length ? ranked.map((p, i) => `<li><span class="medal">${["🥇", "🥈", "🥉"][i] || i + 1}</span><span><strong>${esc(p.name)}</strong><small>Mostly: ${esc(auditLabel(p.best[0]).toLowerCase())}</small></span><span class="pts">${p.pts} pts</span></li>`).join("")
         : '<li class="muted" style="border:0">No points yet this month. Replying to messages, writing news and adding products all count.</li>';
 }
+
+// RotaHub: the desktop app's message, lowest version, help link and products
+const HUB_BUILTIN = { heavypro: { manifest_url: "https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/rotahub.jws", licence_ids: "rotaidem-heavypro, heavypro", licence_store: "heavypro", key_prefix: "HPRO" } };
+async function loadHub() { state.hub = await api("/api/admin/hub"); renderHub(); }
+function renderHub() {
+    const h = state.hub, st = h.stats || {}, m = h.message || {}, manager = ["Owner", "Admin"].includes(state.role);
+    $("hub-stats").innerHTML = [["People using RotaHub", st.people], ["Active in the last 7 days", st.active_7d], ["Logged-in copies", st.logins],
+        ["Below the lowest version", h.min_version ? st.outdated : "-"]].map(([k, v]) => `<div><span>${esc(k)}</span><strong>${esc(v ?? 0)}</strong></div>`).join("");
+    $("hub-versions").innerHTML = (st.versions || []).length ? st.versions.map(v => `<span class="chip">${v.version === "older" ? "Before 0.1" : "RotaHub " + esc(v.version)} <small>${v.people} ${v.people === 1 ? "person" : "people"}</small></span>`).join("")
+        : '<span class="muted" style="font-size:14px">Nobody has logged in with RotaHub yet.</span>';
+    $("hb-on").checked = !!m.enabled; $("hb-text").value = m.text || ""; $("hb-level").value = m.level || "info"; $("hb-link").value = m.link || "";
+    $("hb-min").value = h.min_version || ""; $("hb-help").value = h.help_url || "";
+    const saved = Object.fromEntries((h.products || []).map(p => [p.id, p]));
+    const ids = [...new Set([...state.products.map(p => p.id), ...Object.keys(saved)])];
+    $("hub-products").innerHTML = ids.length ? ids.map(id => {
+        const site = state.products.find(p => p.id === id), c = saved[id] || {}, built = HUB_BUILTIN[id] || {};
+        const field = (key, label, placeholder, full) => `<div class="field${full ? " full" : ""}"><label>${label}</label><input data-hf="${key}" maxlength="400" value="${esc(Array.isArray(c[key]) ? c[key].join(", ") : c[key] || "")}" placeholder="${esc(built[key] ? "Built in: " + built[key] : placeholder)}"></div>`;
+        return `<div class="hub-prod" data-hp="${esc(id)}"><div class="hub-prod-head"><div><strong>${esc(site ? site.name : id)}</strong> <span class="muted" style="font-size:13px">${esc(id)}</span>` +
+            (site ? (site.status === "published" ? "" : ` <span class="badge ${esc(site.status)}">${esc(String(site.status || "").replace("_", " "))}</span>`) : ' <span class="badge">Not on the website</span>') + `</div>` +
+            `<div class="actions"><label><input type="checkbox" data-hf="show"${c.hidden ? "" : " checked"}> Show in RotaHub</label><label><input type="checkbox" data-hf="featured"${c.featured ? " checked" : ""}> Pin to the top</label></div></div>` +
+            `<details${c.manifest_url || (c.licence_ids || []).length || c.licence_store || c.key_prefix ? " open" : ""}><summary>Install settings</summary><div class="form-grid">` +
+            field("manifest_url", "Release file (rotahub.jws)", "https://github.com/.../releases/latest/download/rotahub.jws", true) +
+            field("licence_ids", "Licence product ids", "e.g. " + id) + field("licence_store", "Licence folder", "e.g. " + id) + field("key_prefix", "Key prefix", "e.g. HPRO") +
+            `</div><div class="hint">Leave a field empty to use what RotaHub has built in. Without a release file, RotaHub installs the product with its normal download. Releases must be signed with the Rotaidem release key, so a wrong link cannot install anything.</div></details></div>`;
+    }).join("") : '<p class="muted">No products yet. Add one in the Products tab.</p>';
+    $("hub-readonly").hidden = manager;
+    [...$("hub-form").querySelectorAll("input, textarea, select, button")].forEach(el => el.disabled = !manager);
+    renderHubPreview();
+}
+function renderHubPreview() {
+    const text = val("hb-text"), on = $("hb-on").checked;
+    $("hb-preview").className = "app-preview" + ($("hb-level").value === "warning" ? " warning" : "");
+    $("hb-preview").firstChild.textContent = text || "Your message shows here.";
+    $("hb-preview").lastChild.textContent = val("hb-link") ? "Open" : "";
+    $("hb-preview").style.opacity = on ? 1 : .45;
+}
+["hb-text", "hb-link"].forEach(id => $(id).addEventListener("input", renderHubPreview));
+["hb-on", "hb-level"].forEach(id => $(id).addEventListener("change", renderHubPreview));
+$("hub-form").onsubmit = async e => {
+    e.preventDefault();
+    const products = [...document.querySelectorAll("#hub-products [data-hp]")].map(row => {
+        const f = k => row.querySelector(`[data-hf="${k}"]`);
+        return { id: row.dataset.hp, hidden: !f("show").checked, featured: f("featured").checked, manifest_url: f("manifest_url").value.trim(),
+            licence_ids: f("licence_ids").value.trim(), licence_store: f("licence_store").value.trim(), key_prefix: f("key_prefix").value.trim() };
+    });
+    try {
+        state.hub = await post("/api/admin/hub", { message: { enabled: $("hb-on").checked, text: val("hb-text"), level: $("hb-level").value, link: val("hb-link") },
+            min_version: val("hb-min"), help_url: val("hb-help"), products });
+        renderHub(); toast("RotaHub settings saved"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
 
 // clock in the top bar: Zulu like on a flight plan, and the local time
 function tickClock() {
@@ -2350,7 +2449,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();
