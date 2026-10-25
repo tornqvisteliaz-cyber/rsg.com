@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PY = sys.executable
@@ -139,12 +140,12 @@ class Webspace:
                            cwd=self.root, timeout=180, env={**os.environ, **(env or {})})
         return p.returncode, p.stdout.decode() + p.stderr.decode()
 
-    def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=()):
+    def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=(), remote_addr="203.0.113.5"):
         script_path = os.path.join(self.public, "cgi-bin", script)
         env = {"PATH": "/usr/bin:/bin", "GATEWAY_INTERFACE": "CGI/1.1", "REQUEST_METHOD": method,
                "SCRIPT_NAME": "/cgi-bin/" + script, "SCRIPT_FILENAME": script_path, "PATH_INFO": path,
                "QUERY_STRING": query, "SERVER_NAME": "rotaidem.test", "SERVER_PORT": "443", "HTTPS": "on",
-               "SERVER_PROTOCOL": "HTTP/1.1", "REMOTE_ADDR": "203.0.113.5", "HTTP_HOST": "rotaidem.test"}
+               "SERVER_PROTOCOL": "HTTP/1.1", "REMOTE_ADDR": remote_addr, "HTTP_HOST": "rotaidem.test"}
         data = json.dumps(body).encode() if isinstance(body, (dict, list)) else (body or b"")
         if data:
             env.update(CONTENT_TYPE="application/json", CONTENT_LENGTH=str(len(data)))
@@ -154,6 +155,15 @@ class Webspace:
             env["HTTP_" + k.upper().replace("-", "_")] = v
         p = subprocess.run([PY, *flags, script_path], input=data, env=env, capture_output=True, timeout=60)
         return Response(p.stdout, p.stderr)
+
+    def wsgi(self, requests, script="rotaidem.py", flags=()):
+        """STRATO's way: import the entry script once and call its `application` for each request."""
+        probe = os.path.join(self.app, "strato", "wsgi_probe.py")
+        p = subprocess.run([PY, *flags, probe, os.path.join(self.public, "cgi-bin", script)], input=json.dumps(requests),
+                           capture_output=True, text=True, timeout=120)
+        if p.returncode:
+            raise AssertionError(p.stdout + p.stderr)
+        return json.loads(p.stdout)
 
     def remove(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -189,10 +199,22 @@ class StratoCGITests:
         self.assertEqual(r.status, status, f"{r.body[:300]!r} {r.stderr[-1500:]}")
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else r.body
 
+    def unsubscribe_token(self, email):
+        import hashlib, hmac
+        return hmac.new(self.w.values["SECRET_KEY"].encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
+
+    def confirm_link_token(self, email):
+        """The token from the last confirmation email sent to this address (as the person would click it)."""
+        import re
+        sent = [m for req in self.resend.requests for m in req["body"] if m["to"] == [email] and "verify-email?token=" in m["html"]]
+        return urllib.parse.unquote(re.search(r"verify-email\?token=([^\"&<]+)", sent[-1]["html"]).group(1))
+
     def customer(self, name):
+        """Signs up and confirms the email, like a real customer. Returns (session token, email)."""
         email = f"{name}@example.com"
-        r = self.w.cgi("POST", "/api/signup", {"name": name, "email": email, "password": "customer-pass-1"})
-        return self.ok(r)["token"], email
+        r = self.ok(self.w.cgi("POST", "/api/signup", {"name": name, "email": email, "password": "customer-pass-1"}))
+        self.assertTrue(r["verify"])
+        return self.ok(self.w.cgi("POST", "/api/verify-email", {"token": self.confirm_link_token(email)}))["token"], email
 
     # ---------- installation ----------
 
@@ -336,6 +358,52 @@ class StratoCGITests:
         r = self.w.cgi("POST", "/api/licenses/import", {"licenses": [{"key": imported}]}, headers={"X-License-Api-Key": "wrong"})
         self.assertEqual(r.status, 403)
 
+    def test_signed_licence_answers(self):
+        """HeavyPro trusts only answers signed by this server: a fake server cannot say "valid"."""
+        import hashlib
+        import hmac
+        t = self.owner_token
+        key = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "max_activations": 2}, token=t))["keys"][0]
+        jwk = self.ok(self.w.cgi("GET", "/api/licenses/jwks.json"))["keys"][0]
+        self.assertEqual((jwk["kty"], jwk["alg"], jwk["e"]), ("RSA", "RS256", "AQAB"))
+        self.assertIn(b"BEGIN PUBLIC KEY", self.w.cgi("GET", "/api/licenses/public-key").body)
+        b64 = lambda text: base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))  # noqa: E731
+        n, e = int.from_bytes(b64(jwk["n"]), "big"), int.from_bytes(b64(jwk["e"]), "big")
+
+        def verified(token):
+            head, body, sig = token.split(".")
+            size = (n.bit_length() + 7) // 8
+            digest = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(f"{head}.{body}".encode()).digest()
+            expected = b"\x00\x01" + b"\xff" * (size - len(digest) - 3) + b"\x00" + digest
+            ok = hmac.compare_digest(pow(int.from_bytes(b64(sig), "big"), e, n).to_bytes(size, "big"), expected)
+            return json.loads(b64(body)) if ok else None
+
+        r = self.ok(self.w.cgi("POST", "/api/licenses/activate", {"key": key, "machine_id": "pc-hash", "machine_name": "PC",
+                                                                  "product": "heavypro", "nonce": "abc123"}))
+        claims = verified(r["token"])
+        self.assertIsNotNone(claims, "the token verifies with the published key")
+        self.assertEqual((claims["key"], claims["mid"], claims["nonce"], claims["max_activations"]), (key, "pc-hash", "abc123", 2))
+        self.assertEqual(claims["exp"] - claims["iat"], 14 * 86400)
+        self.assertTrue(r["lease_until"].endswith("Z"))
+        head, body, sig = r["token"].split(".")
+        edited = json.loads(b64(body))
+        edited["exp"] += 86400 * 365
+        forged = head + "." + base64.urlsafe_b64encode(json.dumps(edited).encode()).rstrip(b"=").decode() + "." + sig
+        self.assertIsNone(verified(forged), "an edited token does not verify")
+        again = self.ok(self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "pc-hash"}))
+        self.assertNotIn("nonce", verified(again["token"]))
+        self.assertEqual(verified(again["token"])["iat"] >= claims["iat"], True)
+        # Refusals carry no token; guessing keys from one address is cut off after 30 tries an hour.
+        self.assertNotIn("token", self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "other"}).json())
+        guesses = [self.w.cgi("POST", "/api/licenses/activate", {"key": "HPRO-AAAA-BBBB-CCCC", "machine_id": "x"},
+                              remote_addr="198.51.100.77").status for _ in range(31)]
+        self.assertEqual((guesses[0], guesses[-1]), (400, 429))
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/licenses/validate", {"key": key, "machine_id": "pc-hash"}))["valid"],
+                        "other addresses are not affected")
+        out = self.w.setup_cmd("signing-key")
+        self.assertIn(jwk["kid"], out)
+        self.assertNotIn('"d"', out)
+
     def test_shared_profiles_by_name(self):
         t = self.owner_token
         alice, bob = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 2}, token=t))["keys"]
@@ -359,6 +427,10 @@ class StratoCGITests:
         self.assertEqual(call("get", bob, "PC-B", name="nope").status, 404)
         self.assertEqual(call("publish", alice, "PC-A", name="x", profile=profile).json()["reason"], "invalid_name")
         self.assertEqual(call("publish", alice, "PC-A", name="big", profile={"x": "y" * 5000}).json()["reason"], "too_large")
+        call("publish", bob, "PC-B", name="Cessna light", profile=profile)
+        listed = self.ok(call("list", bob, "PC-B"))["profiles"]
+        self.assertEqual([p["name"] for p in listed], ["777 Heavy", "Cessna light"])
+        self.assertEqual([p["name"] for p in self.ok(call("list", alice, "PC-A", search="cess"))["profiles"]], ["Cessna light"])
         self.ok(call("delete", alice, "PC-A", name="777 Heavy"))
         self.assertEqual(call("get", bob, "PC-B", name="777 Heavy").status, 404)
 
@@ -384,6 +456,49 @@ class StratoCGITests:
         self.ok(self.w.cgi("DELETE", "/api/admin/media/" + r["url"].split("/")[2].split(".")[0], token=t))
         self.assertEqual(self.w.cgi("GET", r["url"]).status, 404)
 
+    def test_pictures_and_settings_as_plain_files(self):
+        """Apache sends uploaded pictures and site-settings.js as plain files, without starting the program."""
+        t = self.owner_token
+        media = os.path.join(self.w.public, "media")
+        with open(os.path.join(media, ".htaccess")) as fh:
+            self.assertIn("immutable", fh.read())
+        with open(os.path.join(self.w.public, ".htaccess")) as fh:
+            rules = fh.read()
+        self.assertIn("RewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^(media/.+|site-settings\\.js)$", rules)
+        with open(os.path.join(self.w.public, "cgi-bin", "rotaidem.py")) as fh:
+            self.assertIn(f'os.environ["ROTAIDEM_PUBLIC_DIR"] = {self.w.public!r}', fh.read())
+        self.assertTrue(os.path.isfile(os.path.join(self.w.public, "site-settings.js")), "deploy writes it")
+        with open(IMAGE, "rb") as fh:
+            raw = fh.read()
+        r = self.ok(self.w.cgi("POST", "/api/admin/media", {"filename": "plain.jpg", "mime": "image/jpeg",
+                                                           "data": base64.b64encode(raw).decode()}, token=t))
+        copy = os.path.join(self.w.public, r["url"].lstrip("/"))
+        with open(copy, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+        self.assertEqual(os.stat(copy).st_mode & 0o777, 0o644)
+        self.assertEqual(os.stat(media).st_mode & 0o777, 0o755)
+        os.remove(copy)
+        self.assertEqual(self.w.cgi("GET", r["url"]).body, raw)  # the program answers once ...
+        self.assertTrue(os.path.isfile(copy))                     # ... and writes the copy again
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"images": {"hero": r["url"]}, "texts": {"index.products": "Our add-ons"}}, token=t))
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            js = fh.read()
+        css = f'[data-image="hero"]:not(img){{background-image:url("{r["url"]}")!important}}'
+        self.assertIn(json.dumps(css), js)  # inside the script as a JSON string
+        self.assertIn('"index.products": "Our add-ons"', js)
+        self.assertNotIn("</", js)
+        served = self.w.cgi("GET", "/site-settings.js")
+        self.assertEqual((served.status, served.headers["content-type"].split(";")[0]), (200, "application/javascript"))
+        self.assertTrue(served.body.decode().startswith("window.RSG_SITE="))
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"images": {}, "texts": {"index.products": None}}, token=t))
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            self.assertNotIn("data-image", fh.read())
+        self.ok(self.w.cgi("DELETE", "/api/admin/media/" + r["url"].split("/")[2].split(".")[0], token=t))
+        self.assertFalse(os.path.exists(copy))
+        for page in ("index.html", "about.html", "addons/view.html", "admin.html"):
+            with open(os.path.join(self.w.public, page)) as fh:
+                self.assertIn('<script src="/site-settings.js"></script>', fh.read(), page)
+
     # ---------- e-mail ----------
 
     def test_email_through_resend(self):
@@ -405,6 +520,654 @@ class StratoCGITests:
             self.resend.fail_with = None
         self.assertEqual(r.status, 502)
         self.assertIn("not verified", r.json()["error"])
+
+    def test_product_email_with_several_pictures(self):
+        t = self.owner_token
+        self.resend.requests.clear()
+        pics = ["/img/hero.jpg", "https://cdn.example.com/cockpit.jpg", "/img/clouds.jpg"]
+        self.ok(self.w.cgi("POST", "/api/admin/broadcast", {"subject": "Update", "message": "Look", "images": pics,
+                                                            "test_email": "test@example.com"}, token=t))
+        html = self.resend.requests[-1]["body"][0]["html"]
+        found = [html.find(u) for u in ("https://rotaidem.test/img/hero.jpg", "https://cdn.example.com/cockpit.jpg", "https://rotaidem.test/img/clouds.jpg")]
+        self.assertTrue(all(i > 0 for i in found) and found == sorted(found), "all pictures, full addresses, in the chosen order")
+        r = self.w.cgi("POST", "/api/admin/broadcast", {"subject": "x", "message": "y", "images": ["javascript:alert(1)"], "test_email": "test@example.com"}, token=t)
+        self.assertEqual(r.status, 400)
+        r = self.w.cgi("POST", "/api/admin/broadcast", {"subject": "x", "message": "y", "images": ["/img/hero.jpg"] * 13, "test_email": "test@example.com"}, token=t)
+        self.assertEqual(r.status, 400)
+
+    def test_signup_needs_email_confirmation(self):
+        self.resend.requests.clear()
+        r = self.ok(self.w.cgi("POST", "/api/signup", {"name": "Welcome Wendy", "email": "Wendy@Example.com", "password": "wendy-pass-1"}))
+        self.assertEqual((r["verify"], r["email"]), (True, "wendy@example.com"))
+        self.assertNotIn("token", r, "no session before the email is confirmed")
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), (["wendy@example.com"], "Confirm your email for Rotaidem"))
+        self.assertIn("https://rotaidem.test/verify-email?token=", sent["html"])
+        self.assertNotIn("wendy-pass-1", sent["html"])  # never the password
+        # someone else's address: no way in without the email
+        r = self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wendy-pass-1"})
+        self.assertEqual((r.status, r.json().get("unverified")), (403, True))
+        self.assertEqual(self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wrong-pass"}).status, 401, "a wrong password reveals nothing")
+        self.assertEqual(self.w.cgi("POST", "/api/verify-email", {"token": "1.9999999999.forged"}).status, 400)
+        token = self.confirm_link_token("wendy@example.com")
+        r = self.ok(self.w.cgi("POST", "/api/verify-email", {"token": token}))
+        self.assertTrue(r["verified"])
+        self.ok(self.w.cgi("GET", "/api/me", token=r["token"]))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "wendy@example.com", "password": "wendy-pass-1"}))
+        # a new link can be asked for; the answer is the same whether the account exists or not
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Slow Sam", "email": "sam@example.com", "password": "sam-pass-1"}))
+        self.resend.requests.clear()
+        a = self.ok(self.w.cgi("POST", "/api/verify-email/resend", {"email": "sam@example.com"}))
+        b = self.ok(self.w.cgi("POST", "/api/verify-email/resend", {"email": "nobody@example.com"}))
+        self.assertEqual(a, b)
+        self.assertEqual(len(self.resend.requests), 1)
+        self.assertEqual(self.w.cgi("POST", "/api/signup", {"name": "X", "email": "not-an-email", "password": "secret-1"}).status, 400)
+        # when the email cannot be sent, no half-made account blocks the address
+        self.resend.fail_with = (500, {"message": "down"})
+        try:
+            r = self.w.cgi("POST", "/api/signup", {"name": "Late Larry", "email": "larry@example.com", "password": "larry-pass-1"})
+        finally:
+            self.resend.fail_with = None
+        self.assertEqual(r.status, 502)
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Late Larry", "email": "larry@example.com", "password": "larry-pass-1"}))
+
+    def test_staff_can_confirm_and_reset_confirms(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Lost Mail", "email": "lost@example.com", "password": "lost-pass-1"}))
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == "lost@example.com")
+        self.assertEqual(int(user["email_verified"]), 0)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/verify", {}, token=t))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "lost@example.com", "password": "lost-pass-1"}))
+        # a password reset by email proves the address too
+        self.ok(self.w.cgi("POST", "/api/signup", {"name": "Reset Rita", "email": "rita@example.com", "password": "rita-pass-1"}))
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "rita@example.com"}, remote_addr="198.51.100.77"))
+        import re
+        link = re.search(r"reset-password\?token=([^\"&<]+)", self.resend.requests[-1]["body"][0]["html"]).group(1)
+        self.ok(self.w.cgi("POST", "/api/password/reset", {"token": urllib.parse.unquote(link), "password": "rita-new-1"}))
+        self.ok(self.w.cgi("POST", "/api/login", {"email": "rita@example.com", "password": "rita-new-1"}))
+        customer, _ = self.customer("notstaff")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/verify", {}, token=customer).status, 403)
+
+    def test_forgot_password(self):
+        import re
+        import urllib.parse
+        token, email = self.customer("forgetful")
+        self.resend.requests.clear()
+        # Unknown addresses get the same answer and no email.
+        same = self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "nobody@example.com"}))
+        self.assertEqual(self.resend.requests, [])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": email.upper()})), same)
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), ([email], "Reset your Rotaidem password"))
+        link = re.search(r'href="([^"]*/reset-password\?token=[^"]+)"', sent["html"]).group(1)
+        reset = urllib.parse.unquote(link.split("token=", 1)[1])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/check", {"token": reset}))["email"], "f••••••@example.com")
+        for bad in ("", "nonsense", reset[:-1] + ("0" if reset[-1] != "0" else "1"), "999." + reset.split(".", 1)[1]):
+            self.assertEqual(self.w.cgi("POST", "/api/password/check", {"token": bad}).status, 400, bad)
+        self.assertEqual(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "short"}).status, 400)
+        session = self.ok(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "brand-new-pass"}))
+        self.assertEqual((session["email"], session["is_admin"]), (email, False))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=session["token"]))["user"]["email"], email)
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=token).status, 401)  # other sessions are signed out
+        self.assertEqual(self.w.cgi("POST", "/api/password/reset", {"token": reset, "password": "another-pass"}).status, 400)  # used once
+        self.assertEqual(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}).status, 401)
+        self.login(email, "brand-new-pass")
+        # At most 3 emails per account per hour; the answer stays the same.
+        self.resend.requests.clear()
+        for _ in range(4):
+            self.assertEqual(self.ok(self.w.cgi("POST", "/api/password/forgot", {"email": "forgetful"})), same)  # username works too
+        self.assertEqual(len(self.resend.requests), 2)  # 1 sent earlier this hour + 2 now = 3
+        # At most 10 requests per address per hour.
+        statuses = [self.w.cgi("POST", "/api/password/forgot", {"email": "x@example.com"}).status for _ in range(5)]
+        self.assertEqual(statuses[-1], 429)
+        logs = self.ok(self.w.cgi("GET", "/api/admin/audit", token=self.owner_token))["logs"]
+        self.assertIn("password_reset", [entry["action"] for entry in logs])
+
+    def test_news_drafts_and_dates(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Secret draft", "content": "Soon", "status": "draft", "date": "2026-12-24"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Out now", "content": "Live"}, token=t))
+        public = [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]]
+        self.assertIn("Out now", public)
+        self.assertNotIn("Secret draft", public)
+        admin = {p["title"]: p for p in self.ok(self.w.cgi("GET", "/api/admin/posts", token=t))["posts"]}
+        self.assertEqual((admin["Secret draft"]["status"], admin["Secret draft"]["date"]), ("draft", "December 24, 2026"))
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"id": admin["Secret draft"]["id"], "title": "Secret draft", "content": "Now", "status": "published"}, token=t))
+        post = next(p for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"] if p["title"] == "Secret draft")
+        self.assertEqual(post["date"], "December 24, 2026", "publishing keeps the chosen date")
+        customer, _ = self.customer("drafty")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/posts", token=customer).status, 403)
+
+    def test_messages_can_be_marked_handled(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Pilot", "email": "pilot@example.com", "message": "Help with my stick"}))
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["email"] == "pilot@example.com")
+        before = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"]
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}", {"handled": True}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"], before - 1)
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["id"] == msg["id"])
+        self.assertEqual(int(msg["handled"]), 1)
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}", {"handled": False}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["open_messages"], before)
+
+    def test_subscribers_added_in_bulk(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/subscribe", {"email": "gone@example.com"}))
+        sub = next(s for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"] if s["email"] == "gone@example.com")
+        self.ok(self.w.cgi("POST", "/api/unsubscribe", {"email": "gone@example.com", "token": self.unsubscribe_token("gone@example.com")}))
+        r = self.ok(self.w.cgi("POST", "/api/admin/subscribers", {"emails": "one@example.com, Two@Example.com\nnot-an-email; one@example.com gone@example.com"}, token=t))
+        self.assertEqual((r["added"], r["skipped"], r["invalid"]), (2, 1, ["not-an-email"]))
+        subs = {s["email"]: s for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"]}
+        self.assertIn("two@example.com", subs)
+        self.assertEqual(int(subs["gone@example.com"]["unsubscribed"]), 1, "someone who unsubscribed stays unsubscribed")
+        self.assertEqual(sub["email"], "gone@example.com")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/subscribers", {"emails": "  "}, token=t).status, 400)
+
+    def test_staff_can_send_a_reset_link(self):
+        t = self.owner_token
+        _, email = self.customer("needsreset")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.resend.requests.clear()
+        r = self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/reset-link", {}, token=t))
+        self.assertEqual(r["sent_to"], email)
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"]), ([email], "Reset your Rotaidem password"))
+        self.assertIn("/reset-password?token=", sent["html"])
+        customer, _ = self.customer("sneaky")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/reset-link", {}, token=customer).status, 403)
+
+    def test_general_site_settings(self):
+        t = self.owner_token
+        config = {"contact_email": "hello@rotaidem.com", "footer_text": "Made in Sweden",
+                  "socials": {"discord": "https://discord.gg/rotaidem", "youtube": "", "myspace": "https://myspace.com/x"},
+                  "maintenance": {"enabled": True, "message": "Back at 18:00"}}
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=t))
+        self.assertEqual(r["config"], {"contact_email": "hello@rotaidem.com", "footer_text": "Made in Sweden",
+                                       "socials": {"discord": "https://discord.gg/rotaidem"},
+                                       "maintenance": {"enabled": True, "message": "Back at 18:00"}})
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["config"]["maintenance"]["enabled"], True)
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertIn("discord.gg/rotaidem", js if isinstance(js, str) else js.decode())
+        for bad in ({"contact_email": "nope"}, {"socials": {"discord": "http://discord.gg/x"}}, {"socials": {"x": "javascript:alert(1)"}}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"config": bad}, token=t).status, 400, bad)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": {"maintenance": {"enabled": False}}}, token=t))
+        self.assertEqual((r["config"]["maintenance"]["enabled"], r["config"]["contact_email"]), (False, "Eliaz@rotaidem.com"))
+        customer, _ = self.customer("configy")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=customer).status, 403)
+
+    def test_roadmap_faq_and_short_links(self):
+        t = self.owner_token
+        roadmap = [{"stage": "Done", "title": "Signed licences", "text": "Safer keys"}, {"stage": "Bogus", "title": "Public beta"}, {"stage": "Next", "title": "  "}]
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"roadmap": roadmap, "faq": [{"q": "Is it free?", "a": "No"}, {"q": "Empty answer", "a": ""}]}, token=t))
+        self.assertEqual(r["roadmap"], [{"stage": "Done", "title": "Signed licences", "text": "Safer keys"}, {"stage": "Next", "title": "Public beta", "text": ""}])
+        self.assertEqual(r["faq"], [{"q": "Is it free?", "a": "No"}])
+        site = self.ok(self.w.cgi("GET", "/api/site"))
+        self.assertEqual((len(site["roadmap"]), len(site["faq"])), (2, 1))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"roadmap": [{"title": "x"}] * 41}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {"discord": "https://discord.gg/rotaidem", "/Beta": "/downloads", "": ""}}, token=t))
+        self.assertEqual(r["links"], {"discord": "https://discord.gg/rotaidem", "beta": "/downloads"})
+        for bad in ({"downloads": "https://example.com"}, {"Bad Slug": "https://example.com"}, {"x": "javascript:alert(1)"}, {"y": "//evil.example"}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"links": bad}, token=t).status, 400, bad)
+        with open(os.path.join(self.w.public, "404.html")) as fh:
+            self.assertIn("location.replace(links[slug])", fh.read(), "the not-found page forwards short links")
+        customer, _ = self.customer("linky")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"links": {"free": "https://example.com"}}, token=customer).status, 403)
+
+    def test_banner_dates_sign_out_and_new_accounts(self):
+        t = self.owner_token
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"announcement": {"enabled": True, "text": "Beta weekend", "from": "2026-11-01", "until": "2026-11-03"}}, token=t))
+        self.assertEqual((r["announcement"]["from"], r["announcement"]["until"]), ("2026-11-01", "2026-11-03"))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"announcement": {"text": "x", "from": "next week"}}, token=t).status, 400)
+        before = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["new_users_7d"]
+        token, email = self.customer("signedin")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))["new_users_7d"], before + 1)
+        self.ok(self.w.cgi("GET", "/api/me", token=token))
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/sign-out", {}, token=t))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=token).status, 401, "the old session no longer works")
+        owner = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["role"] == "Owner")
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{owner['id']}/sign-out", {}, token=self.owner_token).status, 400)
+
+    def test_look_and_media(self):
+        t = self.owner_token
+        extras = {"accent": "amber", "logo": "/img/hero.jpg", "gallery": ["/img/clouds.jpg", "https://cdn.example.com/a.png"],
+                  "video": "https://youtu.be/dQw4w9WgXcQ?t=5", "launch": {"enabled": True, "at": "2026-12-01T17:00:00.000Z"}, "hide": ["news", "nonsense"]}
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": extras}, token=t))
+        self.assertEqual(r["extras"], {"accent": "amber", "logo": "/img/hero.jpg", "gallery": ["/img/clouds.jpg", "https://cdn.example.com/a.png"],
+                                       "video": "dQw4w9WgXcQ", "launch": {"enabled": True, "at": "2026-12-01T17:00:00.000Z"}, "hide": ["news"]})
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertIn("--accent:#f2a900", js if isinstance(js, str) else js.decode(), "the colour applies before the page is drawn")
+        for video in ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/shorts/dQw4w9WgXcQ", "dQw4w9WgXcQ"):
+            r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": {**extras, "video": video}}, token=t))
+            self.assertEqual(r["extras"]["video"], "dQw4w9WgXcQ", video)
+        for bad in ({"video": "https://evil.example/watch?v=dQw4w9WgXcQ"}, {"logo": "javascript:alert(1)"}, {"gallery": ["ftp://x"]},
+                    {"gallery": ["/img/hero.jpg"] * 25}, {"launch": {"enabled": True, "at": ""}}, {"launch": {"enabled": True, "at": "tomorrow"}}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"extras": {**extras, **bad}}, token=t).status, 400, bad)
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"extras": {"accent": "steel"}}, token=t))
+        js = self.ok(self.w.cgi("GET", "/site-settings.js"))
+        self.assertNotIn("--accent:", js if isinstance(js, str) else js.decode())
+        customer, _ = self.customer("looky")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"extras": extras}, token=customer).status, 403)
+
+    def test_cut_off_upload_says_so(self):
+        r = self.w.cgi("POST", "/api/admin/media", b'{"filename": "big.jpg", "mime": "image/jpeg", "data": "/9j/4AAQ', token=self.owner_token)
+        self.assertEqual(r.status, 400)
+        self.assertIn("cut off", r.json()["error"])
+
+    def test_logged_in_devices(self):
+        laptop, email = self.customer("traveller")
+        phone = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"},
+                                   headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1"}))["token"]
+        self.ok(self.w.cgi("GET", "/api/me", token=laptop))  # logging in on the phone did not log the laptop out
+        rows = self.ok(self.w.cgi("GET", "/api/account/sessions", token=phone))["sessions"]
+        self.assertEqual(len(rows), 2)
+        this = next(r for r in rows if r["current"])
+        self.assertEqual((this["device"], this["ip_address"]), ("Safari on iPhone", "203.0.113.5"))
+        other = next(r for r in rows if not r["current"])
+        self.ok(self.w.cgi("DELETE", f"/api/account/sessions/{other['id']}", token=phone))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=laptop).status, 401, "the removed device is logged out")
+        self.ok(self.w.cgi("GET", "/api/me", token=phone))
+        # someone else's device cannot be removed
+        intruder, _ = self.customer("intruder")
+        self.ok(self.w.cgi("DELETE", f"/api/account/sessions/{this['id']}", token=intruder))
+        self.ok(self.w.cgi("GET", "/api/me", token=phone))
+        # log out everywhere else
+        second = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}))["token"]
+        self.ok(self.w.cgi("POST", "/api/account/sessions/others", {}, token=second))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=phone).status, 401)
+        self.ok(self.w.cgi("GET", "/api/me", token=second))
+        # a new password logs out the other devices too
+        third = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}))["token"]
+        self.ok(self.w.cgi("POST", "/api/account/settings", {"name": "traveller", "current_password": "customer-pass-1", "new_password": "customer-pass-2"}, token=second))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=third).status, 401)
+        self.ok(self.w.cgi("GET", "/api/me", token=second))
+        # the admin sees them and can end one
+        t = self.owner_token
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        sessions = self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.ok(self.w.cgi("DELETE", f"/api/admin/users/{user['id']}/sessions/{sessions[0]['id']}", token=t))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=second).status, 401)
+
+    def test_logins_from_before_sessions_keep_working(self):
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if not os.path.exists(db_file):
+            self.skipTest("writes the old token straight into the SQLite file")
+        import sqlite3
+        _, email = self.customer("oldtimer")
+        conn = sqlite3.connect(db_file)
+        conn.execute("UPDATE users SET token = 'legacy-token-123' WHERE email = ?", (email,))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token="legacy-token-123"))["user"]["email"], email)
+        conn = sqlite3.connect(db_file)
+        left = conn.execute("SELECT token FROM users WHERE email = ?", (email,)).fetchone()[0]
+        conn.close()
+        self.assertIsNone(left, "the old token moved into a session; only its hash is stored")
+        self.ok(self.w.cgi("GET", "/api/me", token="legacy-token-123"))
+        self.ok(self.w.cgi("POST", "/api/logout", token="legacy-token-123"))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token="legacy-token-123").status, 401)
+
+    def test_email_layouts_preview_and_templates(self):
+        t = self.owner_token
+        draft = {"subject": "HeavyPro 0.5", "message": "What changed:\n- Faster start\n- Realistic rudder\n\nThanks for testing!", "images": ["/img/hero.jpg", "/img/clouds.jpg"]}
+        html = lambda **x: self.ok(self.w.cgi("POST", "/api/admin/email-preview", {**draft, **x}, token=t))["html"]  # noqa: E731
+        update = html(layout="update")
+        self.assertIn(">UPDATE<", update)
+        self.assertIn("<li style=\"margin:0 0 6px\">Faster start</li>", update)
+        self.assertIn("https://rotaidem.test/downloads", update)
+        self.assertIn("Download the update", update)
+        launch = html(layout="launch", button={"text": "Get HeavyPro", "url": "/heavypro"})
+        self.assertIn("<h1", launch)
+        self.assertIn("https://rotaidem.test/heavypro", launch)
+        self.assertLess(launch.find("https://rotaidem.test/img/hero.jpg"), launch.find("HeavyPro 0.5"), "the first picture is on top")
+        plain = html(layout="plain")
+        self.assertNotIn(">ROTAIDEM<", plain)
+        self.assertIn("Eliaz", plain)
+        self.assertIn("Unsubscribe", plain)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/email-preview", {**draft, "button": {"url": "javascript:alert(1)"}}, token=t).status, 400)
+        # the real email uses the same layout
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/admin/broadcast", {**draft, "layout": "update", "test_email": "test@example.com"}, token=t))
+        self.assertIn(">UPDATE<", self.resend.requests[-1]["body"][0]["html"])
+        # saved templates
+        r = self.ok(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": "Patch notes", "layout": "update"}, token=t))
+        self.assertEqual([x["name"] for x in r["templates"]], ["Patch notes"])
+        self.ok(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": "Patch notes", "layout": "plain"}, token=t))
+        templates = self.ok(self.w.cgi("GET", "/api/admin/email-templates", token=t))["templates"]
+        self.assertEqual((len(templates), templates[0]["layout"], templates[0]["images"]), (1, "plain", draft["images"]), "the same name replaces it")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/email-templates", {**draft, "name": " "}, token=t).status, 400)
+        r = self.ok(self.w.cgi("DELETE", "/api/admin/email-templates", token=t, query="name=Patch%20notes"))
+        self.assertEqual(r["templates"], [])
+        customer, _ = self.customer("templater")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/email-templates", token=customer).status, 403)
+
+    def test_downloads_counted_and_licence_only(self):
+        t = self.owner_token
+        product = {"name": "Gated App", "id": "gated-app", "download_url": "https://rotaidem.test/files/GatedSetup.exe", "status": "published",
+                   "changelog": [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "", "notes": "ignored"}, {"version": "1.0", "date": "bad"}]}
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
+        self.assertEqual(listed["changelog"], [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "1.0", "date": "", "notes": ""}])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["url"], product["download_url"])
+        self.ok(self.w.cgi("POST", "/api/download/gated-app"))  # same address again soon: counted once
+        self.ok(self.w.cgi("POST", "/api/download/gated-app", remote_addr="198.51.100.20"))
+        stats = self.ok(self.w.cgi("GET", "/api/admin/downloads", token=t))
+        row = next(p for p in stats["products"] if p["product_id"] == "gated-app")
+        self.assertEqual((row["total"], row["last_7"], row["last_30"]), (2, 2, 2))
+        # licence holders only: the link is hidden and the download needs an account with a licence
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
+        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True))
+        staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "gated-app")
+        self.assertEqual(staff_view["download_url"], product["download_url"], "the admin still sees the link")
+        r = self.w.cgi("POST", "/api/download/gated-app")
+        self.assertEqual((r.status, r.json().get("login")), (401, True))
+        customer, email = self.customer("downloader")
+        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer).status, 403)
+        self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": email, "product_id": "gated-app", "send_email": False}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["url"], product["download_url"])
+        self.assertEqual(self.w.cgi("POST", "/api/download/no-such-product").status, 404)
+
+    def test_dashboard_recap_and_team_board(self):
+        t = self.owner_token
+        before = self.ok(self.w.cgi("GET", "/api/admin/insights", token=t))
+        self.customer("recapped")
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Recap App", "id": "recap-app", "download_url": "https://rotaidem.test/files/R.exe", "status": "published"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/download/recap-app", remote_addr="198.51.100.31"))
+        after = self.ok(self.w.cgi("GET", "/api/admin/insights", token=t))
+        self.assertEqual(after["recap"]["accounts"]["this_week"], before["recap"]["accounts"]["this_week"] + 1)
+        self.assertEqual(after["recap"]["downloads"]["this_week"], before["recap"]["downloads"]["this_week"] + 1)
+        self.assertEqual(sum(after["heatmap"].values()), sum(before["heatmap"].values()) + 2)
+        overview = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))
+        self.assertGreaterEqual(overview["downloads"], 1)
+        self.assertIn("emails_sent", overview)
+        self.assertIn("media", overview)
+        # sticky notes on the team board
+        self.assertEqual(self.w.cgi("POST", "/api/admin/notes", {"text": "   "}, token=t).status, 400)
+        first = self.ok(self.w.cgi("POST", "/api/admin/notes", {"text": "Ship 1.3 on Friday", "colour": "blue"}, token=t))["notes"][0]
+        self.ok(self.w.cgi("POST", "/api/admin/notes", {"text": "Order coffee", "colour": "purple"}, token=t))
+        notes = self.ok(self.w.cgi("GET", "/api/admin/notes", token=t))["notes"]
+        self.assertEqual([(n["text"], n["colour"]) for n in notes[:2]], [("Order coffee", "yellow"), ("Ship 1.3 on Friday", "blue")])
+        self.assertTrue(first["author"])
+        customer, _ = self.customer("peeker")
+        for method, path in (("GET", "/api/admin/notes"), ("POST", "/api/admin/notes"), ("DELETE", f"/api/admin/notes/{first['id']}"), ("GET", "/api/admin/insights")):
+            self.assertEqual(self.w.cgi(method, path, {"text": "hi"}, token=customer).status, 403, path)
+        left = self.ok(self.w.cgi("DELETE", f"/api/admin/notes/{first['id']}", token=t))["notes"]
+        self.assertNotIn(first["id"], [n["id"] for n in left])
+
+    def test_reply_by_email_saved_answers_and_auto_reply(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Pilot Pete", "email": "pete@example.com", "message": "Does it work with a yoke?"}))
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["email"] == "pete@example.com")
+        self.resend.requests.clear()
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "  "}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "Yes!\n\nAny yoke that MSFS sees works."}, token=t))
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"], sent["reply_to"]), (["pete@example.com"], "Re: your message to Rotaidem", "Eliaz@rotaidem.com"))
+        self.assertIn("Any yoke that MSFS sees works.", sent["html"])
+        self.assertIn("Does it work with a yoke?", sent["html"], "the original message is quoted")
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["id"] == msg["id"])
+        self.assertEqual((int(msg["handled"]), msg["reply"]), (1, "Yes!\n\nAny yoke that MSFS sees works."))
+        self.assertTrue(msg["replied_by"] and msg["replied_at"])
+        self.assertEqual(self.w.cgi("POST", "/api/admin/messages/999999/reply", {"text": "x"}, token=t).status, 404)
+        # saved answers and the automatic reply
+        self.assertEqual(self.w.cgi("POST", "/api/admin/inbox", {"replies": [{"title": "No text"}]}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/inbox", {"autoreply": {"enabled": True, "subject": "Thanks!", "text": "We will answer soon."},
+                                                            "replies": [{"title": "Yoke", "text": "Any yoke works."}, {"title": "", "text": ""}]}, token=t))
+        self.assertEqual(r["replies"], [{"title": "Yoke", "text": "Any yoke works."}])
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Auto Al", "email": "al@example.com", "message": "Hello"}))
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Auto Al", "email": "al@example.com", "message": "Hello again"}))
+        auto = [x["body"][0] for x in self.resend.requests]
+        self.assertEqual([(a["to"], a["subject"]) for a in auto], [(["al@example.com"], "Thanks!")], "one automatic reply a day per address")
+        self.assertIn("We will answer soon.", auto[0]["html"])
+        self.ok(self.w.cgi("POST", "/api/admin/inbox", {"autoreply": {"enabled": False}, "replies": []}, token=t))
+        customer, _ = self.customer("inboxpeek")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/inbox", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "x"}, token=customer).status, 403)
+
+    def test_blocklist_and_system_info(self):
+        t = self.owner_token
+        self.assertEqual(self.w.cgi("POST", "/api/admin/blocklist", {"entries": ["not valid!"]}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/blocklist", {"entries": ["@spam.test", "Bad@Example.com", "192.0.2.", "", "@spam.test"]}, token=t))
+        self.assertEqual(r["entries"], ["@spam.test", "bad@example.com", "192.0.2."])
+        try:
+            r = self.w.cgi("POST", "/api/signup", {"name": "Spammer", "email": "x@spam.test", "password": "spam-pass-1"})
+            self.assertEqual(r.status, 403)
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Bad", "email": "bad@example.com", "message": "Buy now"}))
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Ip", "email": "fine@example.com", "message": "From a blocked network"}, remote_addr="192.0.2.9"))
+            self.ok(self.w.cgi("POST", "/api/subscribe", {"email": "list@spam.test"}))
+            messages = [m["message"] for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"]]
+            self.assertNotIn("Buy now", messages)
+            self.assertNotIn("From a blocked network", messages)
+            self.assertNotIn("list@spam.test", [s["email"] for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"]])
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Ok", "email": "fine@example.com", "message": "Allowed"}, remote_addr="198.51.100.9"))
+            system = self.ok(self.w.cgi("GET", "/api/admin/system", token=t))
+            self.assertEqual(system["blocked"], 3)
+            self.assertGreaterEqual(system["tables"]["users"], 1)
+            self.assertIn(system["database"], ("SQLite", "MySQL / MariaDB"))
+            self.assertNotIn("re_test", json.dumps(system), "no secrets in the system info")
+            customer, _ = self.customer("blockpeek")
+            for path in ("/api/admin/blocklist", "/api/admin/system"):
+                self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/blocklist", {"entries": []}, token=t))
+        overview = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))
+        self.assertIn(overview["name"], [s["name"] for s in overview["staff_online"]])
+
+    def test_orders_bulk_licences_and_timeline(self):
+        t = self.owner_token
+        customer, email = self.customer("timeline")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", "/api/admin/orders", {"customer_id": user["id"], "product_id": "heavypro", "amount": "29.99"}, token=t))
+        order = next(o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o["customer_id"] == user["id"])
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"payment_status": "Lost"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"amount": -1}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"payment_status": "Refunded"}, token=t))
+        order = next(o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o["id"] == order["id"])
+        self.assertEqual((order["payment_status"], float(order["amount"])), ("Refunded", 29.99))
+        # the timeline: messages from their address and their downloads come with the user
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Timeline", "email": email, "message": "Where is my key?"}))
+        detail = self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]
+        self.assertEqual([m["message"] for m in detail["messages"]], ["Where is my key?"])
+        self.assertEqual(detail["downloads"], [])
+        # bulk licence changes
+        keys = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 3, "send_email": False}, token=t))["keys"]
+        ids = [l["id"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] in keys]
+        self.assertEqual(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "explode"}, token=t).status, 400)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids[:2], "action": "revoke"}, token=t))["changed"], 2)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "revoke"}, token=t))["changed"], 1)
+        statuses = {l["id"]: l["status"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"]}
+        self.assertEqual({statuses[i] for i in ids}, {"revoked"})
+        self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "activate"}, token=t))
+        for method, path in (("POST", f"/api/admin/orders/{order['id']}"), ("DELETE", f"/api/admin/orders/{order['id']}"), ("POST", "/api/admin/licenses/bulk")):
+            self.assertEqual(self.w.cgi(method, path, {"ids": ids, "action": "revoke"}, token=customer).status, 403, path)
+        self.ok(self.w.cgi("DELETE", f"/api/admin/orders/{order['id']}", token=t))
+        self.assertNotIn(order["id"], [o["id"] for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"]])
+        self.assertEqual(self.w.cgi("DELETE", f"/api/admin/orders/{order['id']}", token=t).status, 404)
+
+    def test_link_clicks_goals_and_leaderboard(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {"discord": "https://discord.gg/rotaidem"}}, token=t))
+        try:
+            before = (self.ok(self.w.cgi("GET", "/api/admin/link-hits", token=t))["hits"].get("discord") or {}).get("total", 0)
+            self.ok(self.w.cgi("POST", "/api/link-hit/discord"))
+            self.ok(self.w.cgi("POST", "/api/link-hit/discord"))
+            self.ok(self.w.cgi("POST", "/api/link-hit/not-a-link"))
+            hits = self.ok(self.w.cgi("GET", "/api/admin/link-hits", token=t))["hits"]
+            self.assertEqual(hits["discord"]["total"], before + 2)
+            self.assertNotIn("not-a-link", hits)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {}}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"revenue": "lots"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"customers": -5}, token=t).status, 400)
+        goals = self.ok(self.w.cgi("POST", "/api/admin/goals", {"revenue": "1000.5", "customers": "50", "downloads": 0}, token=t))["goals"]
+        self.assertEqual(goals, {"revenue": 1000.5, "customers": 50, "downloads": 0, "subscribers": 0})
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/goals", token=t))["goals"], goals)
+        board = self.ok(self.w.cgi("GET", "/api/admin/leaderboard", token=t))
+        self.assertTrue(any(r["action"] == "save_goals" and r["n"] >= 1 for r in board["rows"]))
+        customer, _ = self.customer("goalpeek")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"revenue": 1}, token=customer).status, 403)
+        for path in ("/api/admin/goals", "/api/admin/leaderboard", "/api/admin/link-hits"):
+            self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403, path)
+
+    def test_user_notes_and_scheduled_posts(self):
+        t = self.owner_token
+        _, email = self.customer("noted")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", f"/api/admin/users/{user['id']}/note", {"note": "Beta tester, Thrustmaster stick"}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]["admin_note"], "Beta tester, Thrustmaster stick")
+        customer, _ = self.customer("nosy")
+        self.assertNotIn("admin_note", self.ok(self.w.cgi("GET", "/api/me", token=customer))["user"])
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/users/{user['id']}/note", {"note": "x"}, token=customer).status, 403)
+        # a post scheduled for later is not on the site yet; one whose time has come is
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Future post", "content": "Soon", "status": "scheduled", "publish_at": "2099-01-01T09:00:00.000Z"}, token=t))
+        self.assertNotIn("Future post", [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]])
+        post = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/posts", token=t))["posts"] if p["title"] == "Future post")
+        self.assertEqual((post["status"], post["publish_at"], post["date"]), ("scheduled", "2099-01-01 09:00:00", "January 1, 2099"))
+        self.assertEqual(self.w.cgi("POST", "/api/newsletter", {"title": "Late", "content": "x", "status": "scheduled", "publish_at": "2001-01-01T09:00:00.000Z"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/newsletter", {"title": "No time", "content": "x", "status": "scheduled"}, token=t).status, 400)
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):  # move the time into the past, as if it had passed
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("UPDATE posts SET publish_at = '2001-01-01 09:00:00' WHERE title = 'Future post'")
+            conn.commit()
+            conn.close()
+            self.assertIn("Future post", [p["title"] for p in self.ok(self.w.cgi("GET", "/api/newsletter"))["posts"]])
+
+    def test_page_texts(self):
+        t = self.owner_token
+        key = "index.welcome-to-rotaidem"
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"texts": {key: "Hello pilots\r\nof **MSFS**", "about.who-we-are": "Us"}}, token=t))
+        self.assertEqual(r["texts"][key], "Hello pilots\nof **MSFS**")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["texts"], {key: "Hello pilots\nof **MSFS**", "about.who-we-are": "Us"})
+        r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"texts": {"about.who-we-are": None, key: ""}}, token=t))
+        self.assertEqual(r["texts"], {})
+        for bad in ({"<script>": "x"}, {"index": "x"}, {key: "x" * 5001}):
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": bad}, token=t).status, 400, bad)
+        customer, _ = self.customer("texty")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": {key: "hacked"}}, token=customer).status, 403)
+
+    def test_page_text_markers_are_unique_and_valid(self):
+        import glob
+        import re
+        seen = {}
+        for path in glob.glob(os.path.join(REPO, "cloudflare", "public", "**", "*.html"), recursive=True):
+            with open(path, encoding="utf-8") as fh:
+                for key in re.findall(r'data-text="([^"]+)"', fh.read()):
+                    self.assertRegex(key, r"^[a-z0-9-]{1,40}\.[a-z0-9-]{1,60}$")
+                    self.assertNotIn(key, seen, f"{key} is used in {seen.get(key)} and {path}")
+                    seen[key] = path
+        self.assertGreater(len(seen), 100)
+
+    def test_admin_password(self):
+        t = self.owner_token
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/gate", token=t)), {"enabled": False, "unlocked": True, "can_change": True})
+        self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"new_password": "short"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"new_password": OWNER[2]}, token=t).status, 400)  # not the login password
+        unlock = self.ok(self.w.cgi("POST", "/api/admin/gate", {"new_password": "gate-pass-123"}, token=t))["unlock"]
+        try:
+            # Without the unlock code every admin request asks for the admin password.
+            r = self.w.cgi("GET", "/api/admin/overview", token=t)
+            self.assertEqual((r.status, r.json().get("locked")), (403, True))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"texts": {}}, token=t).json().get("locked"), True)
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t, headers={"X-Rotaidem-Admin": "1.abc"}).status, 403)
+            self.ok(self.w.cgi("GET", "/api/admin/overview", token=t, headers={"X-Rotaidem-Admin": unlock}))
+            # Customers still get the plain answer, the shop's licence tool still works, public pages still work.
+            customer, _ = self.customer("gatecustomer")
+            self.assertNotIn("locked", self.w.cgi("GET", "/api/admin/overview", token=customer).json())
+            self.ok(self.w.cgi("POST", "/api/licenses/import", {"product_id": "heavypro", "licenses": []}, headers={"X-License-Api-Key": "generator-key-0123456789"}))
+            self.ok(self.w.cgi("GET", "/api/site"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=t))["user"]["is_admin"], True)
+            # Unlocking.
+            self.assertEqual(self.w.cgi("POST", "/api/admin/unlock", {"password": "wrong-one"}, token=t).status, 401)
+            fresh = self.ok(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=t))["unlock"]
+            self.ok(self.w.cgi("GET", "/api/admin/customers", token=t, headers={"X-Rotaidem-Admin": fresh}))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=customer).status, 403)
+            # A new login (new session) needs a new unlock.
+            t2 = self.owner_token
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t2, headers={"X-Rotaidem-Admin": fresh}).status, 403)
+            fresh = self.ok(self.w.cgi("POST", "/api/admin/unlock", {"password": "gate-pass-123"}, token=t2))["unlock"]
+            h = {"X-Rotaidem-Admin": fresh}
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/gate", token=t2, headers=h))["unlocked"], True)
+            # Changing it needs the current one and makes old unlock codes useless.
+            self.assertEqual(self.w.cgi("POST", "/api/admin/gate", {"current_password": "nope", "new_password": "gate-pass-456"}, token=t2, headers=h).status, 400)
+            newer = self.ok(self.w.cgi("POST", "/api/admin/gate", {"current_password": "gate-pass-123", "new_password": "gate-pass-456"}, token=t2, headers=h))["unlock"]
+            self.assertEqual(self.w.cgi("GET", "/api/admin/overview", token=t2, headers=h).status, 403)
+            self.ok(self.w.cgi("GET", "/api/admin/overview", token=t2, headers={"X-Rotaidem-Admin": newer}))
+            # Too many wrong attempts lock the unlock form for a while.
+            statuses = [self.w.cgi("POST", "/api/admin/unlock", {"password": "guess"}, token=t2).status for _ in range(6)]
+            self.assertEqual(statuses[-1], 429)
+            logs = [l["action"] for l in self.ok(self.w.cgi("GET", "/api/admin/audit", token=t2, headers={"X-Rotaidem-Admin": newer}))["logs"]]
+            self.assertIn("admin_unlock_failed", logs)
+            self.assertIn("admin_password", logs)
+        finally:
+            out = self.w.setup_cmd("admin-password", stdin="\n")  # Enter = remove (the SSH way back in)
+        self.assertIn("removed", out)
+        self.ok(self.w.cgi("GET", "/api/admin/overview", token=self.owner_token))
+
+    def test_fetch_installer(self):
+        files = {"/HeavyProSetup.exe": b"MZ" + os.urandom(300 * 1024), "/broken.exe": b"<html>Not Found</html>" * 10000}
+
+        class Files(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = files.get(self.path)
+                self.send_response(200 if data else 404)
+                self.send_header("Content-Length", str(len(data or b"")))
+                self.end_headers()
+                self.wfile.write(data or b"")
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Files)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            t = self.owner_token
+            self.ok(self.w.cgi("POST", "/api/save-product", {"id": "heavypro", "name": "HeavyPro", "status": "published"}, token=t))
+            code, out = self.w.setup_run("fetch-installer", base + "/missing.exe")
+            self.assertEqual(code, 1, out)
+            self.assertIn("404", out)
+            code, out = self.w.setup_run("fetch-installer", base + "/broken.exe")
+            self.assertIn("not an installer", out)
+            self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "broken.exe")))
+            self.assertEqual(self.w.setup_run("fetch-installer", "ftp://example.com/x.exe")[0], 1)
+            out = self.w.setup_cmd("fetch-installer", base + "/HeavyProSetup.exe")
+        finally:
+            server.shutdown()
+        import hashlib
+        import zipfile
+        folder = os.path.join(self.w.public, "files")
+        with open(os.path.join(folder, "HeavyProSetup.exe"), "rb") as fh:
+            self.assertEqual(fh.read(), files["/HeavyProSetup.exe"])
+        sha = hashlib.sha256(files["/HeavyProSetup.exe"]).hexdigest()
+        with open(os.path.join(folder, "HeavyProSetup.exe.sha256")) as fh:
+            self.assertEqual(fh.read(), f"{sha}  HeavyProSetup.exe\n")
+        with zipfile.ZipFile(os.path.join(folder, "HeavyProSetup.zip")) as z:
+            self.assertEqual(z.read("HeavyProSetup.exe"), files["/HeavyProSetup.exe"])
+        for name in os.listdir(folder):
+            self.assertEqual(os.stat(os.path.join(folder, name)).st_mode & 0o777, 0o644, name)
+        self.assertEqual(os.listdir(self.w.data).count("HeavyProSetup.exe.download"), 0)
+        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]}
+        self.assertEqual(products["heavypro"]["download_url"], f"https://rotaidem.test/files/HeavyProSetup.exe?v={sha[:10]}")
+        self.assertIn("now point to", out)
+
+    def test_email_test_command(self):
+        self.resend.requests.clear()
+        out = self.w.setup_cmd("email-test", "me@example.com")
+        self.assertIn("Resend accepted the e-mail to me@example.com", out)
+        self.assertNotIn("re_test", out.replace("starts with 're_'", ""), "the key itself is never printed")
+        self.assertEqual(self.resend.requests[-1]["body"][0]["to"], ["me@example.com"])
+        self.resend.fail_with = (401, {"message": "API key is invalid"})
+        try:
+            out = self.w.setup_cmd("email-test", "me@example.com")
+        finally:
+            self.resend.fail_with = None
+        self.assertIn("Resend rejected the API key", out)
 
     # ---------- backup, import, explicit catalogue reset ----------
 
@@ -435,6 +1198,119 @@ class StratoCGITests:
         self.assertIn("Backup Test", names)
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/me", token=self.owner_token))["user"]["role"], "Owner")
 
+
+    # ---------- STRATO's FastCGI launcher (imports the script, calls `application`) ----------
+
+    def test_strato_fastcgi_mode(self):
+        login = self.w.wsgi([{"method": "POST", "path": "/api/login", "body": {"email": OWNER[0], "password": OWNER[2]}}])[0]
+        self.assertEqual(login["status"], 200, login["body"])
+        token = json.loads(login["body"])["token"]
+        with open(IMAGE, "rb") as fh:
+            image = "data:image/jpeg;base64," + base64.b64encode(fh.read()).decode()
+        replies = self.w.wsgi([
+            {"path": "/health"},
+            {"path": "/api/site", "no_path_info": True},  # PATH_INFO left empty: taken from REQUEST_URI
+            {"path": "/api/me", "headers": {"Authorization": "Bearer " + token}, "redirect_auth": True},
+            {"path": "/api/me", "headers": {"X-Rotaidem-Token": token}},
+            {"path": "/api/admin/overview", "headers": {"Authorization": "Bearer " + token}},
+            {"method": "POST", "path": "/api/admin/media", "headers": {"Authorization": "Bearer " + token},
+             "body": {"filename": "x.jpg", "mime": "image/jpeg", "data": image}},
+            {"path": "/api/admin/overview"},  # no token: refused
+            {"path": "/api/nope"},
+        ])
+        self.assertEqual([r["status"] for r in replies], [200, 200, 200, 200, 200, 200, 403, 404], [r["body"][:120] for r in replies])
+        self.assertEqual(json.loads(replies[0]["body"]), {"ok": True, "database": "ok"})
+        self.assertIn("announcement", replies[1]["body"])
+        self.assertEqual(json.loads(replies[2]["body"])["user"]["role"], "Owner")
+        media_url = json.loads(replies[5]["body"])["url"]
+        served = self.w.wsgi([{"path": media_url}])[0]
+        self.assertEqual((served["status"], served["headers"]["content-type"]), (200, "image/jpeg"))
+        check = self.w.wsgi([{"path": "/cgi-bin/rotaidem-check.py", "query": "key=checkkey123"},
+                             {"path": "/cgi-bin/rotaidem-check.py", "query": "key=wrong"},
+                             {"path": "/cgi-bin/rotaidem-check.py", "query": "key=checkkey123&echo=1",
+                              "headers": {"Authorization": "Bearer x"}, "redirect_auth": True}], script="rotaidem-check.py")
+        self.assertEqual([c["status"] for c in check], [200, 404, 200])
+        self.assertIn("Database can be read and written", check[0]["body"])
+        self.assertIn("FastCGI (application)", check[0]["body"])
+        self.assertNotIn('class="bad"', check[0]["body"].split("From your browser")[0])
+        self.assertTrue(json.loads(check[2]["body"])["REDIRECT_HTTP_AUTHORIZATION"])
+
+    def test_strato_fastcgi_process_with_an_older_copy_loaded(self):
+        """A FastCGI process that ran an older version still holds the old cgi_app and server modules.
+        Loading the new entry script in that process must use the new code (no restart needed)."""
+        code = f"""
+import json, sys
+sys.path.insert(0, {os.path.join(self.w.app, "strato")!r})
+import cgi_app, wsgi_probe
+del cgi_app.wsgi_app          # what an older cgi_app looked like: no wsgi_app
+cgi_app.prepare({self.w.app!r}, {os.path.join(self.w.data, "config.env")!r})
+import server
+server.SCHEMA_VERSION = "old"  # mark the server module loaded before the update (reload redefines it)
+script = {os.path.join(self.w.public, "cgi-bin", "rotaidem.py")!r}
+app = wsgi_probe.load(script)
+print(json.dumps([wsgi_probe.call(app, script, {{"path": "/health"}})["status"], sys.modules["server"].SCHEMA_VERSION == "old"]))
+"""
+        p = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), [200, False])
+
+    def test_site_sends_the_token_in_its_own_header(self):
+        for name in ("admin.html", "account.html", "auth.js"):
+            with open(os.path.join(self.w.public, name)) as fh:
+                text = fh.read()
+            self.assertIn("X-Rotaidem-Token", text, name)
+            self.assertNotIn("Authorization:", text, name)
+
+    def test_strato_fastcgi_picks_up_changed_settings(self):
+        """The FastCGI process stays loaded: an edited config.env must apply without a restart."""
+        cfg = os.path.join(self.w.data, "config.env")
+        with open(cfg, "rb") as fh:
+            original = fh.read()
+        code = f"""
+import importlib.machinery, importlib.util, io, json, os, sys, time
+sys.path.insert(0, {os.path.join(self.w.app, "strato")!r})
+import wsgi_probe
+script = {os.path.join(self.w.public, "cgi-bin", "rotaidem.py")!r}
+app = wsgi_probe.load(script)
+req = lambda key: wsgi_probe.call(app, script, {{"method": "POST", "path": "/api/licenses/import",
+    "headers": {{"X-License-Api-Key": key}}, "body": {{"licenses": []}}}})["status"]
+before = (req("generator-key-0123456789"), req("a-brand-new-generator-key"))
+time.sleep(0.05)
+text = open({cfg!r}).read().replace("LICENSE_API_KEY=generator-key-0123456789", "LICENSE_API_KEY=a-brand-new-generator-key")
+open({cfg!r}, "w").write(text)
+after = (req("generator-key-0123456789"), req("a-brand-new-generator-key"))
+print(json.dumps([before, after]))
+"""
+        try:
+            p = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(json.loads(p.stdout), [[200, 403], [403, 200]])
+        finally:
+            with open(cfg, "wb") as fh:
+                fh.write(original)
+            os.chmod(cfg, 0o600)
+
+    def test_strato_fastcgi_startup_failure_is_generic(self):
+        vendor = os.path.join(self.w.app, "strato", "vendor")
+        os.rename(vendor, vendor + ".away")
+        try:
+            # Importing the script must still work (the launcher needs `application`); requests get a plain 503.
+            replies = self.w.wsgi([{"path": "/api/site"}, {"path": "/health"}], flags=("-S",))
+        finally:
+            os.rename(vendor + ".away", vendor)
+        for r in replies:
+            self.assertEqual(r["status"], 503)
+            self.assertNotIn("Traceback", r["body"])
+            self.assertNotIn(self.w.app, r["body"])
+        # The next request after the problem is fixed works without restarting anything.
+        self.assertEqual(self.w.wsgi([{"path": "/health"}])[0]["status"], 200)
+
+    def test_entry_scripts_offer_both_ways(self):
+        for name, wsgi_target, cgi_target in (("rotaidem.py", "wsgi_app", "run"), ("rotaidem-check.py", "wsgi_check", "run_check")):
+            with open(os.path.join(self.w.public, "cgi-bin", name)) as fh:
+                text = fh.read()
+            self.assertIn(f"application = cgi_app.{wsgi_target}(", text)
+            self.assertIn(f'if __name__ == "__main__":\n    cgi_app.{cgi_target}(', text)
 
     # ---------- deploy safety ----------
 
@@ -525,6 +1401,7 @@ class StratoCGITests:
         self.assertNotIn("[FAIL]", out)
         self.assertIn("choose 'rotaidem-public' as the domain target", out)
         self.assertIn("/health -> 200", out)
+        self.assertIn("Program test, STRATO way", out)
         self.assertIn("Database (read-only)", out)
         after = snapshot()
         self.assertEqual({k: v for k, v in after.items() if "logs" not in k}, {k: v for k, v in before.items() if "logs" not in k})

@@ -2,7 +2,7 @@
 // <body data-layout="off"> skips the layout, data-footer="off" skips only the footer.
 const LOGO = "/logo.svg";
 const MENU = [
-    ["Products", "/addons/", [["/heavypro", "HeavyPro", "Airliner control feel for MSFS 2024"], ["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
+    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
     ["Support", "/support", [["/support", "Help and FAQ", "Answers to common questions"], ["/installation", "Installation guide", "Set up HeavyPro step by step"], ["/downloads", "Downloads", "Installers and updates"], ["/contact", "Contact us", "Email and contact form"]]],
     ["News", "/newsletter", null],
     ["Company", "/about", [["/about", "About us", "Who we are"], ["/work-at-rsg", "Careers", "Work with us"], ["/contact", "Contact", "Get in touch"]]],
@@ -42,12 +42,12 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
                 <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
             <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
-            <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
-        </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem</span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
+            <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a id="ft-mail" href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
+        </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
         body.append(footer);
     }
 }
@@ -65,9 +65,29 @@ function paintAuth() {
         '<a class="btn btn-sm" href="/account">' + esc(localStorage.getItem("rsg_name") || "My account") + "</a>";
 }
 
+// Download buttons go through the server: it counts the download and, for "licence holders only"
+// products, checks the account first. Without the server the plain link (if any) still works.
+async function rsgDownload(productId, fallback) {
+    const token = localStorage.getItem("rsg_token");
+    try {
+        const res = await fetch(withBase("/api/download/" + encodeURIComponent(productId)), { method: "POST", headers: token ? { "X-Rotaidem-Token": token } : {} });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.url) { location.href = data.url; return; }
+        if (data.login) { if (confirm(data.error + "\n\nLog in now?")) location.href = withBase("/login?next=" + encodeURIComponent(location.pathname)); return; }
+        if (data.error) { alert(data.error); return; }
+    } catch (err) { /* fall back to the plain link */ }
+    if (fallback) location.href = fallback;
+}
+document.addEventListener("click", e => {
+    const b = e.target.closest("[data-dl]");
+    if (!b) return;
+    e.preventDefault();
+    rsgDownload(b.dataset.dl, b.getAttribute("href") && b.getAttribute("href") !== "#" ? b.getAttribute("href") : "");
+});
+
 function rsgLogout() {
     const token = localStorage.getItem("rsg_token");
-    if (token) fetch("/api/logout", { method: "POST", headers: { Authorization: "Bearer " + token, "X-Rotaidem-Token": token } }).catch(() => {});
+    if (token) fetch("/api/logout", { method: "POST", headers: { "X-Rotaidem-Token": token } }).catch(() => {});
     localStorage.removeItem("rsg_token");
     localStorage.removeItem("rsg_name");
     localStorage.removeItem("rsg_admin");
@@ -104,8 +124,111 @@ document.addEventListener("submit", async e => {
     if (res && res.ok) form.reset();
 });
 
-// Site settings from the admin panel: images per slot and the announcement banner.
-function applySiteSettings(site) {
+// Page texts edited in the admin: plain text, new lines become line breaks, **word** becomes bold.
+// Built with DOM nodes (never innerHTML), so saved text cannot inject markup.
+const ORIGINAL_TEXT = new WeakMap();
+function renderText(el, value) {
+    if (!ORIGINAL_TEXT.has(el)) ORIGINAL_TEXT.set(el, el.innerHTML);
+    el.textContent = "";
+    String(value).split("\n").forEach((line, i) => {
+        if (i) el.append(document.createElement("br"));
+        line.split(/\*\*(.+?)\*\*/).forEach((part, j) => {
+            if (!part) return;
+            if (j % 2) { const b = document.createElement("strong"); b.textContent = part; el.append(b); }
+            else el.append(document.createTextNode(part));
+        });
+    });
+}
+function applyTexts(texts) {
+    document.querySelectorAll("[data-text]").forEach(el => {
+        const value = texts[el.dataset.text];
+        if (value) renderText(el, value);
+        else if (ORIGINAL_TEXT.has(el)) { el.innerHTML = ORIGINAL_TEXT.get(el); ORIGINAL_TEXT.delete(el); }
+    });
+}
+
+// General settings from the admin: contact email, footer text and social links in the footer.
+const SOCIAL_NAMES = { discord: "Discord", youtube: "YouTube", instagram: "Instagram", x: "X", facebook: "Facebook", twitch: "Twitch", tiktok: "TikTok" };
+function applyConfig(config) {
+    const text = document.getElementById("ft-text"), mail = document.getElementById("ft-mail"), socials = document.getElementById("ft-socials");
+    if (text && config.footer_text) text.textContent = config.footer_text;
+    if (mail && config.contact_email) { mail.textContent = config.contact_email; mail.href = "mailto:" + config.contact_email; }
+    if (socials) socials.innerHTML = Object.entries(config.socials || {}).filter(([k, url]) => SOCIAL_NAMES[k] && /^https:\/\//.test(url))
+        .map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${SOCIAL_NAMES[k]}</a>`).join("");
+    applyMaintenance(config.maintenance || {});
+}
+// Maintenance mode: visitors see a back-soon page; logged-in staff and the log in pages are left alone.
+function applyMaintenance(m) {
+    const old = document.getElementById("maintenance");
+    const exempt = localStorage.getItem("rsg_admin") === "true" || /^\/(login|admin|forgot-password|reset-password)/.test(location.pathname);
+    if (!m.enabled || exempt) { if (old) old.remove(); return; }
+    const box = old || document.createElement("div");
+    box.id = "maintenance"; box.className = "maintenance";
+    box.innerHTML = `<div><img src="${withBase(LOGO)}" alt="" style="height:28px;margin:0 auto 28px"><h1>Back soon</h1><p class="lead" style="margin:0 auto 28px">${esc(m.message || "We are updating the website. Please check back in a few minutes.")}</p><a class="text-link" href="/login">Staff log in</a></div>`;
+    if (!old) document.body.append(box);
+}
+
+// Look & media from the admin: accent colour, logo, HeavyPro screenshots and video, launch countdown,
+// and home page sections switched off.
+const ACCENT_COLOURS = { amber: ["#f2a900", "#ffbd2e", "242, 169, 0"], sky: ["#5ab0ff", "#8cc8ff", "90, 176, 255"], mint: ["#4cc38a", "#7ad7aa", "76, 195, 138"],
+    rose: ["#ff6b81", "#ff94a5", "255, 107, 129"], violet: ["#a78bfa", "#c4b5fd", "167, 139, 250"] };
+function applyExtras(x) {
+    const root = document.documentElement, accent = ACCENT_COLOURS[x.accent];
+    ["--accent", "--accent-hover", "--accent-rgb"].forEach((name, i) => accent ? root.style.setProperty(name, accent[i]) : root.style.removeProperty(name));
+    if (x.logo) document.querySelectorAll(".brand img").forEach(img => { img.src = safeImage(x.logo); });
+    root.dataset.hide = (x.hide || []).join(" ");
+    const media = document.querySelector("[data-media]");
+    if (media) {
+        const shots = x.gallery || [];
+        media.querySelector("[data-gallery]").innerHTML = shots.map(u => `<button type="button" class="shot" data-full="${esc(safeImage(u))}" aria-label="Show larger"><img src="${esc(safeImage(u))}" alt="" loading="lazy"></button>`).join("");
+        media.querySelector("[data-video]").innerHTML = x.video ? `<button type="button" class="video-play" data-yt="${esc(x.video)}"><span class="play" aria-hidden="true"></span>Play video<small>Plays from YouTube</small></button>` : "";
+        media.hidden = !shots.length && !x.video;
+    }
+    startCountdown(x.launch || {});
+}
+let countdownTimer = null;
+function startCountdown(launch) {
+    const el = document.querySelector("[data-countdown]");
+    if (!el) return;
+    clearInterval(countdownTimer);
+    const end = Date.parse(launch.at || ""), pad = n => String(n).padStart(2, "0");
+    const tick = () => {
+        const left = end - Date.now();
+        if (!launch.enabled || !(left > 0)) { el.hidden = true; clearInterval(countdownTimer); return; }
+        const d = Math.floor(left / 864e5), h = Math.floor(left / 36e5) % 24, m = Math.floor(left / 6e4) % 60, sec = Math.floor(left / 1e3) % 60;
+        el.innerHTML = `<span>HeavyPro launches in</span><b>${d}<small>days</small></b><b>${pad(h)}<small>hours</small></b><b>${pad(m)}<small>min</small></b><b>${pad(sec)}<small>sec</small></b>`;
+        el.hidden = false;
+    };
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+}
+document.addEventListener("click", e => {
+    const shot = e.target.closest(".shot"), play = e.target.closest(".video-play"), box = e.target.closest(".lightbox");
+    if (shot) {
+        const lb = document.createElement("div");
+        lb.className = "lightbox"; lb.innerHTML = `<img src="${esc(shot.dataset.full)}" alt="">`;
+        document.body.append(lb);
+    } else if (box) box.remove();
+    else if (play) play.outerHTML = `<div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(play.dataset.yt)}?autoplay=1&rel=0" title="Video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>`;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".lightbox").forEach(b => b.remove()); });
+
+// Roadmap and FAQ edited in the admin replace the built-in lists on those pages.
+function applyLists(site) {
+    const roadmap = document.querySelector("[data-roadmap]");
+    if (roadmap && (site.roadmap || []).length) roadmap.innerHTML = site.roadmap.map(i =>
+        `<div><span class="when">${esc(i.stage)}</span><div><h3>${esc(i.title)}</h3>${i.text ? `<p class="muted" style="white-space:pre-line">${esc(i.text)}</p>` : ""}</div></div>`).join("");
+    const faq = document.querySelector("[data-faq]");
+    if (faq && (site.faq || []).length) faq.innerHTML = site.faq.map(i =>
+        `<details><summary>${esc(i.q)}</summary><p style="white-space:pre-line">${esc(i.a)}</p></details>`).join("");
+}
+
+// Site settings from the admin panel: images per slot, page texts and the announcement banner.
+function applyContent(site) {
+    applyTexts(site.texts || {});
+    applyLists(site);
+    if (site.config) applyConfig(site.config);
+    if (site.extras) applyExtras(site.extras);
     const images = site.images || {};
     if (images.product) FALLBACK_IMAGE = images.product;
     document.querySelectorAll("[data-image]").forEach(el => {
@@ -114,10 +237,14 @@ function applySiteSettings(site) {
         if (el.tagName === "IMG") el.src = safeImage(url);
         else el.style.backgroundImage = `url('${safeImage(url).replace(/'/g, "%27")}')`;
     });
+}
+function applyBanner(site) {
     const banner = site.announcement || {};
     let dismissed = "";
     try { dismissed = sessionStorage.getItem("rsg_banner_closed") || ""; } catch (err) {}
-    if (banner.enabled && banner.text && dismissed !== banner.text && document.body.dataset.layout !== "off") {
+    const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const inWindow = (!banner.from || today >= banner.from) && (!banner.until || today <= banner.until);
+    if (banner.enabled && banner.text && inWindow && dismissed !== banner.text && document.body.dataset.layout !== "off") {
         const bar = document.createElement("div");
         bar.className = "announce";
         const text = banner.link ? `<a href="${esc(banner.link)}">${esc(banner.text)}</a>` : esc(banner.text);
@@ -130,5 +257,18 @@ function applySiteSettings(site) {
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
-    fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => { if (site) applySiteSettings(site); }).catch(() => {});
+    // The footer only exists from here on, so its settings go in now.
+    if (window.RSG_SITE) {
+        if (window.RSG_SITE.config) applyConfig(window.RSG_SITE.config);
+        if (window.RSG_SITE.extras) applyExtras(window.RSG_SITE.extras); // the header logo exists from here on
+        applyBanner(window.RSG_SITE); return;
+    }
+    // Hosts without /site-settings.js: ask the API instead (the page shows the defaults until then).
+    fetch(withBase("/api/site")).then(r => r.ok ? r.json() : null).then(site => {
+        if (site) { applyContent(site); applyBanner(site); }
+    }).catch(() => {});
 });
+
+// /site-settings.js (loaded in <head>) already holds the pictures and texts: put them in now,
+// before the page is first drawn, so visitors never see the default wording or pictures.
+if (window.RSG_SITE) applyContent(window.RSG_SITE);

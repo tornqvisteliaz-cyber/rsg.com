@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Rotaidem.Licensing;
@@ -18,17 +19,30 @@ public enum LicenseStatus
     NotActivated,
     NetworkError,
     ServerError,
+    /// <summary>The answer was not signed by the Rotaidem server, was edited, or belongs to another computer or request.</summary>
+    Unverified,
+    /// <summary>Offline longer than the server's lease allows: the app must reach the server again.</summary>
+    LeaseExpired,
+    /// <summary>The computer's clock was turned back.</summary>
+    ClockTampered,
+    /// <summary>Too many wrong keys from this internet address; try again later.</summary>
+    RateLimited,
 }
 
-public sealed record LicenseResult(LicenseStatus Status, string Message, int ActivationsUsed = 0, int MaxActivations = 0)
+/// <param name="Token">The server's signed answer (save it with the key, see <see cref="LicenseStore.Save"/>).</param>
+/// <param name="LeaseUntil">Until when the app may run offline on this answer.</param>
+public sealed record LicenseResult(LicenseStatus Status, string Message, int ActivationsUsed = 0, int MaxActivations = 0,
+    string? Token = null, DateTimeOffset? LeaseUntil = null)
 {
     public bool IsValid => Status is LicenseStatus.Valid or LicenseStatus.OfflineGrace;
 }
 
 /// <summary>
 /// Talks to the licence endpoints on the Rotaidem website.
-/// Installer: <see cref="ActivateAsync"/> when the user enters a key, then save it with <see cref="LicenseStore"/>.
-/// App start-up: <see cref="CheckAsync"/>, which also allows a period of offline use.
+/// Installer: <see cref="ActivateAsync"/> when the user enters a key, then save it and its token with <see cref="LicenseStore"/>.
+/// App start-up: <see cref="CheckOffline"/> for a quick start, <see cref="CheckAsync"/> to confirm online.
+/// A "valid" answer counts only if it carries a token signed by the server (see <see cref="LicenseToken"/>)
+/// that names this computer and repeats the random nonce of this request.
 /// </summary>
 public sealed class LicenseClient
 {
@@ -47,12 +61,19 @@ public sealed class LicenseClient
 #endif
     }
 
-    public LicenseClient(string baseUrl = DefaultBaseUrl, string product = "heavypro", HttpClient? http = null)
+    private readonly LicenseToken? _verifier;
+
+    /// <param name="publicKeyJwk">The server's public key (https://rotaidem.com/api/licenses/jwks.json). Without it no answer can be trusted.</param>
+    public LicenseClient(string baseUrl = DefaultBaseUrl, string product = "heavypro", HttpClient? http = null, string? publicKeyJwk = null)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         Product = product;
         _http = http ?? SharedHttp;
+        _verifier = LicenseToken.FromJwk(publicKeyJwk);
     }
+
+    /// <summary>The computer id sent to the server and expected in its tokens. Normally <see cref="Licensing.MachineId.Get"/>.</summary>
+    public string MachineId { get; set; } = Licensing.MachineId.Get();
 
     public string Product { get; }
 
@@ -84,21 +105,57 @@ public sealed class LicenseClient
         if (saved is null)
             return new LicenseResult(LicenseStatus.NoKey, "No licence key has been entered on this computer.");
 
-        // One attempt only: at start-up the offline grace period covers a sleeping or unreachable server.
+        // One attempt only: at start-up the saved signed answer covers a sleeping or unreachable server.
         var result = await PostAsync("validate", saved.Key, 1, ct).ConfigureAwait(false);
         if (result.Status == LicenseStatus.Valid)
         {
-            store.Save(saved.Key, DateTimeOffset.UtcNow);
+            store.Save(saved.Key, DateTimeOffset.UtcNow, result.Token);
             return result;
         }
-        if (result.Status is LicenseStatus.NetworkError or LicenseStatus.ServerError &&
-            DateTimeOffset.UtcNow - saved.LastValidatedUtc <= offlineGrace)
+        if (result.Status is LicenseStatus.NetworkError or LicenseStatus.ServerError or LicenseStatus.RateLimited)
         {
-            var left = offlineGrace - (DateTimeOffset.UtcNow - saved.LastValidatedUtc);
-            return new LicenseResult(LicenseStatus.OfflineGrace,
-                $"Could not reach the licence server. HeavyPro keeps working offline for {Math.Max(0, (int)left.TotalDays)} more day(s).");
+            var offline = CheckOffline(store, offlineGrace);
+            return offline.IsValid ? offline : offline.Status is LicenseStatus.NoKey ? result : offline;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Without the network: is the saved signed answer still good on this computer? Valid while its lease
+    /// (set by the server) and <paramref name="offlineGrace"/> since the last online check both last.
+    /// </summary>
+    public LicenseResult CheckOffline(LicenseStore store, TimeSpan? offlineGrace = null)
+    {
+        var saved = store.Load();
+        if (saved is null)
+            return new LicenseResult(LicenseStatus.NoKey, "No licence key has been entered on this computer.");
+        if (saved.Token is null)
+            return new LicenseResult(LicenseStatus.NoKey, "The licence has to be confirmed online first.");
+        if (_verifier is null)
+            return NoPublicKey();
+        var now = DateTimeOffset.UtcNow;
+        var claims = _verifier.Verify(saved.Token, Product, MachineId, saved.Key, null, now, saved.LastSeen, out var status, out var problem);
+        if (claims is null)
+            return new LicenseResult(status, problem);
+        if (offlineGrace is { } grace && now - saved.LastValidatedUtc > grace)
+            return new LicenseResult(LicenseStatus.LeaseExpired, "HeavyPro has been offline too long. Connect to the internet once so the licence can be checked.");
+        store.Touch();
+        var until = offlineGrace is { } g && saved.LastValidatedUtc + g < claims.LeaseUntil ? saved.LastValidatedUtc + g : claims.LeaseUntil;
+        var days = Math.Max(0, (int)(until - now).TotalDays);
+        return new LicenseResult(LicenseStatus.OfflineGrace,
+            $"Could not reach the licence server. HeavyPro keeps working offline for {days} more day(s).",
+            claims.ActivationsUsed, claims.MaxActivations, saved.Token, until);
+    }
+
+    private static LicenseResult NoPublicKey() =>
+        new(LicenseStatus.Unverified, "This copy of HeavyPro was built without the licence server's public key. Download it again from rotaidem.com.");
+
+    private static string NewNonce()
+    {
+        var bytes = new byte[16];
+        using (var rng = RandomNumberGenerator.Create())
+            rng.GetBytes(bytes);
+        return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
     }
 
     private async Task<LicenseResult> PostAsync(string action, string key, int attempts, CancellationToken ct)
@@ -107,7 +164,8 @@ public sealed class LicenseClient
         if (normalized is null)
             return new LicenseResult(LicenseStatus.InvalidFormat, "That is not a valid licence key. Check for typing mistakes.");
 
-        var payload = Json.Serialize(new LicenseRequest { Key = normalized, MachineId = MachineId.Get(), MachineName = MachineId.DisplayName(), Product = Product });
+        var nonce = action == "deactivate" ? null : NewNonce();
+        var payload = Json.Serialize(new LicenseRequest { Key = normalized, MachineId = MachineId, MachineName = Licensing.MachineId.DisplayName(), Product = Product, Nonce = nonce });
         HttpResponseMessage? response = null;
         var problem = "";
         for (var attempt = 1; attempt <= Math.Max(1, attempts) && response is null; attempt++)
@@ -155,7 +213,15 @@ public sealed class LicenseClient
             if (action == "deactivate" && response.IsSuccessStatusCode)
                 return new LicenseResult(LicenseStatus.Valid, "This computer has been deactivated.");
             if (reply.Valid)
-                return new LicenseResult(LicenseStatus.Valid, "Licence confirmed.", reply.ActivationsUsed, reply.MaxActivations);
+            {
+                // Only an answer signed by the server, for this computer, key and request, counts.
+                if (_verifier is null)
+                    return NoPublicKey();
+                var claims = _verifier.Verify(reply.Token, Product, MachineId, normalized, nonce, DateTimeOffset.UtcNow, null, out var verdict, out var why);
+                if (claims is null)
+                    return new LicenseResult(verdict, why);
+                return new LicenseResult(LicenseStatus.Valid, "Licence confirmed.", claims.ActivationsUsed, claims.MaxActivations, reply.Token, claims.LeaseUntil);
+            }
 
             var status = reply.Reason switch
             {
@@ -165,6 +231,7 @@ public sealed class LicenseClient
                 "wrong_product" => LicenseStatus.WrongProduct,
                 "activation_limit" => LicenseStatus.ActivationLimit,
                 "not_activated" => LicenseStatus.NotActivated,
+                "rate_limited" => LicenseStatus.RateLimited,
                 _ => (int)response.StatusCode >= 500 ? LicenseStatus.ServerError : LicenseStatus.NotFound,
             };
             return new LicenseResult(status, reply.Error ?? "The licence could not be confirmed.", reply.ActivationsUsed, reply.MaxActivations);

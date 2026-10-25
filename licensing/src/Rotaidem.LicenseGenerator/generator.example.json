@@ -1,6 +1,6 @@
 {
   "siteUrl": "https://rotaidem.com",
-  "apiKey": "paste the LICENSE_API_KEY from Render here",
+  "apiKey": "paste LICENSE_API_KEY from /home/www/rotaidem-data/config.env here",
   "prefix": "HPRO",
   "product": "heavypro",
   "maxActivations": 2

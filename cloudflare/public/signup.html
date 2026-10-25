@@ -7,14 +7,15 @@
     <meta name="description" content="Create account to your Rotaidem account.">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
+    <script src="/site-settings.js"></script>
 </head>
 <body data-footer="off">
 <main class="auth">
-    <div class="auth-side" data-image="login" style="background-image:url('/img/clouds.jpg')"><div><h2>Join Rotaidem</h2><p>Get release news first and keep all your licences in one place.</p></div></div>
+    <div class="auth-side" data-image="login" style="background-image:url('/img/clouds.jpg')"><div><h2 data-text="signup.join-rotaidem">Join Rotaidem</h2><p data-text="signup.get-release-news-first">Get release news first and keep all your licences in one place.</p></div></div>
     <div class="auth-form">
         <form id="form">
-            <h1 style="font-size:32px">Create your account</h1>
-            <p class="muted" style="margin-bottom:26px">It is free and takes less than a minute.</p>
+            <h1 style="font-size:32px" data-text="signup.create-your-account">Create your account</h1>
+            <p class="muted" style="margin-bottom:26px" data-text="signup.it-is-free-and">It is free and takes less than a minute.</p>
             <div class="field"><label for="name">Name</label><input id="name" autocomplete="name" required></div>
             <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
             <div class="field"><label for="password">Password</label><input id="password" type="password" minlength="6" autocomplete="new-password" required><span class="muted" style="font-size:13px">At least 6 characters</span></div>
@@ -35,6 +36,12 @@ $("form").onsubmit = async e => {
     const res = await fetch("/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("name").value, email: $("email").value, password: $("password").value }) }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
     if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Sign-up is not available right now."; return; }
+    if (data.verify) { // the account opens once the email address is confirmed
+        $("form").innerHTML = `<h1 style="font-size:32px">Check your inbox</h1><p class="muted" style="margin-bottom:22px">${esc(data.message)}</p>` +
+            `<p class="muted" style="font-size:14px">No email after a few minutes? Look in your spam folder, or <a href="/verify-email#email=${encodeURIComponent(data.email)}">send the link again</a>.</p>` +
+            `<p class="alt-link">Already confirmed? <a href="/login">Log in</a></p>`;
+        return;
+    }
     saveSession(data);
     location.href = "/account";
 };

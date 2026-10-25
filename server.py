@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import re
 import secrets
 import sqlite3
@@ -22,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -145,7 +146,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-21-profiles"
+SCHEMA_VERSION = "2026-10-26-replies"
 
 
 def ensure_schema():
@@ -180,10 +181,21 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS media (id {pk}, filename TEXT, mime TEXT, data {big}, size INTEGER, width INTEGER, height INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS license_failures (id {pk}, ip_address {ident}, created_at {word})",
+        # One row per logged-in browser; only a hash of the token is stored.
+        f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
+        f"user_agent TEXT, created_at {word}, last_seen {word})",
+        f"CREATE TABLE IF NOT EXISTS downloads (id {pk}, product_id {ident}, user_id INTEGER, ip_address {word}, created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
-                          ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT")):
+                          ("products", "sort_order INTEGER DEFAULT 0"), ("orders", "product_id TEXT"),
+                          ("posts", f"status {word} DEFAULT 'published'"), ("messages", "handled INTEGER DEFAULT 0"),
+                          # accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
+                          ("users", "email_verified INTEGER DEFAULT 1"),
+                          ("products", f"download_gate {word} DEFAULT 'public'"), ("products", "changelog TEXT"),
+                          ("users", "admin_note TEXT"), ("posts", f"publish_at {word}"),
+                          ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -197,9 +209,17 @@ def ensure_schema():
 
 # ---------- helpers ----------
 
-def today():
-    d = datetime.now()
+def today(d=None):
+    d = d or datetime.now()
     return f"{d:%B} {d.day}, {d.year}"
+
+
+def post_date(value):
+    """The date shown on a news post: from the admin's date picker (YYYY-MM-DD), or today."""
+    try:
+        return today(datetime.strptime(str(value or "").strip(), "%Y-%m-%d"))
+    except ValueError:
+        return today()
 
 
 def body():
@@ -217,16 +237,84 @@ def bearer():
     return token or request.headers.get("X-Rotaidem-Token", "").strip()
 
 
+SESSION_DAYS = 60    # a browser not used for this long is logged out
+SESSIONS_MAX = 20    # newest logins kept per account
+
+
+def token_hash(token):
+    return hashlib.sha256(str(token).encode()).hexdigest()
+
+
+def new_session(user_id):
+    """Logs this browser in: a new token, of which only the hash is stored. Returns the token."""
+    token = uuid.uuid4().hex
+    now = utc_stamp()
+    db().run("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+             user_id, token_hash(token), (request.remote_addr or "")[:64], request.headers.get("User-Agent", "")[:300], now, now)
+    for old in db().all("SELECT id FROM sessions WHERE user_id = ? ORDER BY id DESC", user_id)[SESSIONS_MAX:]:
+        db().run("DELETE FROM sessions WHERE id = ?", old["id"])
+    return token
+
+
+def end_sessions(user_id, keep=None):
+    """Logs the account out everywhere (or everywhere but session `keep`)."""
+    if keep:
+        db().run("DELETE FROM sessions WHERE user_id = ? AND id <> ?", user_id, keep)
+    else:
+        db().run("DELETE FROM sessions WHERE user_id = ?", user_id)
+    db().run("UPDATE users SET token = NULL WHERE id = ?", user_id)
+
+
 def current_user():
-    token = bearer()
-    if not token:
-        return None
-    return db().first("SELECT * FROM users WHERE token = ?", token)
+    if "current_user" in g:
+        return g.current_user
+    token, user = bearer(), None
+    if token:
+        session = db().first("SELECT * FROM sessions WHERE token_hash = ?", token_hash(token))
+        if session and str(session["last_seen"] or "") < utc_stamp(SESSION_DAYS * 86400):
+            db().run("DELETE FROM sessions WHERE id = ?", session["id"])
+            session = None
+        if session:
+            user = db().first("SELECT * FROM users WHERE id = ?", session["user_id"])
+            if user and str(session["last_seen"] or "") < utc_stamp(300):  # at most one write per 5 minutes
+                db().run("UPDATE sessions SET last_seen = ?, ip_address = ? WHERE id = ?", utc_stamp(), (request.remote_addr or "")[:64], session["id"])
+        else:
+            # Logged in before sessions existed: the token is still on the user. Move it into a session.
+            user = db().first("SELECT * FROM users WHERE token = ?", token)
+            if user:
+                now = utc_stamp()
+                db().run("INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+                         user["id"], token_hash(token), (request.remote_addr or "")[:64], request.headers.get("User-Agent", "")[:300], now, now)
+                db().run("UPDATE users SET token = NULL WHERE id = ?", user["id"])
+                session = db().first("SELECT * FROM sessions WHERE token_hash = ?", token_hash(token))
+        if user:
+            user["token"] = token  # the admin password unlock is tied to this browser's login
+            user["session_id"] = session["id"] if session else None
+    g.current_user = user
+    return user
+
+
+def device_label(user_agent):
+    """"Chrome on Windows" and so on, from the browser's User-Agent."""
+    ua = str(user_agent or "")
+    if ua.startswith("RotaHub"):  # the desktop app logs in like a browser and says so in its User-Agent
+        return "RotaHub on Windows"
+    browser = next((name for key, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
+                                           ("Safari/", "Safari")) if key in ua), "A browser")
+    system = next((name for key, name in (("Windows", "Windows"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
+                                          ("Mac OS X", "Mac"), ("CrOS", "Chromebook"), ("Linux", "Linux")) if key in ua), "")
+    return f"{browser} on {system}" if system else browser
+
+
+def session_rows(user_id, current_id=None):
+    rows = db().all("SELECT id, ip_address, user_agent, created_at, last_seen FROM sessions WHERE user_id = ? ORDER BY last_seen DESC", user_id)
+    return [{"id": r["id"], "device": device_label(r["user_agent"]), "ip_address": r["ip_address"] or "", "created_at": r["created_at"],
+             "last_seen": r["last_seen"], "current": r["id"] == current_id} for r in rows]
 
 
 def staff_user():
     user = current_user()
-    return user if user and user["role"] in STAFF else None
+    return user if user and user["role"] in STAFF and admin_unlocked(user) else None
 
 
 def audit(user, action, target=""):
@@ -293,15 +381,21 @@ def login():
     admin_email = os.environ.get("ADMIN_EMAIL", "Eliaz@rotaidem.com")
     admin_name = os.environ.get("ADMIN_USERNAME", "eliaz")
     if not user and admin_pw and hmac.compare_digest(password, admin_pw) and ident in (admin_email.lower(), admin_name.lower()):
-        token = uuid.uuid4().hex
-        db().run("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Owner', ?)",
-                 admin_name, admin_email, hash_password(password), token)
-        return jsonify(session_payload({"name": admin_name, "email": admin_email, "role": "Owner"}, token))
+        db().run("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'Owner')",
+                 admin_name, admin_email, hash_password(password))
+        owner = db().first("SELECT id FROM users WHERE LOWER(email) = ?", admin_email.lower())
+        return jsonify(session_payload({"name": admin_name, "email": admin_email, "role": "Owner"}, new_session(owner["id"])))
     if not user or not verify_password(password, user["password_hash"]):
         return err("Invalid email or password", 401)
-    token = uuid.uuid4().hex
-    db().run("UPDATE users SET token = ? WHERE id = ?", token, user["id"])
-    return jsonify(session_payload(user, token))
+    if not email_verified(user):
+        return jsonify({"error": "Confirm your email address first: click the link in the email we sent you when you signed up.",
+                        "unverified": True, "email": user["email"]}), 403
+    return jsonify(session_payload(user, new_session(user["id"])))
+
+
+def email_verified(user):
+    value = user.get("email_verified")
+    return value is None or int(value) == 1
 
 
 @app.post("/api/signup")
@@ -312,19 +406,160 @@ def signup():
     password = str(b.get("password", ""))
     if not name or not email or len(password) < 6:
         return err("Name, email and a 6 character password are required", 400)
+    if not EMAIL_RE.match(email):
+        return err("Enter a valid email address", 400)
+    if is_blocked(email):
+        return err("Sign-ups from this address are not possible. Contact us if you think this is a mistake.", 403)
     if db().first("SELECT id FROM users WHERE LOWER(email) = ?", email):
         return err("Email already exists", 400)
-    token = uuid.uuid4().hex
-    db().run("INSERT INTO users (name, email, password_hash, role, token) VALUES (?, ?, ?, 'Customer', ?)",
-             name, email, hash_password(password), token)
-    return jsonify({"token": token, "name": name, "email": email, "role": "Customer", "is_admin": False})
+    if not RESEND_API_KEY:
+        # Without email there is no way to confirm an address: the account works at once, as before.
+        app.logger.warning("Sign-up without email confirmation: RESEND_API_KEY is not set")
+        db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 1)",
+                 name, email, hash_password(password))
+        new_user = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email)
+        return jsonify({"token": new_session(new_user["id"]), "name": name, "email": email, "role": "Customer", "is_admin": False})
+    db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)",
+             name, email, hash_password(password))
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ?", email)
+    error = send_verify_email(user)
+    if error:
+        db().run("DELETE FROM users WHERE id = ?", user["id"])  # nothing half-made that would block the address
+        return err("We could not send the confirmation email right now. Please try again in a few minutes.", 502)
+    return jsonify({"verify": True, "email": email,
+                    "message": f"Almost done: we sent a link to {email}. Click it to confirm your email and open your account."})
+
+
+# ---------- email confirmation ----------
+
+VERIFY_HOURS = 48
+
+
+def verify_signature(user_id, expires, email):
+    message = f"verify:{user_id}:{expires}:{(email or '').lower()}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def verify_token(user):
+    expires = int(time.time()) + VERIFY_HOURS * 3600
+    return f"{user['id']}.{expires}.{verify_signature(user['id'], expires, user['email'])}"
+
+
+def user_for_verify_token(token):
+    try:
+        user_id, expires, signature = str(token or "").strip().split(".")
+        user_id, expires = int(user_id), int(expires)
+    except ValueError:
+        return None
+    if expires < time.time():
+        return None
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not user or not hmac.compare_digest(verify_signature(user_id, expires, user["email"]), signature):
+        return None
+    return user
+
+
+def verify_email_html(name, link):
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Confirm your email</h1>
+<p style="margin:0 0 12px">Hi {escape(name or "there")}, welcome to Rotaidem.</p>
+<p style="margin:0 0 20px">Click the button to confirm that this is your email address. Then your account opens, with your licence keys, downloads and orders. The link works for {VERIFY_HOURS} hours.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="{escape(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Confirm my email</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="{escape(link)}" style="color:#6d6f75;word-break:break-all">{escape(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not sign up? Then someone typed your address by mistake: ignore this email and no account is opened. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def send_verify_email(user):
+    """Sends the confirmation link; returns an error text, or "" when Resend took it."""
+    link = f"{site_url()}/verify-email?token={urllib.parse.quote(verify_token(user))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [user["email"]], "subject": "Confirm your email for Rotaidem",
+                                "html": verify_email_html(user["name"], link)}])
+    if error:
+        app.logger.error("Confirmation email to user %s failed: %s", user["id"], error)
+    return error
+
+
+@app.post("/api/verify-email")
+def verify_email():
+    """The link in the confirmation email: confirms the address and logs the person in."""
+    user = user_for_verify_token(body().get("token"))
+    if not user:
+        return err("This confirmation link has expired or is not valid. Log in to get a new one.", 400)
+    db().run("UPDATE users SET email_verified = 1 WHERE id = ?", user["id"])
+    token = new_session(user["id"])
+    if not email_verified(user):
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'email_verified', ?, ?, ?)",
+                 user["id"], user["email"], request.remote_addr or "", utc_stamp())
+    return jsonify({**session_payload(user, token), "verified": True})
+
+
+@app.post("/api/verify-email/resend")
+def resend_verify_email():
+    """Always gives the same answer, so nobody can find out which addresses have an account."""
+    ident = str(body().get("email", "")).strip().lower()
+    if not ident:
+        return err("Enter your email address", 400)
+    if not RESEND_API_KEY:
+        return err("Email is not available right now. Please email Eliaz@rotaidem.com.", 503)
+    ip = request.remote_addr or ""
+    hour_ago = utc_stamp(3600)
+    recent = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND ip_address = ? AND created_at >= ?", ip, hour_ago)
+    if recent and recent["n"] >= RESET_PER_IP:
+        return err("Too many requests. Please wait an hour and try again.", 429)
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", ident, ident)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'verify_email_request', ?, ?, ?)",
+             user["id"] if user else None, ident[:200], ip, utc_stamp())
+    answer = jsonify({"ok": True, "message": "If that account still needs confirming, a new link is on its way. Check your inbox (and spam)."})
+    if not user or email_verified(user):
+        return answer
+    sent_lately = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'verify_email_request' AND admin_id = ? AND created_at >= ?",
+                             user["id"], hour_ago)
+    if sent_lately and sent_lately["n"] > RESET_PER_ACCOUNT:
+        return answer
+    if send_verify_email(user):
+        return err("The email could not be sent right now. Please try again later.", 502)
+    return answer
 
 
 @app.post("/api/logout")
 def logout():
     token = bearer()
     if token:
-        db().run("UPDATE users SET token = NULL WHERE token = ?", token)
+        db().run("DELETE FROM sessions WHERE token_hash = ?", token_hash(token))
+        db().run("UPDATE users SET token = NULL WHERE token = ?", token)  # a login from before sessions
+    return jsonify({"ok": True})
+
+
+# ---------- where you are logged in ----------
+
+@app.get("/api/account/sessions")
+def account_sessions():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    return jsonify({"sessions": session_rows(user["id"], user.get("session_id"))})
+
+
+@app.delete("/api/account/sessions/<int:session_id>")
+def account_end_session(session_id):
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    db().run("DELETE FROM sessions WHERE id = ? AND user_id = ?", session_id, user["id"])
+    return jsonify({"ok": True, "current": session_id == user.get("session_id")})
+
+
+@app.post("/api/account/sessions/others")
+def account_end_other_sessions():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    end_sessions(user["id"], keep=user.get("session_id"))
     return jsonify({"ok": True})
 
 
@@ -336,6 +571,258 @@ def me():
     count = db().first("SELECT COUNT(*) AS n FROM orders WHERE customer_id = ?", user["id"])
     return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"],
                              "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0}})
+
+
+# ---------- admin password ----------
+# An extra password in front of the admin pages, on top of each staff member's own login. Only
+# its hash is stored (meta "admin.gate"). After entering it, the browser gets an unlock code
+# signed over the staff member's session and the current admin password; every admin request
+# sends it in X-Rotaidem-Admin. Logging out, logging in elsewhere or changing the admin password
+# makes old unlock codes useless. Set or change it under Admin > Security, or over SSH with
+# `strato/setup.py admin-password`.
+
+GATE_KEY = "admin.gate"
+GATE_HOURS = 12
+GATE_ATTEMPTS, GATE_MINUTES = 5, 15
+
+
+def gate_hash():
+    if "gate_hash" not in g:
+        try:
+            g.gate_hash = str(get_setting(GATE_KEY, "") or "")
+        except Exception:  # noqa: BLE001 - e.g. before the tables exist; the role checks still apply
+            g.gate_hash = ""
+    return g.gate_hash
+
+
+def gate_signature(user, expires, stored):
+    message = f"gate:{user['id']}:{user.get('token') or ''}:{expires}:{stored}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def admin_unlocked(user):
+    stored = gate_hash()
+    if not stored:
+        return True
+    try:
+        expires, signature = request.headers.get("X-Rotaidem-Admin", "").strip().split(".")
+        expires = int(expires)
+    except ValueError:
+        expires, signature = 0, ""
+    if expires > time.time() and hmac.compare_digest(gate_signature(user, expires, stored), signature):
+        return True
+    g.admin_locked = True  # turns this request's "Admin only" answer into "enter the admin password"
+    return False
+
+
+def staff_role_user():
+    """A staff member by role, whether or not the admin password was entered yet."""
+    user = current_user()
+    return user if user and user["role"] in STAFF else None
+
+
+@app.after_request
+def admin_locked_answer(resp):
+    if getattr(g, "admin_locked", False) and resp.status_code in (401, 403):
+        resp.set_data(json.dumps({"error": "Enter the admin password to continue.", "locked": True}))
+        resp.status_code, resp.mimetype = 403, "application/json"
+    return resp
+
+
+@app.get("/api/admin/gate")
+def admin_gate_state():
+    user = staff_role_user()
+    if not user:
+        return err("Admin only", 403)
+    enabled = bool(gate_hash())
+    return jsonify({"enabled": enabled, "unlocked": admin_unlocked(user), "can_change": user["role"] == "Owner"})
+
+
+@app.post("/api/admin/unlock")
+def admin_unlock():
+    user = staff_role_user()
+    if not user:
+        return err("Admin only", 403)
+    stored = gate_hash()
+    if not stored:
+        return jsonify({"unlock": "", "enabled": False})
+    cutoff = utc_stamp(GATE_MINUTES * 60)
+    failed = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'admin_unlock_failed' AND admin_id = ? AND created_at >= ?",
+                        user["id"], cutoff)
+    if failed and failed["n"] >= GATE_ATTEMPTS:
+        return err(f"Too many wrong attempts. Wait {GATE_MINUTES} minutes and try again.", 429)
+    if not verify_password(str(body().get("password", "")), stored):
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'admin_unlock_failed', '', ?, ?)",
+                 user["id"], request.remote_addr or "", utc_stamp())
+        return err("Wrong admin password", 401)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'admin_unlock', '', ?, ?)",
+             user["id"], request.remote_addr or "", utc_stamp())
+    expires = int(time.time()) + GATE_HOURS * 3600
+    return jsonify({"unlock": f"{expires}.{gate_signature(user, expires, stored)}", "enabled": True})
+
+
+@app.post("/api/admin/gate")
+def admin_set_gate():
+    """Owner only. Turning it on needs no current admin password; changing or removing it does."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    if user["role"] != "Owner":
+        return err("Only the Owner can change the admin password", 403)
+    b = body()
+    stored = gate_hash()
+    if stored and not verify_password(str(b.get("current_password", "")), stored):
+        return err("The current admin password is wrong", 400)
+    new = str(b.get("new_password", ""))
+    if b.get("disable"):
+        db().run("DELETE FROM meta WHERE key = ?", GATE_KEY)
+        audit(user, "admin_password", "removed")
+        return jsonify({"ok": True, "enabled": False})
+    if len(new) < 8:
+        return err("The admin password needs at least 8 characters", 400)
+    if verify_password(new, user["password_hash"]):
+        return err("Use a different password than your own login password", 400)
+    g.gate_hash = hash_password(new)
+    set_setting(GATE_KEY, g.gate_hash)
+    audit(user, "admin_password", "changed" if stored else "turned on")
+    expires = int(time.time()) + GATE_HOURS * 3600
+    return jsonify({"ok": True, "enabled": True, "unlock": f"{expires}.{gate_signature(user, expires, g.gate_hash)}"})
+
+
+# ---------- forgot password ----------
+# The reset link carries "user id.expiry.signature". The signature covers the current password
+# hash, so a link stops working as soon as the password changes (it can be used once) and nothing
+# has to be stored. Same format as the Cloudflare function.
+
+RESET_HOURS = 1
+RESET_PER_ACCOUNT, RESET_PER_IP = 3, 10  # requests per hour
+
+
+def utc_stamp(seconds_ago=0):
+    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def reset_signature(user_id, expires, password_hash):
+    message = f"reset:{user_id}:{expires}:{password_hash or ''}".encode()
+    return hmac.new(SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:40]
+
+
+def reset_token(user):
+    expires = int(time.time()) + RESET_HOURS * 3600
+    return f"{user['id']}.{expires}.{reset_signature(user['id'], expires, user['password_hash'])}"
+
+
+def user_for_reset_token(token):
+    """The user a reset link belongs to, or None when it is wrong, used or expired."""
+    try:
+        user_id, expires, signature = str(token or "").strip().split(".")
+        user_id, expires = int(user_id), int(expires)
+    except ValueError:
+        return None
+    if expires < time.time():
+        return None
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not user or not hmac.compare_digest(reset_signature(user_id, expires, user["password_hash"]), signature):
+        return None
+    return user
+
+
+def mask_email(email):
+    name, _, domain = str(email or "").partition("@")
+    return (name[:1] + "•" * max(1, min(len(name) - 1, 6)) + "@" + domain) if domain else ""
+
+
+def reset_email_html(name, link):
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">
+<h1 style="margin:0 0 12px;font-size:22px;color:#111315">Reset your password</h1>
+<p style="margin:0 0 12px">Hi {escape(name or "there")},</p>
+<p style="margin:0 0 20px">Someone (hopefully you) asked to reset the password of your Rotaidem account. Click the button to choose a new one. The link works for {RESET_HOURS} hour and only once.</p></td></tr>
+<tr><td style="padding:4px 28px 20px"><a href="{escape(link)}" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">Choose a new password</a></td></tr>
+<tr><td style="padding:0 28px 24px;font-size:13px;line-height:1.6;color:#6d6f75">If the button does not work, copy this address into your browser:<br><a href="{escape(link)}" style="color:#6d6f75;word-break:break-all">{escape(link)}</a></td></tr>
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Did not ask for this? Then you can ignore this email: your password stays the same. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+@app.post("/api/password/forgot")
+def password_forgot():
+    """Always gives the same answer, so nobody can find out which addresses have an account."""
+    ident = str(body().get("email", "")).strip().lower()
+    if not ident:
+        return err("Enter the email address of your account", 400)
+    if not RESEND_API_KEY:
+        return err("Password reset by email is not available right now. Please email Eliaz@rotaidem.com.", 503)
+    ip = request.remote_addr or ""
+    hour_ago = utc_stamp(3600)
+    recent = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND ip_address = ? AND created_at >= ?",
+                        ip, hour_ago)
+    if recent and recent["n"] >= RESET_PER_IP:
+        return err("Too many requests. Please wait an hour and try again.", 429)
+    user = db().first("SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(name) = ?", ident, ident)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset_request', ?, ?, ?)",
+             user["id"] if user else None, ident[:200], ip, utc_stamp())
+    answer = jsonify({"ok": True, "message": "If an account exists for that address, we have sent a link to reset the password. Check your inbox (and spam)."})
+    if not user or not EMAIL_RE.match(user["email"] or ""):
+        return answer
+    sent_lately = db().first("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'password_reset_request' AND admin_id = ? AND created_at >= ?",
+                             user["id"], hour_ago)
+    if sent_lately and sent_lately["n"] > RESET_PER_ACCOUNT:
+        return answer  # enough emails for now; say the same thing
+    link = f"{site_url()}/reset-password?token={urllib.parse.quote(reset_token(user))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [user["email"]], "subject": "Reset your Rotaidem password",
+                                "html": reset_email_html(user["name"], link)}])
+    if error:
+        app.logger.error("Password reset email to user %s failed: %s", user["id"], error)
+        return err("The email could not be sent right now. Please try again later or email Eliaz@rotaidem.com.", 502)
+    return answer
+
+
+@app.post("/api/admin/users/<int:user_id>/reset-link")
+def admin_send_reset_link(user_id):
+    """Staff send a user the same reset email as Forgot password; the link works for RESET_HOURS."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    if not RESEND_API_KEY:
+        return err("Email is not set up. Add RESEND_API_KEY to the settings (on STRATO: rotaidem-data/config.env).", 400)
+    target = db().first("SELECT * FROM users WHERE id = ?", user_id)
+    if not target or not EMAIL_RE.match(target["email"] or ""):
+        return err("That user has no valid email address", 400)
+    link = f"{site_url()}/reset-password?token={urllib.parse.quote(reset_token(target))}"
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [target["email"]], "subject": "Reset your Rotaidem password",
+                                "html": reset_email_html(target["name"], link)}])
+    if error:
+        return err(error, 502)
+    audit(user, "send_reset_link", target["email"])
+    return jsonify({"ok": True, "sent_to": target["email"]})
+
+
+@app.post("/api/password/check")
+def password_check():
+    user = user_for_reset_token(body().get("token"))
+    if not user:
+        return err("This link has expired or was already used. Ask for a new one.", 400)
+    return jsonify({"ok": True, "email": mask_email(user["email"])})
+
+
+@app.post("/api/password/reset")
+def password_reset():
+    b = body()
+    user = user_for_reset_token(b.get("token"))
+    if not user:
+        return err("This link has expired or was already used. Ask for a new one.", 400)
+    password = str(b.get("password", ""))
+    if len(password) < 6:
+        return err("The new password must be at least 6 characters", 400)
+    db().run("UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?", hash_password(password), user["id"])
+    end_sessions(user["id"])  # a new password logs out every other browser
+    token = new_session(user["id"])
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'password_reset', ?, ?, ?)",
+             user["id"], user["email"] or "", request.remote_addr or "", utc_stamp())
+    return jsonify(session_payload(user, token))
 
 
 @app.post("/api/account/settings")
@@ -355,6 +842,7 @@ def account_settings():
         if not verify_password(current, user["password_hash"]):
             return err("Current password is required and must be correct", 400)
         db().run("UPDATE users SET name = ?, password_hash = ? WHERE id = ?", name, hash_password(new), user["id"])
+        end_sessions(user["id"], keep=user.get("session_id"))  # a new password logs out the other browsers
     else:
         db().run("UPDATE users SET name = ? WHERE id = ?", name, user["id"])
     return jsonify({"ok": True, "name": name})
@@ -370,10 +858,219 @@ def account_orders():
 
 # ---------- catalog ----------
 
+def public_product(row, staff=False):
+    """A product for the website. A "licence holders only" download keeps its link hidden from visitors."""
+    p = with_images(row)
+    try:
+        p["changelog"] = json.loads(p.get("changelog") or "[]")
+    except ValueError:
+        p["changelog"] = []
+    p["download_gate"] = p.get("download_gate") or "public"
+    if p["download_gate"] == "licence" and not staff:
+        p["has_download"] = bool(p.get("download_url"))
+        p["download_url"] = ""
+    return p
+
+
 @app.get("/api/products")
 def products():
     rows = db().all("SELECT * FROM products ORDER BY sort_order, name")
-    return jsonify({"products": [with_images(r) for r in rows]})
+    viewer = current_user()
+    staff = bool(viewer and viewer["role"] in STAFF)
+    return jsonify({"products": [public_product(r, staff) for r in rows]})
+
+
+def clean_changelog(items):
+    """Version history of a product: [{version, date, notes}], newest first, at most 50."""
+    out = []
+    for i in (items if isinstance(items, list) else [])[:50]:
+        version = str((i or {}).get("version") or "").strip()[:30]
+        if not version:
+            continue
+        date = str(i.get("date") or "").strip()
+        out.append({"version": version, "date": date if DATE_RE.match(date) else "", "notes": str(i.get("notes") or "").strip()[:3000]})
+    return out
+
+
+DOWNLOAD_REPEAT_MINUTES = 10  # the same address downloading again within this time is counted once
+
+
+@app.post("/api/download/<pid>")
+def download(pid):
+    """Gives the download link and counts the download. "Licence holders only" products need a
+    logged-in account with an active licence for the product."""
+    product = db().first("SELECT * FROM products WHERE id = ?", pid)
+    url = str((product or {}).get("download_url") or "")
+    if not product or not (url.startswith("https://") or url.startswith("/files/")):
+        return err("This product has no download yet", 404)
+    user = current_user()
+    if (product.get("download_gate") or "public") == "licence":
+        if not user:
+            return jsonify({"error": "Log in to download. The download is for licence holders.", "login": True}), 401
+        if user["role"] not in STAFF:
+            rows = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)",
+                            user["id"], (user["email"] or "").lower())
+            if not any(same_product(pid, r["product_id"]) for r in rows):
+                return err("This download is for licence holders. Your account has no active licence for it yet.", 403)
+    ip = (request.remote_addr or "")[:64]
+    if not db().first("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?",
+                      pid, ip, utc_stamp(DOWNLOAD_REPEAT_MINUTES * 60)):
+        db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
+                 pid, user["id"] if user else None, ip, utc_stamp())
+    return jsonify({"url": url})
+
+
+# ---------- the fun part of the dashboard ----------
+
+def day_counts(sql, since):
+    """{"YYYY-MM-DD": n} from a query that returns one created_at per row."""
+    out = {}
+    for r in db().all(sql, since):
+        day = str(r["created_at"] or "")[:10]
+        if day:
+            out[day] = out.get(day, 0) + 1
+    return out
+
+
+@app.get("/api/admin/insights")
+def admin_insights():
+    """This week against last week, and a year of activity per day for the heatmap."""
+    if not staff_user():
+        return err("Admin only", 403)
+    week, two_weeks, year = utc_stamp(7 * 86400), utc_stamp(14 * 86400), utc_stamp(366 * 86400)
+    sources = {"downloads": "SELECT created_at FROM downloads WHERE created_at >= ?",
+               "accounts": "SELECT created_at FROM users WHERE created_at >= ?",
+               "orders": "SELECT created_at FROM orders WHERE created_at >= ?",
+               "messages": "SELECT created_at FROM messages WHERE created_at >= ?",
+               "subscribers": "SELECT created_at FROM subscribers WHERE created_at >= ?"}
+    recap, heatmap = {}, {}
+    for name, sql in sources.items():
+        days = day_counts(sql, year)
+        recap[name] = {"this_week": sum(v for d, v in days.items() if d >= week[:10]),
+                       "last_week": sum(v for d, v in days.items() if two_weeks[:10] <= d < week[:10])}
+        if name in ("downloads", "accounts", "orders"):
+            for d, v in days.items():
+                heatmap[d] = heatmap.get(d, 0) + v
+    return jsonify({"recap": recap, "heatmap": heatmap})
+
+
+STAFF_NOTE_COLOURS = ("yellow", "blue", "green", "pink")
+
+
+@app.get("/api/admin/notes")
+def admin_notes():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"notes": get_setting("staff.notes", []) or []})
+
+
+@app.post("/api/admin/notes")
+def admin_add_note():
+    """A sticky note on the dashboard, shared by all staff."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    b = body()
+    text = str(b.get("text") or "").strip()[:500]
+    if not text:
+        return err("Write something on the note first", 400)
+    notes = get_setting("staff.notes", []) or []
+    if len(notes) >= 40:
+        return err("The board is full. Remove an old note first.", 400)
+    notes.insert(0, {"id": uuid.uuid4().hex[:12], "text": text, "author": user["name"], "created_at": utc_stamp(),
+                     "colour": b.get("colour") if b.get("colour") in STAFF_NOTE_COLOURS else "yellow"})
+    set_setting("staff.notes", notes)
+    return jsonify({"ok": True, "notes": notes})
+
+
+@app.delete("/api/admin/notes/<note_id>")
+def admin_delete_note(note_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    notes = [n for n in (get_setting("staff.notes", []) or []) if n.get("id") != note_id]
+    set_setting("staff.notes", notes)
+    return jsonify({"ok": True, "notes": notes})
+
+
+# ---------- short link clicks, goals, crew leaderboard ----------
+
+@app.post("/api/link-hit/<slug>")
+def link_hit(slug):
+    """Counted by 404.html just before it forwards a short link. Only existing short links count."""
+    slug = str(slug or "").strip().lower()
+    if slug not in (get_setting("site.links", {}) or {}):
+        return jsonify({"ok": True})
+    hits = get_setting("links.hits", {}) or {}
+    row = hits.get(slug) if isinstance(hits.get(slug), dict) else {}
+    hits[slug] = {"total": int(row.get("total") or 0) + 1, "last": utc_stamp()}
+    set_setting("links.hits", hits)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/admin/link-hits")
+def admin_link_hits():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"hits": get_setting("links.hits", {}) or {}})
+
+
+GOAL_KEYS = ("revenue", "customers", "downloads", "subscribers")
+
+
+@app.get("/api/admin/goals")
+def admin_goals():
+    if not staff_user():
+        return err("Admin only", 403)
+    saved = get_setting("dashboard.goals", {}) or {}
+    return jsonify({"goals": {k: saved.get(k) or 0 for k in GOAL_KEYS}})
+
+
+@app.post("/api/admin/goals")
+def admin_save_goals():
+    """Targets shown as progress bars on the dashboard; 0 hides one."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can set goals", 403)
+    b, goals = body(), {}
+    for k in GOAL_KEYS:
+        try:
+            v = float(b.get(k) or 0)
+        except (TypeError, ValueError):
+            return err(f"The {k} goal must be a number", 400)
+        if v < 0 or v > 1e9:
+            return err(f"The {k} goal is out of range", 400)
+        goals[k] = round(v, 2) if k == "revenue" else int(v)
+    set_setting("dashboard.goals", goals)
+    audit(user, "save_goals", ", ".join(f"{k} {v}" for k, v in goals.items() if v))
+    return jsonify({"ok": True, "goals": goals})
+
+
+@app.get("/api/admin/leaderboard")
+def admin_leaderboard():
+    """What each staff member did this month, from the activity log."""
+    if not staff_user():
+        return err("Admin only", 403)
+    since = datetime.now(timezone.utc).strftime("%Y-%m-01 00:00:00")
+    rows = db().all("SELECT u.name AS name, a.action AS action, COUNT(*) AS n FROM audit_logs a JOIN users u ON u.id = a.admin_id "
+                    "WHERE a.created_at >= ? AND u.role IN ('Owner', 'Admin', 'Support') GROUP BY u.name, a.action", since)
+    return jsonify({"since": since[:10], "rows": [{"name": r["name"], "action": r["action"], "n": int(r["n"] or 0)} for r in rows]})
+
+
+@app.get("/api/admin/downloads")
+def admin_downloads():
+    """Downloads per product (all time, 7 and 30 days) and per day for the last 30 days."""
+    if not staff_user():
+        return err("Admin only", 403)
+    n = lambda sql, *args: (db().first(sql, *args) or {}).get("n") or 0  # noqa: E731
+    per_product = [{"product_id": r["product_id"], "total": r["n"],
+                    "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(7 * 86400)),
+                    "last_30": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(30 * 86400))}
+                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads GROUP BY product_id ORDER BY n DESC")]
+    days = {}
+    for r in db().all("SELECT created_at FROM downloads WHERE created_at >= ?", utc_stamp(30 * 86400)):
+        day = str(r["created_at"])[:10]
+        days[day] = days.get(day, 0) + 1
+    return jsonify({"products": per_product, "days": days, "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE created_at >= ?", utc_stamp(7 * 86400))})
 
 
 @app.get("/api/liveries")
@@ -396,15 +1093,16 @@ def save_product():
     except (TypeError, ValueError):
         sort_order = 0
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
-        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order",
+        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog",
         pid, name, b.get("simulator") or "MSFS 2024", b.get("version") or "0.1.0", b.get("folder_name") or f"rotaidem-{pid}",
         b.get("download_url") or "", b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
-        b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order)
+        b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
+        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))))
     audit(user, "save_product", pid)
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
@@ -440,6 +1138,15 @@ def save_livery():
 
 @app.get("/api/newsletter")
 def newsletter():
+    """Published posts only; drafts are listed in the admin (/api/admin/posts)."""
+    return jsonify({"posts": db().all("SELECT * FROM posts WHERE status IS NULL OR status = 'published' OR "
+                                      "(status = 'scheduled' AND publish_at <= ?) ORDER BY id DESC", utc_stamp())})
+
+
+@app.get("/api/admin/posts")
+def admin_posts():
+    if not staff_user():
+        return err("Admin only", 403)
     return jsonify({"posts": db().all("SELECT * FROM posts ORDER BY id DESC")})
 
 
@@ -451,13 +1158,26 @@ def save_newsletter():
     b = body()
     if not b.get("title") or not b.get("content"):
         return err("Title and content are required", 400)
+    status = b.get("status") if b.get("status") in ("draft", "scheduled") else "published"
+    publish_at = ""
+    if status == "scheduled":
+        try:  # from the admin as an ISO time in UTC, e.g. 2026-11-01T17:00:00.000Z
+            when = datetime.strptime(str(b.get("publish_at") or "")[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return err("Pick the date and time the post should appear", 400)
+        publish_at = when.strftime("%Y-%m-%d %H:%M:%S")
+        if publish_at <= utc_stamp():
+            return err("Pick a time in the future, or publish it now", 400)
+        b["date"] = when.strftime("%Y-%m-%d")  # the date shown is the day it appears
     if b.get("id"):
-        db().run("UPDATE posts SET title = ?, content = ?, image_url = ? WHERE id = ?",
-                 b["title"], b["content"], b.get("image_url") or "", int(b["id"]))
+        old = db().first("SELECT date FROM posts WHERE id = ?", int(b["id"])) or {}
+        date = post_date(b["date"]) if b.get("date") else old.get("date") or today()
+        db().run("UPDATE posts SET title = ?, content = ?, image_url = ?, status = ?, date = ?, publish_at = ? WHERE id = ?",
+                 b["title"], b["content"], b.get("image_url") or "", status, date, publish_at, int(b["id"]))
     else:
-        db().run("INSERT INTO posts (title, content, image_url, date) VALUES (?, ?, ?, ?)",
-                 b["title"], b["content"], b.get("image_url") or "", today())
-    audit(user, "save_post", b["title"])
+        db().run("INSERT INTO posts (title, content, image_url, date, status, publish_at) VALUES (?, ?, ?, ?, ?, ?)",
+                 b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status, publish_at)
+    audit(user, "save_post", ("draft: " if status == "draft" else "") + b["title"])
     return jsonify({"ok": True})
 
 
@@ -476,8 +1196,12 @@ def contact():
     b = body()
     if not str(b.get("message", "")).strip():
         return err("Message is required", 400)
+    email = str(b.get("email", "")).strip()[:200]
+    if is_blocked(email):
+        return jsonify({"ok": True})  # dropped quietly: a spammer learns nothing
     db().run("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)",
-             str(b.get("name", ""))[:200], str(b.get("email", ""))[:200], str(b.get("message", ""))[:5000])
+             str(b.get("name", ""))[:200], email, str(b.get("message", ""))[:5000])
+    send_auto_reply(str(b.get("name", ""))[:200], email)
     return jsonify({"ok": True})
 
 
@@ -487,6 +1211,8 @@ def subscribe():
     email = str(b.get("email", "")).strip().lower()
     if not EMAIL_RE.match(email) or len(email) > 200:
         return err("Please enter a valid email address", 400)
+    if is_blocked(email):
+        return jsonify({"ok": True})
     existing = db().first("SELECT id FROM subscribers WHERE email = ?", email)
     if existing:
         db().run("UPDATE subscribers SET unsubscribed = 0 WHERE id = ?", existing["id"])
@@ -524,11 +1250,18 @@ def admin_overview():
     return jsonify({"id": user["id"], "name": user["name"], "role": user["role"],
                     "products": n("SELECT COUNT(*) AS n FROM products"),
                     "customers": n("SELECT COUNT(*) AS n FROM users WHERE role = 'Customer'"),
+                    "new_users_7d": n(f"SELECT COUNT(*) AS n FROM users WHERE created_at >= '{utc_stamp(7 * 86400)}'"),
                     "orders": n("SELECT COUNT(*) AS n FROM orders"),
                     "posts": n("SELECT COUNT(*) AS n FROM posts"),
+                    "drafts": n("SELECT COUNT(*) AS n FROM posts WHERE status = 'draft'"),
                     "messages": n("SELECT COUNT(*) AS n FROM messages"),
+                    "open_messages": n("SELECT COUNT(*) AS n FROM messages WHERE handled IS NULL OR handled = 0"),
                     "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
                     "licenses": n("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'"),
+                    "downloads": n("SELECT COUNT(*) AS n FROM downloads"),
+                    "emails_sent": n("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns"),
+                    "media": n("SELECT COUNT(*) AS n FROM media"),
+                    "staff_online": staff_online(),
                     "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
@@ -537,7 +1270,7 @@ def admin_overview():
 def admin_customers():
     if not staff_user():
         return err("Admin only", 403)
-    return jsonify({"customers": db().all("SELECT id, name, email, role, created_at FROM users ORDER BY id DESC")})
+    return jsonify({"customers": db().all("SELECT id, name, email, role, created_at, email_verified FROM users ORDER BY id DESC")})
 
 
 @app.post("/api/admin/users/<int:user_id>/role")
@@ -550,7 +1283,8 @@ def admin_set_role(user_id):
         return err("Unknown role", 400)
     if user_id == user["id"]:
         return err("You cannot change your own role", 400)
-    db().run("UPDATE users SET role = ?, token = NULL WHERE id = ?", role, user_id)
+    db().run("UPDATE users SET role = ? WHERE id = ?", role, user_id)
+    end_sessions(user_id)
     audit(user, "set_role", f"{user_id}:{role}")
     return jsonify({"ok": True})
 
@@ -597,11 +1331,61 @@ def admin_save_order():
     return jsonify({"ok": True, "license_key": key})
 
 
+ORDER_PAYMENTS = ("Paid", "Pending", "Refunded")
+
+
+@app.post("/api/admin/orders/<int:order_id>")
+def admin_update_order(order_id):
+    """Change an order's payment (e.g. mark it refunded) or amount. Owner and Admins only."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change orders", 403)
+    order = db().first("SELECT * FROM orders WHERE id = ?", order_id)
+    if not order:
+        return err("Order not found", 404)
+    b = body()
+    payment = b.get("payment_status", order["payment_status"])
+    if payment not in ORDER_PAYMENTS:
+        return err("Payment must be Paid, Pending or Refunded", 400)
+    try:
+        amount = round(float(b.get("amount", order["amount"]) or 0), 2)
+    except (TypeError, ValueError):
+        return err("The amount must be a number", 400)
+    if amount < 0:
+        return err("The amount cannot be negative", 400)
+    db().run("UPDATE orders SET payment_status = ?, amount = ? WHERE id = ?", payment, amount, order_id)
+    audit(user, "update_order", f"#{order_id} {payment} {amount:.2f}")
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/orders/<int:order_id>")
+def admin_delete_order(order_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete orders", 403)
+    if not db().first("SELECT id FROM orders WHERE id = ?", order_id):
+        return err("Order not found", 404)
+    db().run("DELETE FROM orders WHERE id = ?", order_id)
+    audit(user, "delete_order", f"#{order_id}")
+    return jsonify({"ok": True})
+
+
 @app.get("/api/admin/messages")
 def admin_messages():
     if not staff_user():
         return err("Admin only", 403)
     return jsonify({"messages": db().all("SELECT * FROM messages ORDER BY id DESC")})
+
+
+@app.post("/api/admin/messages/<int:msg_id>")
+def admin_mark_message(msg_id):
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    handled = 1 if body().get("handled") else 0
+    db().run("UPDATE messages SET handled = ? WHERE id = ?", handled, msg_id)
+    audit(user, "message_handled" if handled else "message_reopened", msg_id)
+    return jsonify({"ok": True})
 
 
 @app.delete("/api/admin/messages/<int:msg_id>")
@@ -611,6 +1395,216 @@ def admin_delete_message(msg_id):
         return err("Admin only", 403)
     db().run("DELETE FROM messages WHERE id = ?", msg_id)
     return jsonify({"ok": True})
+
+
+def staff_online():
+    """Staff seen in the last 15 minutes (a session's last_seen moves at most every 5)."""
+    rows = db().all("SELECT u.id, u.name, u.role, MAX(s.last_seen) AS last_seen FROM sessions s JOIN users u ON u.id = s.user_id "
+                    "WHERE u.role IN ('Owner', 'Admin', 'Support') AND s.last_seen >= ? GROUP BY u.id, u.name, u.role ORDER BY last_seen DESC",
+                    utc_stamp(15 * 60))
+    return [{"name": r["name"], "role": r["role"], "last_seen": str(r["last_seen"] or "")} for r in rows]
+
+
+# ---------- inbox: replies by email, saved answers, automatic reply ----------
+
+AUTO_REPLY_DEFAULT = {"enabled": False, "subject": "We got your message",
+                      "text": "Thanks for writing to Rotaidem. We read every message and usually answer within a day or two.\n\nIf it is about a licence, "
+                              "reply to this email with your licence key and we will help you."}
+SAVED_REPLIES_MAX = 30
+
+
+def inbox_settings():
+    saved = get_setting("inbox.settings", {}) or {}
+    a = saved.get("autoreply") if isinstance(saved.get("autoreply"), dict) else {}
+    return {"autoreply": {"enabled": bool(a.get("enabled")),
+                          "subject": str(a.get("subject") or "").strip()[:150] or AUTO_REPLY_DEFAULT["subject"],
+                          "text": str(a.get("text") or "").strip()[:3000] or AUTO_REPLY_DEFAULT["text"]},
+            "replies": [r for r in (saved.get("replies") or []) if isinstance(r, dict)][:SAVED_REPLIES_MAX]}
+
+
+def clean_inbox(b):
+    """Inbox settings from the admin, checked; raises ValueError with a message for the admin."""
+    a = b.get("autoreply") or {}
+    subject, text = str(a.get("subject") or "").strip(), str(a.get("text") or "").strip()
+    if len(subject) > 150 or len(text) > 3000:
+        raise ValueError("The automatic reply is too long (subject 150, text 3000 characters)")
+    if a.get("enabled") and not text:
+        raise ValueError("Write the automatic reply before switching it on")
+    replies = []
+    for r in b.get("replies") or []:
+        title, body_text = str((r or {}).get("title") or "").strip(), str((r or {}).get("text") or "").strip()
+        if not title and not body_text:
+            continue
+        if not title or not body_text:
+            raise ValueError("Each saved answer needs a name and a text")
+        if len(title) > 80 or len(body_text) > 3000:
+            raise ValueError(f'The saved answer "{title[:40]}" is too long (name 80, text 3000 characters)')
+        replies.append({"title": title, "text": body_text})
+    if len(replies) > SAVED_REPLIES_MAX:
+        raise ValueError(f"At most {SAVED_REPLIES_MAX} saved answers")
+    return {"autoreply": {"enabled": bool(a.get("enabled")), "subject": subject, "text": text}, "replies": replies}
+
+
+def reply_email_html(name, text, signer, original=""):
+    paragraphs = "".join(f'<p style="margin:0 0 14px">{escape(p).replace(chr(10), "<br>")}</p>' for p in re.split(r"\n\s*\n", text.strip()) if p.strip())
+    quoted = (f'<tr><td style="padding:0 28px 24px"><div style="border-left:3px solid #e4e4e7;padding:4px 0 4px 14px;color:#6d6f75;font-size:14px;line-height:1.5">'
+              f'<div style="font-size:12px;margin-bottom:6px">You wrote:</div>{escape(original[:2000]).replace(chr(10), "<br>")}</div></td></tr>') if original else ""
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6"><p style="margin:0 0 14px">Hi {escape(name or "there")},</p>{paragraphs}
+<p style="margin:0 0 4px">{escape(signer)}<br><span style="color:#6d6f75">Rotaidem</span></p></td></tr>{quoted}
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">You can answer this email directly.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def send_one(to, subject, html):
+    """One email, with replies going to the contact address. Returns an error text, or ''."""
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [to], "subject": subject, "html": html, "reply_to": site_config()["contact_email"]}])
+    return error
+
+
+def send_auto_reply(name, email):
+    """The automatic "we got your message" email, at most once a day per address."""
+    a = inbox_settings()["autoreply"]
+    if not (a["enabled"] and RESEND_API_KEY and EMAIL_RE.match(email or "")):
+        return
+    recent = db().first("SELECT COUNT(*) AS n FROM messages WHERE LOWER(email) = ? AND created_at >= ?", email.lower(), utc_stamp(86400))
+    if recent and (recent["n"] or 0) > 1:
+        return
+    error = send_one(email, a["subject"], reply_email_html(name, a["text"], "The Rotaidem team"))
+    if error:
+        app.logger.error("Automatic reply failed: %s", error)
+
+
+@app.get("/api/admin/inbox")
+def admin_inbox():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({**inbox_settings(), "email_ready": bool(RESEND_API_KEY)})
+
+
+@app.post("/api/admin/inbox")
+def admin_save_inbox():
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    try:
+        cleaned = clean_inbox(body())
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("inbox.settings", cleaned)
+    audit(user, "save_inbox", "automatic reply " + ("on" if cleaned["autoreply"]["enabled"] else "off"))
+    return jsonify({"ok": True, **inbox_settings()})
+
+
+@app.post("/api/admin/messages/<int:msg_id>/reply")
+def admin_reply_message(msg_id):
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    msg = db().first("SELECT * FROM messages WHERE id = ?", msg_id)
+    if not msg:
+        return err("Message not found", 404)
+    b = body()
+    text = str(b.get("text") or "").strip()
+    if not text:
+        return err("Write your reply first", 400)
+    if len(text) > 10000:
+        return err("The reply is too long", 400)
+    if not EMAIL_RE.match(str(msg["email"] or "")):
+        return err("This message has no valid email address to reply to", 400)
+    if not RESEND_API_KEY:
+        return err("Email is not set up (RESEND_API_KEY is missing). Use the Email button to answer from your own mail program.", 400)
+    subject = str(b.get("subject") or "").strip()[:150] or "Re: your message to Rotaidem"
+    error = send_one(msg["email"], subject, reply_email_html(msg["name"], text, user["name"], str(msg["message"] or "")))
+    if error:
+        return err(error, 502)
+    db().run("UPDATE messages SET handled = 1, reply = ?, replied_at = ?, replied_by = ? WHERE id = ?", text, utc_stamp(), user["name"], msg_id)
+    audit(user, "reply_message", msg["email"])
+    return jsonify({"ok": True})
+
+
+# ---------- blocklist and system ----------
+
+BLOCK_IP = re.compile(r"^[0-9a-f.:]{3,45}$")
+
+
+def blocklist():
+    return [str(x).strip().lower() for x in (get_setting("security.blocklist", []) or []) if str(x).strip()]
+
+
+def is_blocked(email=""):
+    """True when the email, its domain (@example.com) or the visitor's IP address (or prefix like 203.0.113.) is on the blocklist."""
+    email, ip = str(email or "").strip().lower(), (request.remote_addr or "").lower()
+    for entry in blocklist():
+        if entry.startswith("@"):
+            if email.endswith(entry):
+                return True
+        elif "@" in entry:
+            if email == entry:
+                return True
+        elif ip and (ip == entry or (entry[-1] in ".:" and ip.startswith(entry))):
+            return True
+    return False
+
+
+def clean_blocklist(entries):
+    out = []
+    for raw in entries if isinstance(entries, list) else []:
+        entry = str(raw or "").strip().lower()
+        if not entry or entry in out:
+            continue
+        ok = (entry.startswith("@") and "." in entry and EMAIL_RE.match("x" + entry)) or EMAIL_RE.match(entry) or BLOCK_IP.match(entry)
+        if not ok or len(entry) > 200:
+            raise ValueError(f'"{entry[:60]}" is not an email, @domain or IP address')
+        out.append(entry)
+    if len(out) > 500:
+        raise ValueError("At most 500 blocked entries")
+    return out
+
+
+@app.get("/api/admin/blocklist")
+def admin_blocklist():
+    if not manager_user():
+        return err("Only the Owner or an Admin can see the blocklist", 403)
+    return jsonify({"entries": blocklist()})
+
+
+@app.post("/api/admin/blocklist")
+def admin_save_blocklist():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change the blocklist", 403)
+    try:
+        entries = clean_blocklist(body().get("entries"))
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("security.blocklist", entries)
+    audit(user, "save_blocklist", f"{len(entries)} entries")
+    return jsonify({"ok": True, "entries": entries})
+
+
+@app.get("/api/admin/system")
+def admin_system():
+    """What the site runs on, for the Owner and Admins. No secrets."""
+    if not manager_user():
+        return err("Only the Owner or an Admin can see this", 403)
+    n = lambda sql: (db().first(sql) or {}).get("n") or 0  # noqa: E731
+    tables = {}
+    for table in BACKUP_TABLES + ("sessions", "downloads"):
+        try:
+            tables[table] = int(n(f"SELECT COUNT(*) AS n FROM {table}"))
+        except Exception:  # noqa: BLE001 - a table that does not exist yet
+            tables[table] = 0
+    last_backup = db().first("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'download_backup'")
+    return jsonify({"database": "MySQL / MariaDB" if USE_MYSQL else ("PostgreSQL" if USE_PG else "SQLite"),
+                    "schema": SCHEMA_VERSION, "python": platform.python_version(), "server_time": utc_stamp(),
+                    "site_url": site_url(), "email_ready": bool(RESEND_API_KEY), "mail_from": MAIL_FROM,
+                    "admin_password": bool(gate_hash()), "tables": tables,
+                    "media_bytes": int(n("SELECT COALESCE(SUM(size), 0) AS n FROM media")),
+                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist())})
 
 
 @app.get("/api/admin/audit")
@@ -829,6 +1823,29 @@ def admin_update_license(license_id):
     return jsonify({"ok": True})
 
 
+@app.post("/api/admin/licenses/bulk")
+def admin_bulk_licenses():
+    """Revoke or restore many licences at once."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    b = body()
+    status = {"revoke": "revoked", "activate": "active"}.get(b.get("action"))
+    if not status:
+        return err("Choose revoke or activate", 400)
+    ids = sorted({int(i) for i in (b.get("ids") or []) if str(i).isdigit()})[:1000]
+    if not ids:
+        return err("Select at least one licence", 400)
+    changed = 0
+    for license_id in ids:
+        lic = db().first("SELECT id, status FROM licenses WHERE id = ?", license_id)
+        if lic and lic["status"] != status:
+            db().run("UPDATE licenses SET status = ? WHERE id = ?", status, license_id)
+            changed += 1
+    audit(user, "bulk_licenses", f"{changed} {status}")
+    return jsonify({"ok": True, "changed": changed})
+
+
 @app.post("/api/admin/licenses/<int:license_id>/email")
 def admin_email_license(license_id):
     user = manager_user()
@@ -857,15 +1874,190 @@ def admin_reset_activation(license_id, activation_id):
     return jsonify({"ok": True})
 
 
+# ---------- signed licence answers ----------
+# Every valid activate/validate answer carries a token (an RS256 JSON Web Token) signed with this
+# server's private key. HeavyPro checks it with the public key built into it, so a fake licence
+# server, an edited answer or an activation copied to another PC is refused. The token also repeats
+# the random "nonce" the app sent (no replays) and runs out after LICENSE_LEASE_DAYS, after which
+# the app must reach this server again. The key pair is made once and kept in the database (meta
+# "license_signing_key"), so it moves with backups. Same scheme as KeyForge.
+
+LICENSE_LEASE_DAYS = 14
+LICENSE_FAILURES_PER_HOUR = 30
+SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64url_decode(text):
+    return base64.urlsafe_b64decode(str(text) + "=" * (-len(str(text)) % 4))
+
+
+def _probably_prime(n, rounds=40):
+    for p in (3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47):
+        if n % p == 0:
+            return n == p
+    d, r = n - 1, 0
+    while d % 2 == 0:
+        d, r = d // 2, r + 1
+    for _ in range(rounds):
+        x = pow(secrets.randbelow(n - 3) + 2, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(r - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def generate_signing_key(bits=2048):
+    def prime(size):
+        while True:
+            c = secrets.randbits(size) | (3 << (size - 2)) | 1
+            if c % 65537 != 1 and _probably_prime(c):
+                return c
+    while True:
+        p, q = prime(bits // 2), prime(bits // 2)
+        if p != q and (p * q).bit_length() == bits:
+            return {"n": p * q, "e": 65537, "d": pow(65537, -1, (p - 1) * (q - 1)), "p": p, "q": q}
+
+
+def _pkcs1(message, length):
+    digest = SHA256_DIGEST_INFO + hashlib.sha256(message).digest()
+    return b"\x00\x01" + b"\xff" * (length - len(digest) - 3) + b"\x00" + digest
+
+
+def rsa_sign(key, message):
+    length = (key["n"].bit_length() + 7) // 8
+    m = int.from_bytes(_pkcs1(message, length), "big")
+    p, q, d = key["p"], key["q"], key["d"]
+    m1, m2 = pow(m, d % (p - 1), p), pow(m, d % (q - 1), q)
+    s = m2 + ((pow(q, -1, p) * (m1 - m2)) % p) * q
+    if pow(s, key["e"], key["n"]) != m:
+        raise ValueError("signature check failed")
+    return s.to_bytes(length, "big")
+
+
+def rsa_verify(key, message, signature):
+    length = (key["n"].bit_length() + 7) // 8
+    if len(signature) != length or int.from_bytes(signature, "big") >= key["n"]:
+        return False
+    return hmac.compare_digest(pow(int.from_bytes(signature, "big"), key["e"], key["n"]).to_bytes(length, "big"), _pkcs1(message, length))
+
+
+def signing_key_id(key):
+    return hashlib.sha256(key["n"].to_bytes((key["n"].bit_length() + 7) // 8, "big")).hexdigest()[:16]
+
+
+def signing_jwk(key):
+    return {"kty": "RSA", "alg": "RS256", "use": "sig", "kid": signing_key_id(key),
+            "n": b64url(key["n"].to_bytes((key["n"].bit_length() + 7) // 8, "big")), "e": b64url((65537).to_bytes(3, "big"))}
+
+
+def signing_pem(key):
+    def der(tag, body):
+        n = len(body)
+        size = bytes([n]) if n < 0x80 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+        return bytes([tag]) + size + body
+
+    def der_int(v):
+        raw = v.to_bytes((v.bit_length() + 7) // 8, "big")
+        return der(0x02, b"\x00" + raw if raw[0] & 0x80 else raw)
+    rsa_key = der(0x30, der_int(key["n"]) + der_int(key["e"]))
+    spki = der(0x30, der(0x30, der(0x06, bytes.fromhex("2a864886f70d010101")) + b"\x05\x00") + der(0x03, b"\x00" + rsa_key))
+    text = base64.b64encode(spki).decode()
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(text[i:i + 64] for i in range(0, len(text), 64)) + "\n-----END PUBLIC KEY-----\n"
+
+
+_SIGNING_KEY = {}
+
+
+def signing_key():
+    """The RSA key for licence tokens: made on first use (normally by setup.py deploy), kept in the database."""
+    if "key" in _SIGNING_KEY:
+        return _SIGNING_KEY["key"]
+    d = DB()
+    try:
+        row = d.first("SELECT value FROM meta WHERE key = 'license_signing_key'")
+        if not row:
+            made = json.dumps({k: format(v, "x") for k, v in generate_signing_key().items()})
+            try:
+                d.run("INSERT INTO meta (key, value) VALUES ('license_signing_key', ?)", made)
+            except Exception:  # noqa: BLE001 - made at the same moment by another request: use that one
+                pass
+            row = d.first("SELECT value FROM meta WHERE key = 'license_signing_key'")
+    finally:
+        d.close()
+    _SIGNING_KEY["key"] = {k: int(v, 16) for k, v in json.loads(row["value"]).items()}
+    return _SIGNING_KEY["key"]
+
+
+def make_license_token(claims):
+    key = signing_key()
+    head = b64url(json.dumps({"alg": "RS256", "typ": "JWT", "kid": signing_key_id(key)}, separators=(",", ":")).encode())
+    data = head + "." + b64url(json.dumps(claims, separators=(",", ":"), sort_keys=True).encode())
+    return data + "." + b64url(rsa_sign(key, data.encode()))
+
+
+def read_license_token(token):
+    """The claims of a token this server signed, or None (signature only)."""
+    try:
+        head, claims, sig = str(token).split(".")
+        if not rsa_verify(signing_key(), f"{head}.{claims}".encode(), b64url_decode(sig)):
+            return None
+        return json.loads(b64url_decode(claims))
+    except (ValueError, TypeError):
+        return None
+
+
+def lease_days():
+    try:
+        return max(1, min(365, int(os.environ.get("LICENSE_LEASE_DAYS") or LICENSE_LEASE_DAYS)))
+    except ValueError:
+        return LICENSE_LEASE_DAYS
+
+
+def license_failed(reply, status):
+    db().run("INSERT INTO license_failures (ip_address, created_at) VALUES (?, ?)", request.remote_addr or "",
+             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    return reply, status
+
+
+def too_many_license_failures():
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    row = db().first("SELECT COUNT(*) AS n FROM license_failures WHERE ip_address = ? AND created_at >= ?", request.remote_addr or "", cutoff)
+    return (row or {}).get("n", 0) >= LICENSE_FAILURES_PER_HOUR
+
+
+@app.get("/api/licenses/jwks.json")
+def license_jwks():
+    resp = jsonify({"keys": [signing_jwk(signing_key())]})
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+
+@app.get("/api/licenses/public-key")
+def license_public_key():
+    return app.response_class(signing_pem(signing_key()), mimetype="application/x-pem-file")
+
+
 def license_for_request():
     """Shared checks for the public activation endpoints. Returns (licence, machine_id, error_response)."""
     b = body()
+    if too_many_license_failures():
+        return None, "", (jsonify({"valid": False, "reason": "rate_limited",
+                                   "error": "Too many wrong licence keys from this address. Try again in an hour."}), 429)
     key = normalize_key(b.get("key"))
     if not key:
-        return None, "", (jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
+        return None, "", license_failed(jsonify({"valid": False, "reason": "invalid_format", "error": "That is not a valid licence key."}), 400)
     lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
     if not lic:
-        return None, "", (jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
+        return None, "", license_failed(jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
     if lic["status"] != "active":
         return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
     product = str(b.get("product") or "").strip()
@@ -877,9 +2069,17 @@ def license_for_request():
     return lic, machine, None
 
 
-def license_reply(lic, used):
-    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used,
-                    "max_activations": lic["max_activations"], "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+def license_reply(lic, used, machine):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    until = now + timedelta(days=lease_days())
+    claims = {"iss": site_url(), "sub": f"license:{lic['id']}", "aud": lic["product_id"], "key": lic["license_key"], "mid": machine,
+              "iat": int(now.timestamp()), "exp": int(until.timestamp()), "activations_used": used, "max_activations": lic["max_activations"]}
+    nonce = str(body().get("nonce") or "")[:128]
+    if nonce:
+        claims["nonce"] = nonce
+    return jsonify({"valid": True, "product_id": lic["product_id"], "activations_used": used, "max_activations": lic["max_activations"],
+                    "checked_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "lease_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "token": make_license_token(claims)})
 
 
 @app.post("/api/licenses/activate")
@@ -898,7 +2098,7 @@ def license_activate():
     else:
         db().run("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)", lic["id"], machine, name)
         used += 1
-    return license_reply(lic, used)
+    return license_reply(lic, used, machine)
 
 
 @app.post("/api/licenses/validate")
@@ -911,7 +2111,7 @@ def license_validate():
         return jsonify({"valid": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403
     db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", existing["id"])
     used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
-    return license_reply(lic, used)
+    return license_reply(lic, used, machine)
 
 
 @app.post("/api/licenses/deactivate")
@@ -989,6 +2189,20 @@ def profile_get():
     return jsonify({"ok": True, "name": row["name"], "profile": json.loads(row["data"])})
 
 
+@app.post("/api/profiles/list")
+def profile_list():
+    """Community list: every shared profile, most downloaded first. Optional "search" filters by name."""
+    _lic, error = licensed_computer()
+    if error:
+        return error
+    search = " ".join(str(body().get("search") or "").split()).lower()[:40]
+    rows = db().all("SELECT name, downloads, updated_at FROM shared_profiles ORDER BY downloads DESC, name_key")
+    if search:
+        rows = [r for r in rows if search in str(r["name"]).lower()]
+    return jsonify({"ok": True, "profiles": [{"name": r["name"], "downloads": int(r["downloads"] or 0),
+                                               "updated_at": str(r["updated_at"] or "")} for r in rows[:500]]})
+
+
 @app.post("/api/profiles/delete")
 def profile_delete():
     lic, error = licensed_computer()
@@ -1013,6 +2227,35 @@ def account_licenses():
                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                     "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
     return jsonify({"licenses": rows})
+
+
+@app.post("/api/account/licenses/claim")
+def account_claim_license():
+    """Adds a key the customer has (bought with another address, a gift) to their account, so it
+    shows here and in RotaHub on every PC. A key already on another account stays there."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if too_many_license_failures():
+        return err("Too many wrong licence keys from this address. Try again in an hour.", 429)
+    key = normalize_key(body().get("key"))
+    if not key:
+        return license_failed(jsonify({"error": "That is not a valid licence key."}), 400)
+    lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
+    if not lic:
+        return license_failed(jsonify({"error": "This licence key does not exist."}), 404)
+    if lic["status"] != "active":
+        return err("This licence key has been revoked.", 403)
+    if lic["customer_id"] and int(lic["customer_id"]) != int(user["id"]):
+        return err("This key is on another Rotaidem account. It can still be activated on this PC.", 409)
+    if not lic["customer_id"]:
+        db().run("UPDATE licenses SET customer_id = ? WHERE id = ?", user["id"], lic["id"])
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)",
+                 user["id"], key, request.remote_addr or "", utc_stamp())
+    row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                     "FROM licenses WHERE id = ?", lic["id"])
+    return jsonify({"license": row})
 
 
 # ---------- site settings & media ----------
@@ -1048,12 +2291,155 @@ def set_setting(key, value):
         db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, raw)
 
 
+SOCIALS = ("discord", "youtube", "instagram", "x", "facebook", "twitch", "tiktok")
+CONFIG_DEFAULT = {"contact_email": "Eliaz@rotaidem.com",
+                  "footer_text": "An independent studio making software for Microsoft Flight Simulator 2024.",
+                  "socials": {}, "maintenance": {"enabled": False, "message": ""}}
+
+
+def site_config():
+    saved = get_setting("site.config", {}) or {}
+    config = {**CONFIG_DEFAULT, **{k: v for k, v in saved.items() if k in CONFIG_DEFAULT}}
+    config["socials"] = {k: v for k, v in (config.get("socials") or {}).items() if k in SOCIALS and v}
+    m = config.get("maintenance") or {}
+    config["maintenance"] = {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "")}
+    return config
+
+
+def clean_config(c):
+    """The general settings from the admin, checked; raises ValueError with a message for the admin."""
+    email = str(c.get("contact_email") or "").strip()
+    if email and not EMAIL_RE.match(email):
+        raise ValueError("The contact email is not a valid address")
+    socials = {}
+    for name, url in (c.get("socials") or {}).items():
+        url = str(url or "").strip()
+        if name in SOCIALS and url:
+            if not url.startswith("https://") or len(url) > 300:
+                raise ValueError(f"The {name} link must start with https://")
+            socials[name] = url
+    m = c.get("maintenance") or {}
+    return {"contact_email": email or CONFIG_DEFAULT["contact_email"],
+            "footer_text": str(c.get("footer_text") or "").strip()[:300] or CONFIG_DEFAULT["footer_text"],
+            "socials": socials,
+            "maintenance": {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "").strip()[:500]}}
+
+
+ROADMAP_STAGES = ("Done", "In progress", "Next", "Later")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+LINK_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def clean_roadmap(items):
+    """The roadmap page from the admin: [{stage, title, text}], at most 40 steps."""
+    if not isinstance(items, list) or len(items) > 40:
+        raise ValueError("The roadmap can have at most 40 steps")
+    out = []
+    for i in items:
+        title = str((i or {}).get("title") or "").strip()[:120]
+        if not title:
+            continue
+        stage = i.get("stage") if i.get("stage") in ROADMAP_STAGES else "Next"
+        out.append({"stage": stage, "title": title, "text": str(i.get("text") or "").strip()[:600]})
+    return out
+
+
+def clean_faq(items):
+    """The questions on the Support page: [{q, a}], at most 60."""
+    if not isinstance(items, list) or len(items) > 60:
+        raise ValueError("The FAQ can have at most 60 questions")
+    out = []
+    for i in items:
+        q, a = str((i or {}).get("q") or "").strip()[:200], str((i or {}).get("a") or "").strip()[:2000]
+        if q and a:
+            out.append({"q": q, "a": a})
+    return out
+
+
+def clean_links(links):
+    """Short links like rotaidem.com/discord: {slug: target}. A slug may not be an existing page."""
+    if not isinstance(links, dict) or len(links) > 100:
+        raise ValueError("At most 100 short links")
+    out = {}
+    for slug, target in links.items():
+        slug, target = str(slug).strip().strip("/").lower(), str(target or "").strip()
+        if not slug and not target:
+            continue
+        if not LINK_SLUG.match(slug):
+            raise ValueError(f"Short link /{slug}: use lowercase letters, digits and dashes")
+        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health"):
+            raise ValueError(f"/{slug} is already a page on the site")
+        if not (target.startswith("https://") or (target.startswith("/") and not target.startswith("//"))) or len(target) > 500:
+            raise ValueError(f"Short link /{slug} must point to an https:// address or a page like /downloads")
+        out[slug] = target
+    return out
+
+
+# "Look & media" in the admin: colour, logo, screenshots, video, launch countdown, home page sections.
+ACCENTS = {"steel": ("#aab6c2", "#cfd7de", "170, 182, 194"), "amber": ("#f2a900", "#ffbd2e", "242, 169, 0"),
+           "sky": ("#5ab0ff", "#8cc8ff", "90, 176, 255"), "mint": ("#4cc38a", "#7ad7aa", "76, 195, 138"),
+           "rose": ("#ff6b81", "#ff94a5", "255, 107, 129"), "violet": ("#a78bfa", "#c4b5fd", "167, 139, 250")}
+HOME_SECTIONS = ("profiles", "products", "news", "signup")
+GALLERY_MAX = 24
+YOUTUBE_ID = re.compile(r"(?:youtu\.be/|[?&]v=|/embed/|/shorts/|/live/)([\w-]{11})(?:[?&#/]|$)")
+LAUNCH_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$")
+EXTRAS_DEFAULT = {"accent": "steel", "logo": "", "gallery": [], "video": "", "launch": {"enabled": False, "at": ""}, "hide": []}
+
+
+def youtube_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if re.fullmatch(r"[\w-]{11}", value):
+        return value
+    match = YOUTUBE_ID.search(value) if re.match(r"^https://(www\.|m\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)/", value) else None
+    if not match:
+        raise ValueError("Paste a YouTube link, like https://www.youtube.com/watch?v=...")
+    return match.group(1)
+
+
+def clean_extras(e):
+    """The Look & media settings from the admin, checked; raises ValueError with a message for the admin."""
+    logo = str(e.get("logo") or "").strip()
+    if logo and not valid_image_url(logo):
+        raise ValueError("The logo must be an uploaded picture or an https:// link")
+    gallery = [str(u).strip() for u in (e.get("gallery") or []) if str(u).strip()]
+    if len(gallery) > GALLERY_MAX:
+        raise ValueError(f"At most {GALLERY_MAX} screenshots")
+    if any(not valid_image_url(u) for u in gallery):
+        raise ValueError("Each screenshot must be an uploaded picture or an https:// link")
+    launch = e.get("launch") or {}
+    at = str(launch.get("at") or "").strip()
+    if at and not LAUNCH_RE.match(at):
+        raise ValueError("Pick a date and time for the launch countdown")
+    if launch.get("enabled") and not at:
+        raise ValueError("Pick a date and time for the launch countdown")
+    return {"accent": e.get("accent") if e.get("accent") in ACCENTS else "steel", "logo": logo, "gallery": gallery,
+            "video": youtube_id(e.get("video")), "launch": {"enabled": bool(launch.get("enabled")), "at": at},
+            "hide": [h for h in HOME_SECTIONS if h in (e.get("hide") or [])]}
+
+
+def site_extras():
+    saved = get_setting("site.extras", {}) or {}
+    return {**EXTRAS_DEFAULT, **{k: v for k, v in saved.items() if k in EXTRAS_DEFAULT}}
+
+
 def site_settings():
     images = dict(IMAGE_SLOTS)
     images.update({k: v for k, v in (get_setting("site.images", {}) or {}).items() if k in IMAGE_SLOTS and v})
     banner = get_setting("site.announcement", {}) or {}
-    return {"images": images, "defaults": IMAGE_SLOTS,
-            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or "")}}
+    texts = get_setting("site.texts", {}) or {}
+    return {"images": images, "defaults": IMAGE_SLOTS, "texts": texts if isinstance(texts, dict) else {}, "config": site_config(),
+            "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
+                             "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
+            "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
+            "links": get_setting("site.links", {}) or {}, "extras": site_extras()}
+
+
+# Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their
+# own (auth.js). Only changed texts are stored; the HTML keeps the defaults.
+TEXT_KEY = re.compile(r"^[a-z0-9-]{1,40}\.[a-z0-9-]{1,60}$")
+TEXT_MAX, TEXT_COUNT = 5000, 1000
 
 
 def valid_image_url(url):
@@ -1094,8 +2480,45 @@ def admin_save_settings():
         link = str(a.get("link") or "").strip()
         if link and not (link.startswith("https://") or link.startswith("/")):
             return err("The banner link must start with https:// or /", 400)
-        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300]})
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement") if k in b))
+        window = {k: str(a.get(k) or "").strip() for k in ("from", "until")}
+        if any(v and not DATE_RE.match(v) for v in window.values()):
+            return err("Banner dates must look like 2026-11-01", 400)
+        set_setting("site.announcement", {"enabled": bool(a.get("enabled")), "text": str(a.get("text") or "")[:200], "link": link[:300], **window})
+    try:
+        if "config" in b:
+            set_setting("site.config", clean_config(b.get("config") or {}))
+        if "roadmap" in b:
+            set_setting("site.roadmap", clean_roadmap(b.get("roadmap")))
+        if "faq" in b:
+            set_setting("site.faq", clean_faq(b.get("faq")))
+        if "links" in b:
+            set_setting("site.links", clean_links(b.get("links")))
+        if "extras" in b:
+            set_setting("site.extras", clean_extras(b.get("extras") or {}))
+    except ValueError as exc:
+        return err(str(exc), 400)
+    if "texts" in b:
+        # A patch: {"page.key": "new text"} changes a text, null or "" puts the original back.
+        changes = b.get("texts")
+        if not isinstance(changes, dict):
+            return err("texts must be an object", 400)
+        texts = dict(get_setting("site.texts", {}) or {})
+        for key, value in changes.items():
+            if not TEXT_KEY.match(str(key)):
+                return err(f"Unknown text {key}", 400)
+            value = "" if value is None else str(value).replace("\r\n", "\n").strip()
+            if len(value) > TEXT_MAX:
+                return err(f"A text can be at most {TEXT_MAX} characters", 400)
+            if value:
+                texts[key] = value
+            else:
+                texts.pop(key, None)
+        if len(texts) > TEXT_COUNT:
+            return err("Too many changed texts", 400)
+        set_setting("site.texts", texts)
+    publish_site_settings()
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts") if k in b)
+          + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
 
@@ -1115,6 +2538,8 @@ def admin_upload_media():
     if not user:
         return err("Only the Owner or an Admin can upload images", 403)
     b = body()
+    if not b and request.content_length:
+        return err("The picture did not arrive in one piece (the upload was cut off). Try a smaller picture.", 400)
     mime = str(b.get("mime") or "")
     if mime not in MEDIA_TYPES:
         return err("Upload a JPG, PNG, WebP or GIF image", 400)
@@ -1132,6 +2557,7 @@ def admin_upload_media():
              name, mime, base64.b64encode(raw).decode(), len(raw), clamp_int(b.get("width"), 0, 0, 20000), clamp_int(b.get("height"), 0, 0, 20000))
     row = db().first("SELECT MAX(id) AS id FROM media")
     audit(user, "upload_media", name)
+    write_public(f"media/{row['id']}.{MEDIA_TYPES[mime]}", raw)
     return jsonify({"ok": True, "id": row["id"], "url": f"/media/{row['id']}.{MEDIA_TYPES[mime]}"})
 
 
@@ -1140,8 +2566,10 @@ def admin_delete_media(media_id):
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can delete images", 403)
-    row = db().first("SELECT filename FROM media WHERE id = ?", media_id)
+    row = db().first("SELECT filename, mime FROM media WHERE id = ?", media_id)
     db().run("DELETE FROM media WHERE id = ?", media_id)
+    if row:
+        remove_public(f"media/{media_id}.{MEDIA_TYPES.get(row['mime'], 'jpg')}")
     audit(user, "delete_media", row["filename"] if row else media_id)
     return jsonify({"ok": True})
 
@@ -1151,8 +2579,79 @@ def media_file(media_id, ext):
     row = db().first("SELECT mime, data FROM media WHERE id = ?", media_id)
     if not row or MEDIA_TYPES.get(row["mime"]) != ext:
         abort(404)
-    resp = app.response_class(base64.b64decode(row["data"]), mimetype=row["mime"])
+    raw = base64.b64decode(row["data"])
+    write_public(f"media/{media_id}.{ext}", raw)  # from now on the web server sends it as a plain file
+    resp = app.response_class(raw, mimetype=row["mime"])
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------- plain-file copies for the web server ----------
+# On STRATO the entry script sets ROTAIDEM_PUBLIC_DIR (the website folder). Uploaded images and
+# the site settings are then also written there, so Apache sends them straight away instead of
+# starting this program and reading the database for every picture. Elsewhere this does nothing.
+
+def public_path(name):
+    folder = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
+    if not folder or not os.path.isdir(folder) or not re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name):
+        return ""
+    return os.path.join(folder, name)
+
+
+def write_public(name, data):
+    path = public_path(name)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.chmod(os.path.dirname(path), 0o755)  # the program runs with umask 077; pictures are public
+        temp = f"{path}.{os.getpid()}.tmp"
+        with open(temp, "wb") as fh:
+            fh.write(data)
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)  # never a half-written file
+    except OSError as exc:
+        app.logger.warning("Could not write %s: %s", path, exc)
+
+
+def remove_public(name):
+    path = public_path(name)
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError as exc:
+            app.logger.warning("Could not remove %s: %s", path, exc)
+
+
+def css_url(url):
+    return "".join(c if c.isalnum() or c in "/:.-_~?=&%#+,;@!" else "%{:02X}".format(ord(c)) for c in url)
+
+
+def site_settings_js():
+    """Loaded in <head> of every page: the custom pictures apply before anything is drawn (CSS),
+    and auth.js puts in the page texts without waiting for /api/site."""
+    site = site_settings()
+    css = "".join(f'[data-image="{slot}"]:not(img){{background-image:url("{css_url(url)}")!important}}'
+                  for slot, url in site["images"].items() if url and url != IMAGE_SLOTS.get(slot))
+    accent = ACCENTS.get(site["extras"].get("accent"))
+    if accent and site["extras"].get("accent") != "steel":
+        css += f":root{{--accent:{accent[0]};--accent-hover:{accent[1]};--accent-rgb:{accent[2]}}}"
+    data = json.dumps(site).replace("</", "<\\/")
+    style = json.dumps(css).replace("</", "<\\/")
+    return (f"window.RSG_SITE={data};\n"
+            f"(function(){{var s=document.createElement('style');s.textContent={style};document.head.appendChild(s);}})();\n")
+
+
+def publish_site_settings():
+    write_public("site-settings.js", site_settings_js().encode())
+
+
+@app.get("/site-settings.js")
+def site_settings_script():
+    js = site_settings_js()
+    write_public("site-settings.js", js.encode())
+    resp = app.response_class(js, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
@@ -1187,13 +2686,62 @@ def admin_backup():
 def admin_user_detail(user_id):
     if not staff_user():
         return err("Admin only", 403)
-    u = db().first("SELECT id, name, email, role, created_at FROM users WHERE id = ?", user_id)
+    u = db().first("SELECT id, name, email, role, created_at, email_verified, admin_note FROM users WHERE id = ?", user_id)
     if not u:
         return err("User not found", 404)
     u["orders"] = db().all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", user_id)
     u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                              "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
+    u["sessions"] = session_rows(user_id)
+    u["messages"] = db().all("SELECT id, message, created_at, handled, reply, replied_at, replied_by FROM messages WHERE LOWER(email) = ? ORDER BY id DESC LIMIT 50",
+                             (u["email"] or "").lower())
+    u["downloads"] = db().all("SELECT product_id, created_at FROM downloads WHERE user_id = ? ORDER BY id DESC LIMIT 50", user_id)
     return jsonify({"user": u})
+
+
+@app.delete("/api/admin/users/<int:user_id>/sessions/<int:session_id>")
+def admin_end_session(user_id, session_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can log users out", 403)
+    db().run("DELETE FROM sessions WHERE id = ? AND user_id = ?", session_id, user_id)
+    audit(user, "end_session", f"user {user_id}")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/users/<int:user_id>/note")
+def admin_user_note(user_id):
+    """A private note about a user, only seen by staff."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    db().run("UPDATE users SET admin_note = ? WHERE id = ?", str(body().get("note") or "").strip()[:2000], user_id)
+    audit(user, "user_note", user_id)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/users/<int:user_id>/verify")
+def admin_verify_user(user_id):
+    """Staff confirm an address by hand, e.g. for someone whose confirmation email never arrived."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    db().run("UPDATE users SET email_verified = 1 WHERE id = ?", user_id)
+    audit(user, "verify_user", user_id)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/users/<int:user_id>/sign-out")
+def admin_sign_out_user(user_id):
+    """Ends the user's session on every device (e.g. a shared or lost computer)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can sign users out", 403)
+    if user_id == user["id"]:
+        return err("Use Log out to sign yourself out", 400)
+    end_sessions(user_id)
+    audit(user, "sign_out_user", user_id)
+    return jsonify({"ok": True})
 
 
 @app.delete("/api/admin/users/<int:user_id>")
@@ -1209,6 +2757,7 @@ def admin_delete_user(user_id):
     # Licences and orders stay (they are records of a sale); they are just no longer linked to an account.
     db().run("UPDATE licenses SET customer_id = NULL WHERE customer_id = ?", user_id)
     db().run("DELETE FROM users WHERE id = ?", user_id)
+    db().run("DELETE FROM sessions WHERE user_id = ?", user_id)
     audit(user, "delete_user", target["email"])
     return jsonify({"ok": True})
 
@@ -1218,7 +2767,7 @@ def admin_delete_user(user_id):
 def manager_user():
     """Owner or Admin: allowed to email people."""
     user = current_user()
-    return user if user and user["role"] in ("Owner", "Admin") else None
+    return user if user and user["role"] in ("Owner", "Admin") and admin_unlocked(user) else None
 
 
 def collect_recipients(groups, extra):
@@ -1245,31 +2794,101 @@ def collect_recipients(groups, extra):
 
 
 def site_url():
-    return (os.environ.get("SITE_URL") or request.host_url).rstrip("/")
+    base = (os.environ.get("SITE_URL") or request.host_url).strip().rstrip("/")
+    return base if "://" in base else "https://" + base.lower()  # "Rotaidem.com" still gives working links
 
 
-def product_email_html(product, message, email):
+EMAIL_IMAGES_MAX = 12
+
+
+def email_image_tag(base, url):
+    if url.startswith("/media/") or url.startswith("/img/"):
+        url = base + url  # uploaded images need a full address inside an email
+    if not url.startswith("https://"):
+        return ""
+    return f'<img src="{escape(url)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">'
+
+
+EMAIL_LAYOUTS = ("classic", "update", "launch", "plain")
+BULLET = re.compile(r"^[-*\u2022]\s+")
+BUTTON_STYLE = "display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold"
+
+
+def email_paragraphs(message, bullets=False):
+    """The message as HTML: blank lines split paragraphs; with bullets, lines starting with - or * become a list."""
+    out, items = [], []
+    for block in re.split(r"\n\s*\n", (message or "").strip()):
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        for line in lines:
+            if bullets and BULLET.match(line):
+                item = escape(BULLET.sub("", line))
+                items.append(f'<li style="margin:0 0 6px">{item}</li>')
+                continue
+            if items:
+                out.append(f'<ul style="margin:0 0 16px;padding-left:22px">{"".join(items)}</ul>')
+                items = []
+            out.append(f'<p style="margin:0 0 14px">{escape(line)}</p>')
+        if items:
+            out.append(f'<ul style="margin:0 0 16px;padding-left:22px">{"".join(items)}</ul>')
+            items = []
+    return "".join(out)
+
+
+def email_button(base, button, product, layout):
+    """The button: the admin's own text and link, or a sensible default for the layout."""
+    button = button or {}
+    url = str(button.get("url") or "").strip()
+    if url.startswith("/"):
+        url = base + url
+    if not url:
+        url = f"{base}/downloads" if layout == "update" else (f"{base}/addons/view?id={product['id']}" if product else base)
+    text = str(button.get("text") or "").strip() or ("Download the update" if layout == "update" else
+                                                     f"View {product['name']}" if product else "Visit rotaidem.com")
+    return url, text
+
+
+def product_email_html(product, message, email, images=(), layout="classic", subject="", button=None):
+    """The email of "Email a product", in one of four layouts."""
     base = site_url()
-    link = f"{base}/addons/view?id={product['id']}" if product else base
+    layout = layout if layout in EMAIL_LAYOUTS else "classic"
     unsub = f"{base}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
-    text = "<br>".join(escape(line) for line in (message or "").splitlines())
-    block = ""
+    url, label = email_button(base, button, product, layout)
+    pictures = [email_image_tag(base, u) for u in images]
+    footer = (f'<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have '
+              f'an account with Rotaidem, contacted us or subscribed to our news.\n<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>')
+    head = '<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>'
+    product_block = ""
     if product:
-        image = product.get("image_url") or ""
-        if image.startswith("/media/") or image.startswith("/img/"):
-            image = base + image  # uploaded images need a full address inside an email
-        img = f'<img src="{escape(image)}" alt="" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin:0 0 20px">' if image.startswith("https://") else ""
-        block = (f'{img}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
-                 f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
-                 f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
+        product_block = (f'{email_image_tag(base, product.get("image_url") or "")}<h2 style="margin:0 0 6px;font-size:22px;color:#141517">{escape(product["name"])}</h2>'
+                         f'<p style="margin:0 0 6px;color:#6b7480">{escape(product.get("tagline") or "")}</p>'
+                         f'<p style="margin:0 0 22px;font-weight:600;color:#141517">{escape(product.get("price") or "")}</p>')
+    if layout == "update":
+        rows = (f'{head}<tr><td style="padding:28px 28px 0"><div style="font-size:12px;font-weight:bold;letter-spacing:2px;color:#6b7480">UPDATE</div>'
+                f'<h1 style="margin:6px 0 18px;font-size:24px;color:#141517">{escape(subject)}</h1></td></tr>'
+                f'<tr><td style="padding:0 28px 8px;font-size:16px;line-height:1.6">{email_paragraphs(message, bullets=True)}</td></tr>'
+                f'<tr><td style="padding:8px 28px 28px">{"".join(pictures)}<a href="{escape(url)}" style="{BUTTON_STYLE}">{escape(label)}</a></td></tr>')
+    elif layout == "launch":
+        hero, rest = (pictures[0], pictures[1:]) if pictures else ("", [])
+        hero = hero.replace("margin:0 0 20px", "margin:0")
+        rows = (f'{head}<tr><td style="padding:0">{hero}</td></tr>'
+                f'<tr><td align="center" style="padding:34px 32px 6px;text-align:center"><h1 style="margin:0 0 14px;font-size:30px;line-height:1.2;color:#141517">{escape(subject)}</h1>'
+                f'<div style="font-size:17px;line-height:1.6;color:#39424e">{email_paragraphs(message)}</div></td></tr>'
+                f'<tr><td align="center" style="padding:6px 32px 34px;text-align:center"><a href="{escape(url)}" style="{BUTTON_STYLE};padding:16px 34px;font-size:17px">{escape(label)}</a></td></tr>'
+                + (f'<tr><td style="padding:0 28px 12px">{"".join(rest)}</td></tr>' if rest else ""))
+    elif layout == "plain":
+        link = f'<p style="margin:0 0 14px"><a href="{escape(url)}" style="color:#141517">{escape(label)}</a></p>' if (button or {}).get("url") or (button or {}).get("text") else ""
+        rows = (f'<tr><td style="padding:32px 32px 8px;font-size:16px;line-height:1.7;color:#222">{email_paragraphs(message)}{link}'
+                f'<p style="margin:18px 0 0">Eliaz<br><span style="color:#6b7480">Rotaidem</span></p></td></tr>'
+                + (f'<tr><td style="padding:12px 32px 20px">{"".join(pictures)}</td></tr>' if pictures else ""))
+    else:
+        text = "<br>".join(escape(line) for line in (message or "").splitlines())
+        rows = (f'{head}<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>'
+                f'<tr><td style="padding:12px 28px 28px">{"".join(pictures)}{product_block}<a href="{escape(url)}" style="{BUTTON_STYLE}">{escape(label)}</a></td></tr>')
     return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#39424e">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
-<tr><td style="background:#141517;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
-<tr><td style="padding:28px 28px 8px;font-size:16px;line-height:1.6">{text}</td></tr>
-<tr><td style="padding:12px 28px 28px">{block}<a href="{escape(link)}" style="display:inline-block;background:#141517;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">{"View " + escape(product["name"]) if product else "Visit rotaidem.com"}</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e2e5e9;font-size:12px;color:#6b7480">You are receiving this because you have an account with Rotaidem, contacted us or subscribed to our news.
-<a href="{escape(unsub)}" style="color:#6b7480">Unsubscribe</a></td></tr>
+{rows}
+{footer}
 </table></td></tr></table></body></html>"""
 
 
@@ -1288,8 +2907,9 @@ def explain_resend_error(status, raw):
         return (f"The sender domain in MAIL_FROM ({MAIL_FROM}) is not verified in Resend yet. Finish the DNS setup at "
                 "resend.com/domains, or remove MAIL_FROM to use Resend's test sender.")
     if status in (401, 403) and ("api key" in text or "unauthorized" in text or "restricted" in text):
-        return ("Resend rejected the API key. Check RESEND_API_KEY in Render (it starts with re_ and must have "
-                "sending access), save, and let the service redeploy.")
+        return ("Resend rejected the API key. Create a key with sending access at resend.com/api-keys and put it in "
+                "RESEND_API_KEY (on STRATO: rotaidem-data/config.env, picked up automatically; on Render: the "
+                "service's environment). It starts with re_.")
     if "error code: 1010" in text or "<html" in text:
         return "Resend's firewall blocked the request. Try again in a minute; if it keeps happening, contact Resend support."
     if "from" in text and ("invalid" in text or "format" in text):
@@ -1326,13 +2946,95 @@ def admin_audience():
                     "email_ready": bool(RESEND_API_KEY), "from": MAIL_FROM})
 
 
+def email_options(b):
+    """Pictures, layout and button of an email from the admin, checked; raises ValueError for the admin."""
+    images = []
+    for url in b.get("images") or []:
+        clean = valid_image_url(url)
+        if not clean:
+            raise ValueError("Each picture must be uploaded or an https:// link")
+        images.append(clean)
+    if len(images) > EMAIL_IMAGES_MAX:
+        raise ValueError(f"At most {EMAIL_IMAGES_MAX} pictures per email")
+    layout = b.get("layout") if b.get("layout") in EMAIL_LAYOUTS else "classic"
+    button = b.get("button") or {}
+    url, text = str(button.get("url") or "").strip(), str(button.get("text") or "").strip()[:60]
+    if url and not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//"))):
+        raise ValueError("The button link must start with https:// or be a page like /downloads")
+    return images, layout, {"url": url[:500], "text": text}
+
+
+@app.post("/api/admin/email-preview")
+def admin_email_preview():
+    """The email exactly as it will be sent, for the preview in the admin."""
+    if not manager_user():
+        return err("Only the Owner or an Admin can send emails", 403)
+    b = body()
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"]) if b.get("product_id") else None
+    message = str(b.get("message") or "").strip() or "Your message appears here."
+    return jsonify({"html": product_email_html(product, message, "preview@example.com", images, layout,
+                                               str(b.get("subject") or "").strip() or "Your subject", button)})
+
+
+TEMPLATES_MAX = 30
+
+
+@app.get("/api/admin/email-templates")
+def admin_email_templates():
+    if not manager_user():
+        return err("Only the Owner or an Admin can send emails", 403)
+    return jsonify({"templates": get_setting("email.templates", []) or []})
+
+
+@app.post("/api/admin/email-templates")
+def admin_save_email_template():
+    """Saves the composed email under a name (the same name replaces it)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    b = body()
+    name = str(b.get("name") or "").strip()[:60]
+    if not name:
+        return err("Give the template a name", 400)
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    item = {"name": name, "subject": str(b.get("subject") or "")[:200], "message": str(b.get("message") or "")[:20000],
+            "product_id": str(b.get("product_id") or "")[:100], "images": images, "layout": layout, "button": button}
+    templates = [t for t in (get_setting("email.templates", []) or []) if t.get("name") != name]
+    if len(templates) >= TEMPLATES_MAX:
+        return err(f"At most {TEMPLATES_MAX} templates. Delete one first.", 400)
+    templates = sorted(templates + [item], key=lambda t: t["name"].lower())
+    if len(json.dumps(templates)) > 60000:  # the settings column holds 64 KB on MySQL
+        return err("There is no room for this template. Delete an old one or shorten the message.", 400)
+    set_setting("email.templates", templates)
+    audit(user, "save_email_template", name)
+    return jsonify({"ok": True, "templates": get_setting("email.templates", [])})
+
+
+@app.delete("/api/admin/email-templates")
+def admin_delete_email_template():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can send emails", 403)
+    name = str(request.args.get("name") or "")
+    set_setting("email.templates", [t for t in (get_setting("email.templates", []) or []) if t.get("name") != name])
+    audit(user, "delete_email_template", name)
+    return jsonify({"ok": True, "templates": get_setting("email.templates", [])})
+
+
 @app.post("/api/admin/broadcast")
 def admin_broadcast():
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can send emails", 403)
     if not RESEND_API_KEY:
-        return err("Email is not set up. Add RESEND_API_KEY to the server environment and redeploy.", 400)
+        return err("Email is not set up. Add RESEND_API_KEY to the settings (on STRATO: rotaidem-data/config.env).", 400)
     b = body()
     subject = str(b.get("subject", "")).strip()
     message = str(b.get("message", "")).strip()
@@ -1343,6 +3045,10 @@ def admin_broadcast():
         product = db().first("SELECT * FROM products WHERE id = ?", b["product_id"])
         if not product:
             return err("That product no longer exists", 400)
+    try:
+        images, layout, button = email_options(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
     test = str(b.get("test_email", "")).strip().lower()
     if test:
         if not EMAIL_RE.match(test):
@@ -1356,7 +3062,7 @@ def admin_broadcast():
     sent, failed, last_error = 0, 0, ""
     for i in range(0, len(recipients), 100):
         chunk = recipients[i:i + 100]
-        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r)} for r in chunk]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images, layout, subject, button)} for r in chunk]
         ok, error = send_batch(messages)
         sent += ok
         if error:
@@ -1384,6 +3090,31 @@ def admin_subscribers():
     if not staff_user():
         return err("Admin only", 403)
     return jsonify({"subscribers": db().all("SELECT * FROM subscribers ORDER BY id DESC")})
+
+
+@app.post("/api/admin/subscribers")
+def admin_add_subscribers():
+    """Paste one or many addresses. Someone who unsubscribed is never signed up again from here."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    words = [w.strip().lower() for w in re.split(r"[\s,;]+", str(body().get("emails", ""))) if w.strip()]
+    if not words:
+        return err("Paste at least one email address", 400)
+    if len(words) > 5000:
+        return err("At most 5000 addresses at a time", 400)
+    added, skipped, invalid = [], [], []
+    for email in dict.fromkeys(words):
+        if not EMAIL_RE.match(email) or len(email) > 200:
+            invalid.append(email)
+        elif db().first("SELECT id FROM subscribers WHERE email = ?", email):
+            skipped.append(email)
+        else:
+            db().run("INSERT INTO subscribers (email, source) VALUES (?, 'added by admin')", email)
+            added.append(email)
+    if added:
+        audit(user, "add_subscribers", f"{len(added)} added")
+    return jsonify({"ok": True, "added": len(added), "skipped": len(skipped), "invalid": invalid[:50]})
 
 
 @app.delete("/api/admin/subscribers/<int:sub_id>")

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Confirm your email | Rotaidem</title>
+    <meta name="robots" content="noindex">
+    <meta name="referrer" content="no-referrer">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/site.css">
+    <script src="/site-settings.js"></script>
+</head>
+<body data-footer="off">
+<main class="auth">
+    <div class="auth-side" data-image="login" style="background-image:url('/img/clouds.jpg')"><div><h2>One last step</h2><p>Confirming your email keeps your licence keys and orders yours alone.</p></div></div>
+    <div class="auth-form">
+        <form id="form">
+            <h1 style="font-size:32px">Confirm your email</h1>
+            <p class="muted" id="intro" style="margin-bottom:26px">Checking your link…</p>
+            <div id="again" hidden>
+                <div class="field"><label for="email">Your email address</label><input id="email" type="email" autocomplete="email" required></div>
+                <button class="btn btn-block" id="send">Send me a new link</button>
+            </div>
+            <p id="msg" class="msg"></p>
+            <p class="alt-link"><a href="/login">Back to log in</a></p>
+        </form>
+    </div>
+</main>
+<script src="/auth.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+// Keep the token out of the address bar (and browser history) once it has been read.
+let token = new URLSearchParams(location.search).get("token") || "";
+try { if (token) sessionStorage.setItem("rsg_verify", token); else token = sessionStorage.getItem("rsg_verify") || ""; } catch (err) {}
+if (location.search) history.replaceState(null, "", location.pathname);
+const post = (path, body) => fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) })).catch(() => ({ ok: false, data: {} }));
+function askAgain(text) {
+    $("intro").textContent = text;
+    $("again").hidden = false;
+    $("email").value = new URLSearchParams(location.hash.slice(1)).get("email") || "";
+}
+(async () => {
+    if (!token) return askAgain("Open the link from the email we sent you, or ask for a new one here.");
+    const r = await post("/api/verify-email", { token });
+    if (!r.ok) return askAgain(r.data.error || "This link cannot be checked right now. Please try again later.");
+    try { sessionStorage.removeItem("rsg_verify"); } catch (err) {}
+    saveSession(r.data);
+    $("intro").textContent = `Thank you, ${r.data.email} is confirmed. Opening your account…`;
+    setTimeout(() => { location.href = r.data.is_admin ? "/admin" : "/account"; }, 1200);
+})();
+$("form").onsubmit = async e => {
+    e.preventDefault();
+    const msg = $("msg");
+    msg.className = "msg"; msg.textContent = "Sending…"; $("send").disabled = true;
+    const r = await post("/api/verify-email/resend", { email: $("email").value });
+    $("send").disabled = false;
+    msg.className = r.ok ? "msg ok" : "msg error";
+    msg.textContent = r.ok ? r.data.message : r.data.error || "The email could not be sent right now.";
+};
+</script>
+</body>
+</html>
