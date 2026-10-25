@@ -70,6 +70,46 @@
         .flyby { position: fixed; top: 30%; left: -160px; font-size: 64px; z-index: 501; pointer-events: none; animation: flyby 2.6s ease-in forwards; }
         @keyframes flyby { 0% { transform: translate(0, 0) rotate(-8deg); } 100% { transform: translate(calc(100vw + 320px), -220px) rotate(-18deg); } }
         @media (max-width: 900px) { .recap { grid-template-columns: repeat(2, 1fr); } }
+        .clock { font: 13px/1.2 ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+        .clock b { color: var(--ink); font-weight: 600; }
+        .online { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
+        .online:empty { display: none; }
+        .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-2); border: 1px solid var(--line); padding: 3px 9px; color: var(--text); }
+        .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+        .chip small { color: var(--muted); font-size: 12px; }
+        .checklist { list-style: none; margin: 0; padding: 6px 20px 10px; }
+        .checklist li { display: flex; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .checklist li:last-child { border-bottom: 0; }
+        .checklist .tick { width: 20px; height: 20px; flex: none; display: grid; place-items: center; font-size: 12px; border: 1px solid var(--field-line); color: transparent; }
+        .checklist li.done .tick { background: var(--ok); border-color: var(--ok); color: #0b0c0e; }
+        .checklist li.done strong { color: var(--muted); font-weight: 500; }
+        .checklist strong { color: var(--ink); font-weight: 600; }
+        .checklist small { display: block; color: var(--muted); font-size: 13px; }
+        .cd-big { display: flex; gap: 28px; padding: 20px; flex-wrap: wrap; }
+        .cd-big strong { display: block; font-size: 36px; line-height: 1.1; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+        .cd-big span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
+        .palette { position: fixed; inset: 0; background: rgba(var(--navy-rgb),.55); z-index: 70; display: none; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; }
+        .palette.show { display: flex; }
+        .palette-box { width: min(620px, 100%); background: var(--surface); border: 1px solid var(--line); box-shadow: 0 20px 50px rgba(0,0,0,.4); }
+        .palette-box input, .palette-box input:focus { border: 0; border-bottom: 1px solid var(--line); box-shadow: none; padding: 16px 18px; font-size: 16px; width: 100%; background: transparent; outline: none; }
+        .palette-list { max-height: 52vh; overflow-y: auto; padding: 6px 0; }
+        .palette-item { display: flex; justify-content: space-between; gap: 12px; padding: 9px 18px; cursor: pointer; font-size: 14px; color: var(--text); }
+        .palette-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .palette-item small { color: var(--muted); white-space: nowrap; }
+        .palette-item.on { background: var(--navy-hover); color: var(--ink); }
+        .palette-empty { padding: 16px 18px; color: var(--muted); font-size: 14px; }
+        .palette-foot { border-top: 1px solid var(--line); padding: 8px 18px; font-size: 12px; color: var(--muted); }
+        .reply-box { background: var(--bg-2); border-left: 3px solid var(--ok); padding: 12px 14px; margin: 0 0 14px; font-size: 14px; white-space: pre-line; }
+        .reply-box small { display: block; color: var(--muted); margin-bottom: 4px; white-space: normal; }
+        .quote { background: var(--bg-2); padding: 10px 12px; font-size: 13px; color: var(--muted); white-space: pre-line; max-height: 120px; overflow-y: auto; margin: 0 0 14px; }
+        .sys { display: grid; grid-template-columns: 190px 1fr; gap: 9px 16px; font-size: 14px; margin: 0; }
+        .sys dt { color: var(--muted); } .sys dd { margin: 0; color: var(--ink); word-break: break-word; }
+        .tbl-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 18px; }
+        .tbl-counts div { background: var(--bg-2); border: 1px solid var(--line); padding: 8px 10px; font-size: 12px; color: var(--muted); }
+        .tbl-counts strong { display: block; color: var(--ink); font-size: 17px; font-weight: 600; }
+        details.panel > summary { cursor: pointer; list-style: none; }
+        details.panel > summary::-webkit-details-marker { display: none; }
+        @media (max-width: 700px) { .sys { grid-template-columns: 1fr; gap: 2px; } .sys dd { margin-bottom: 10px; } .clock { display: none; } }
         .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px; }
         .stats div { background: var(--surface); padding: 18px 20px; }
         .stats span { display: block; font-size: 13px; color: var(--muted); }
@@ -225,11 +265,11 @@
 </aside>
 
 <main class="main">
-    <div class="bar"><div style="display:flex;gap:12px;align-items:center"><button class="btn btn-ghost btn-sm menu-btn" onclick="document.getElementById('side').classList.toggle('open')">Menu</button><h1 id="bar-title">Dashboard</h1></div><div id="bar-actions" class="actions"></div></div>
+    <div class="bar"><div style="display:flex;gap:12px;align-items:center"><button class="btn btn-ghost btn-sm menu-btn" onclick="document.getElementById('side').classList.toggle('open')">Menu</button><h1 id="bar-title">Dashboard</h1></div><div class="actions" style="align-items:center"><span class="clock" id="clock" title="Zulu (UTC) time and your own time"></span><button class="btn btn-ghost btn-sm" type="button" onclick="openPalette()" title="Search everything (Ctrl+K)">Search <kbd style="margin-left:6px;font:12px ui-monospace,monospace">Ctrl K</kbd></button><div id="bar-actions" class="actions"></div></div></div>
     <div class="content">
 
     <section class="pane active" id="pane-dashboard" data-title="Dashboard">
-        <div class="hello"><div><h2 id="hello-title">Hello</h2><p class="fact" id="hello-fact"></p></div><button class="btn btn-ghost btn-sm" type="button" onclick="showKeys()">Keyboard shortcuts <kbd style="margin-left:6px;font:12px ui-monospace,monospace">?</kbd></button></div>
+        <div class="hello"><div><h2 id="hello-title">Hello</h2><p class="fact" id="hello-fact"></p><div class="online" id="online"></div></div><button class="btn btn-ghost btn-sm" type="button" onclick="showKeys()">Keyboard shortcuts <kbd style="margin-left:6px;font:12px ui-monospace,monospace">?</kbd></button></div>
         <div class="stats">
             <div><span>Revenue</span><strong id="s-revenue">$0</strong></div>
             <div><span>Orders</span><strong id="s-orders">0</strong></div>
@@ -238,6 +278,8 @@
             <div><span>New accounts, 7 days</span><strong id="s-new_users_7d">0</strong></div>
         </div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>This week</h2><span class="muted" style="font-size:13px">Compared with the week before</span></div><div class="recap" id="recap"></div></div>
+        <div class="panel" id="cd-panel" style="margin-bottom:24px" hidden><div class="panel-head"><h2>Launch countdown</h2><span class="muted" style="font-size:13px" id="cd-when"></span></div><div class="cd-big" id="cd-big"></div></div>
+        <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Launch checklist</h2><span class="muted" style="font-size:13px" id="check-count"></span></div><ul class="checklist" id="checklist"></ul></div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Achievements</h2><span class="muted" style="font-size:13px" id="badge-count"></span></div><div class="badges" id="badges"></div></div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Team board</h2><span class="muted" style="font-size:13px">Sticky notes every admin sees</span></div>
             <div class="board" id="board"></div>
@@ -287,6 +329,18 @@
                 <p class="msg" id="gs-msg"></p>
             </div>
         </form>
+        <form class="panel" id="bl-form" style="margin-top:24px" hidden>
+            <div class="panel-head"><h2>Blocklist</h2><span class="muted" style="font-size:13px">Stop spam and abuse</span></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">One per line: a full email (<code>spammer@example.com</code>), a whole domain (<code>@example.com</code>) or an IP address (<code>203.0.113.7</code>, or <code>203.0.113.</code> for the whole range). Blocked people cannot sign up; their contact messages and newsletter sign-ups are dropped without telling them.</p>
+                <div class="field"><textarea id="bl-text" rows="6" placeholder="@spam-domain.com" style="font-family:ui-monospace,Consolas,monospace;font-size:14px"></textarea></div>
+                <button class="btn">Save blocklist</button>
+            </div>
+        </form>
+        <div class="panel" id="sys-panel" style="margin-top:24px" hidden>
+            <div class="panel-head"><h2>System</h2><button class="btn btn-ghost btn-sm" type="button" onclick="loadSystem()">Refresh</button></div>
+            <div class="panel-body"><dl class="sys" id="sys-list"></dl><div class="tbl-counts" id="sys-tables"></div></div>
+        </div>
     </section>
 
     <section class="pane" id="pane-site" data-title="Site settings">
@@ -514,7 +568,7 @@
 
     <section class="pane" id="pane-users" data-title="Users">
         <div class="panel">
-            <div class="panel-head"><h2>Registered users</h2><div class="actions"><input class="search" id="user-search" placeholder="Search name or email"><button class="btn btn-ghost btn-sm" type="button" onclick="exportUsers()">Export CSV</button></div></div>
+            <div class="panel-head"><h2>Registered users</h2><div class="actions"><select id="user-filter" style="width:auto;padding:8px 12px" aria-label="Show"><option value="">Everyone</option><option value="Customer">Customers</option><option value="staff">Staff</option><option value="unconfirmed">Email not confirmed</option></select><input class="search" id="user-search" placeholder="Search name or email"><button class="btn btn-ghost btn-sm" type="button" onclick="exportUsers()">Export CSV</button></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
         </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
@@ -550,14 +604,26 @@
             </div>
         </div>
         <div class="panel">
-            <div class="panel-head"><h2>All licences</h2><div class="actions"><input class="search" id="lic-search" placeholder="Search key, email or note"><button class="btn btn-ghost btn-sm" type="button" onclick="exportLicenses()">Export CSV</button></div></div>
+            <div class="panel-head"><h2>All licences</h2><div class="actions"><select id="lic-filter" style="width:auto;padding:8px 12px" aria-label="Show"><option value="">All licences</option><option value="active">Active</option><option value="revoked">Revoked</option><option value="unused">Never activated</option><option value="full">All computers used</option></select><input class="search" id="lic-search" placeholder="Search key, email or note"><button class="btn btn-ghost btn-sm" type="button" onclick="exportLicenses()">Export CSV</button></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
         </div>
         <datalist id="user-emails"></datalist>
     </section>
 
     <section class="pane" id="pane-messages" data-title="Messages">
-        <div class="actions" style="justify-content:flex-start;margin:0 0 16px" id="msg-filter"><button class="btn btn-sm" type="button" data-filter="open">Open</button><button class="btn btn-ghost btn-sm" type="button" data-filter="handled">Handled</button><button class="btn btn-ghost btn-sm" type="button" data-filter="all">All</button></div>
+        <details class="panel" id="inbox-panel" style="margin-bottom:20px"><summary class="panel-head"><h2>Inbox settings: saved answers and automatic reply</h2><span class="muted" style="font-size:13px" id="ib-state"></span></summary>
+            <form class="panel-body" id="inbox-form">
+                <div class="sub" style="border-top:0;padding-top:0;margin-top:0">Automatic reply</div>
+                <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="ib-auto"> Email people a short "we got your message" note when they use the contact form</label>
+                <div class="field"><label for="ib-subject">Subject</label><input id="ib-subject" maxlength="150"></div>
+                <div class="field"><label for="ib-text">Text</label><textarea id="ib-text" rows="4" maxlength="3000"></textarea><div class="hint">Sent at most once a day to the same address, and only when email sending is set up. Replies go to your contact email.</div></div>
+                <div class="sub">Saved answers</div>
+                <p class="muted" style="font-size:14px;margin:-4px 0 12px">Answers you give often. Insert one with a click when you reply to a message.</p>
+                <div class="list-edit" id="ib-replies"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="ib-add">Add saved answer</button><button class="btn">Save inbox settings</button></div>
+            </form>
+        </details>
+        <div class="actions" style="justify-content:space-between;margin:0 0 16px"><div class="actions" style="justify-content:flex-start" id="msg-filter"><button class="btn btn-sm" type="button" data-filter="open">Open</button><button class="btn btn-ghost btn-sm" type="button" data-filter="handled">Handled</button><button class="btn btn-ghost btn-sm" type="button" data-filter="all">All</button></div><input class="search" id="msg-search" placeholder="Search name, email or text"></div>
         <div id="messages-list"></div>
     </section>
 
@@ -631,9 +697,17 @@
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="keys-modal"><div class="modal"><div style="display:flex;justify-content:space-between;align-items:start"><h3 style="margin:0">Keyboard shortcuts</h3><button class="x" type="button" onclick="$('keys-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="keys"><kbd>g</kbd><span>then a letter to go: <b>d</b>ashboard, <b>p</b>roducts, <b>n</b>ews, <b>e</b>mail, <b>u</b>sers, <b>l</b>icences, <b>m</b>essages, <b>s</b>ite settings, <b>a</b>ctivity</span>
-    <kbd>/</kbd><span>Search on the current page</span><kbd>c</kbd><span>New product</span><kbd>w</kbd><span>Write a note on the team board</span><kbd>?</kbd><span>This list</span><kbd>Esc</kbd><span>Close a window</span></div>
+    <kbd>/</kbd><span>Search on the current page</span><kbd>c</kbd><span>New product</span><kbd>w</kbd><span>Write a note on the team board</span><kbd>Ctrl K</kbd><span>Search everything</span><kbd>?</kbd><span>This list</span><kbd>Esc</kbd><span>Close a window</span></div>
     <p class="muted" style="font-size:13px;margin:16px 0 0">Pilots may find one more hidden somewhere.</p></div></div>
 <canvas id="confetti" hidden></canvas>
+<div class="modal-bg" id="reply-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 style="margin:0">Reply by email</h3><p class="muted" style="font-size:14px;margin:4px 0 0">To <span id="rp-to"></span></p></div><button class="x" type="button" onclick="$('reply-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="quote" id="rp-orig" style="margin-top:14px"></div>
+    <div class="field"><label for="rp-subject">Subject</label><input id="rp-subject" maxlength="150"></div>
+    <div class="field"><label for="rp-text">Your reply</label><select id="rp-saved" style="margin-bottom:8px" aria-label="Saved answers"></select><textarea id="rp-text" rows="7" maxlength="10000" placeholder="Hi! Thanks for writing..."></textarea>
+        <div class="hint">"Hi name," and your name are added for you, and their message is quoted below your reply. The message is marked as handled.</div></div>
+    <p class="msg error" id="rp-note"></p>
+    <div class="actions"><button class="btn btn-ghost" type="button" onclick="$('reply-modal').classList.remove('show')">Cancel</button><button class="btn" type="button" id="rp-send">Send reply</button></div></div></div>
+<div class="palette" id="palette"><div class="palette-box" role="dialog" aria-label="Search everything"><input id="pal-input" placeholder="Search pages, products, users, licences, posts, messages…" autocomplete="off"><div class="palette-list" id="pal-list"></div><div class="palette-foot">↑ ↓ to move · Enter to open · Esc to close</div></div></div>
 <div class="modal-bg" id="modal"><div class="modal"><h3 id="m-title"></h3><p class="muted" id="m-text"></p><div class="actions"><button class="btn btn-ghost" id="m-no">Cancel</button><button class="btn" id="m-yes">Confirm</button></div></div></div>
 <div class="gate" id="gate" hidden>
     <form id="gate-form" autocomplete="off">
@@ -673,7 +747,8 @@ function askGate() {
     });
     return gateWait;
 }
-const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "" };
+const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "",
+    inbox: { autoreply: {}, replies: [] }, savedReplies: [], system: null };
 const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
 const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 function downloadCsv(name, rows) {
@@ -946,7 +1021,7 @@ document.addEventListener("keydown", e => {
     if (k === "c" && ["Owner", "Admin", "Support"].includes(state.role)) { e.preventDefault(); openProduct(); return; }
     if (k === "w") { e.preventDefault(); showTab("dashboard"); $("note-text").focus(); }
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") $("keys-modal").classList.remove("show"); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") ["keys-modal", "reply-modal", "palette"].forEach(id => $(id).classList.remove("show")); });
 // easter egg: type "butter" anywhere in the admin
 function flyby() {
     const plane = document.createElement("div");
@@ -966,13 +1041,14 @@ async function loadOverview() {
     for (const k of ["products", "posts", "orders", "subscribers"]) $("c-" + k).textContent = o[k] || "";
     $("c-messages").textContent = o.open_messages ?? o.messages ?? "";
     $("email-setup").style.display = state.emailReady ? "none" : "";
-    renderHello(); renderAchievements();
+    renderHello(); renderAchievements(); renderOnline(); renderChecklist();
 }
 
 // products
 async function loadProducts() {
     state.products = (await api("/api/products")).products || [];
     renderProducts();
+    renderChecklist();
     const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     $("o-product").innerHTML = '<option value="">None</option>' + opts;
     const licOpts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (id: ${esc(p.id)})</option>`).join("");
@@ -1044,10 +1120,23 @@ function renderVersions() {
     const list = state.versions || [], last = list.length - 1;
     $("p-versions").innerHTML = list.map((v, i) => `<div class="list-row"><div class="fields"><div class="fields two-col">` +
         `<input data-ver="version" data-i="${i}" maxlength="30" placeholder="0.5.0" value="${esc(v.version)}"><input data-ver="date" data-i="${i}" type="date" value="${esc(v.date)}"></div>` +
-        `<textarea data-ver="notes" data-i="${i}" rows="3" maxlength="3000" placeholder="What changed (one point per line)">${esc(v.notes)}</textarea></div>${rowTools("ver", i, last)}</div>`).join("")
+        `<textarea data-ver="notes" data-i="${i}" rows="3" maxlength="3000" placeholder="What changed (one point per line)">${esc(v.notes)}</textarea>` +
+        `<button type="button" class="linkish" style="font-weight:400;font-size:13px;justify-self:start" data-ver-news="${i}">Turn into a news post</button></div>${rowTools("ver", i, last)}</div>`).join("")
         || '<p class="muted" style="font-size:14px;margin:0">No versions yet.</p>';
 }
 listEditor("p-versions", "ver", "versions", () => { renderVersions(); refreshProductPreview(); });
+$("p-versions").addEventListener("click", async e => {
+    const b = e.target.closest("[data-ver-news]"); if (!b) return;
+    const v = state.versions[Number(b.dataset.verNews)] || {}, name = val("p-name") || "Our product";
+    const notes = String(v.notes || "").split("\n").map(x => x.trim().replace(/^[-*•]\s*/, "")).filter(Boolean);
+    const title = `${name} ${v.version || ""} is out`.replace(/\s+/g, " ");
+    const content = `${name} ${v.version || ""} is ready to download from the Downloads page.`.replace(/\s+/g, " ") + (notes.length ? "\n\nWhat's new:\n" + notes.map(n => "- " + n).join("\n") : "");
+    await closeDrawer();
+    if ($("drawer").classList.contains("open")) return; // kept editing
+    editPost(); $("n-title").value = title; $("n-content").value = content;
+    showTab("news"); $("n-title").focus();
+    toast("Draft ready. Check it, add a picture and publish.");
+});
 $("p-ver-add").onclick = () => {
     const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     (state.versions = state.versions || []).unshift({ version: val("p-version"), date: today, notes: "" });
@@ -1378,7 +1467,9 @@ async function loadUsers() {
 }
 function renderUsers() {
     const q = val("user-search").toLowerCase();
-    const list = state.users.filter(u => !q || (u.name + " " + u.email).toLowerCase().includes(q));
+    const f = $("user-filter").value;
+    const list = state.users.filter(u => (!q || (u.name + " " + u.email).toLowerCase().includes(q)) &&
+        (!f || (f === "staff" ? u.role !== "Customer" : f === "unconfirmed" ? u.email_verified != null && !Number(u.email_verified) : u.role === f)));
     const roles = ["Customer", "Support", "Admin", "Owner"];
     $("users-list").innerHTML = list.length ? list.map(u => {
         const role = state.role === "Owner"
@@ -1388,7 +1479,7 @@ function renderUsers() {
         return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button>${unconfirmed}</td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
     }).join("") : empty(4, "No users found.");
 }
-$("user-search").oninput = renderUsers;
+$("user-search").oninput = $("user-filter").onchange = renderUsers;
 $("users-list").onclick = e => { const b = e.target.closest("[data-user]"); if (b) openUser(Number(b.dataset.user)); };
 async function openUser(id) {
     try {
@@ -1456,13 +1547,17 @@ async function loadMessages() {
 function renderMessages() {
     const f = state.msgFilter;
     document.querySelectorAll("#msg-filter [data-filter]").forEach(b => b.className = "btn btn-sm" + (b.dataset.filter === f ? "" : " btn-ghost"));
-    const msgs = state.messages.filter(m => f === "all" || (f === "handled") === !!Number(m.handled));
+    const q = val("msg-search").toLowerCase();
+    const msgs = state.messages.filter(m => (f === "all" || (f === "handled") === !!Number(m.handled)) && (!q || [m.name, m.email, m.message, m.reply].join(" ").toLowerCase().includes(q)));
     $("messages-list").innerHTML = msgs.length ? msgs.map(m =>
         `<div class="panel" style="margin-bottom:16px${Number(m.handled) ? ";opacity:.7" : ""}"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span>${Number(m.handled) ? ' <span class="badge published">Handled</span>' : ""}</div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
-        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p><div class="actions" style="justify-content:flex-start"><a class="btn btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Reply</a>` +
+        `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p>` +
+        (m.reply ? `<div class="reply-box"><small>Replied by ${esc(m.replied_by || "staff")} · ${date(m.replied_at)}</small>${esc(m.reply)}</div>` : "") +
+        `<div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="button" onclick="openReply(${m.id})">${m.reply ? "Reply again" : "Reply"}</button><a class="btn btn-ghost btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Email</a><button class="btn btn-ghost btn-sm" type="button" onclick="messageToFaq(${m.id})">Add to FAQ</button>` +
         `<button class="btn btn-ghost btn-sm" onclick="markMessage(${m.id}, ${Number(m.handled) ? "false" : "true"})">${Number(m.handled) ? "Reopen" : "Mark handled"}</button><button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Delete</button></div></div></div>`
-    ).join("") : `<div class="empty">${f === "open" ? "No open messages. Everything is answered." : "No messages here."}</div>`;
+    ).join("") : `<div class="empty">${q ? "No messages match your search." : f === "open" ? "No open messages. Everything is answered." : "No messages here."}</div>`;
 }
+$("msg-search").oninput = () => renderMessages();
 $("msg-filter").onclick = e => { const b = e.target.closest("[data-filter]"); if (b) { state.msgFilter = b.dataset.filter; renderMessages(); } };
 async function markMessage(id, handled) {
     try { await post("/api/admin/messages/" + id, { handled }); toast(handled ? "Marked as handled" : "Reopened"); loadMessages(); loadOverview(); } catch (err) { toast(err.message, true); }
@@ -1480,13 +1575,15 @@ async function loadLicenses() {
 }
 function renderLicenses() {
     const q = val("lic-search").toLowerCase();
-    const list = (state.licenses || []).filter(l => !q || [l.license_key, l.email, l.note, l.product_id].join(" ").toLowerCase().includes(q));
+    const f = $("lic-filter").value;
+    const list = (state.licenses || []).filter(l => (!q || [l.license_key, l.email, l.note, l.product_id].join(" ").toLowerCase().includes(q)) &&
+        (!f || (f === "active" ? l.status === "active" : f === "revoked" ? l.status !== "active" : f === "unused" ? !Number(l.activations) : Number(l.activations) >= Number(l.max_activations))));
     $("lic-list").innerHTML = list.length ? list.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span>${l.note ? `<div class="muted" style="font-size:13px">${esc(l.note)}</div>` : ""}</td><td>${esc(l.product_id)}</td><td>${esc(l.email || "-")}</td>` +
         `<td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td class="muted">${date(l.created_at)}</td>` +
         `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(l.license_key)}">Copy</button><button class="btn btn-ghost btn-sm" data-lic="${l.id}">Manage</button></div></td></tr>`).join("")
-        : empty(7, (state.licenses || []).length ? "No licences match your search." : "No licences yet. Create some above or with the License Generator.");
+        : empty(7, (state.licenses || []).length ? "No licences match." : "No licences yet. Create some above or with the License Generator.");
 }
-$("lic-search").oninput = renderLicenses;
+$("lic-search").oninput = $("lic-filter").onchange = renderLicenses;
 $("lic-list").onclick = e => {
     const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.copy) navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Copied " + b.dataset.copy));
@@ -1582,6 +1679,7 @@ async function loadSite() {
 const ACCENTS = [["steel", "Steel", "#aab6c2"], ["amber", "Amber", "#f2a900"], ["sky", "Sky", "#5ab0ff"], ["mint", "Mint", "#4cc38a"], ["rose", "Rose", "#ff6b81"], ["violet", "Violet", "#a78bfa"]];
 function extras() { return state.site.extras || {}; }
 function renderLook() {
+    renderCountdown(); renderChecklist();
     const x = extras();
     $("lk-accents").innerHTML = ACCENTS.map(([k, name, c]) => `<button type="button" class="swatch${(x.accent || "steel") === k ? " on" : ""}" data-accent="${k}"><i style="background:${c}"></i>${name}</button>`).join("");
     $("lk-logo-img").src = x.logo ? safeImage(x.logo) : "/logo.svg";
@@ -1699,6 +1797,7 @@ $("links-form").onsubmit = async e => {
 };
 function renderConfig() {
     const c = state.site.config || {}, m = c.maintenance || {};
+    renderChecklist();
     $("mt-on").checked = !!m.enabled; $("mt-msg").value = m.message || "";
     $("maint-state").innerHTML = m.enabled ? '<span class="badge in_development">On: visitors see the back-soon page</span>' : "Off";
     $("cf-email").value = c.contact_email || ""; $("cf-footer").value = c.footer_text || "";
@@ -1877,16 +1976,197 @@ function auditLabel(a) {
         sign_out_user: "Signed a user out", send_reset_link: "Sent a password reset link", add_subscribers: "Added subscribers", message_handled: "Marked a message handled",
         message_reopened: "Reopened a message", verify_user: "Confirmed a user's email", email_verified: "Confirmed their email",
         verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device", user_note: "Changed a note on a user",
-        save_email_template: "Saved an email template", delete_email_template: "Deleted an email template" }[a] || a);
+        save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
+        reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
+
+// clock in the top bar: Zulu like on a flight plan, and the local time
+function tickClock() {
+    const d = new Date(), two = n => String(n).padStart(2, "0");
+    $("clock").innerHTML = `<b>${d.toISOString().slice(11, 16)}Z</b> · ${two(d.getHours())}:${two(d.getMinutes())} local`;
+}
+tickClock(); setInterval(tickClock, 10000);
+
+// who else is in the admin
+function renderOnline() {
+    const me = state.overview || {}, list = me.staff_online || [];
+    $("online").innerHTML = list.length ? "<span>On board now:</span>" + list.map(s => `<span class="chip"><i class="dot"></i>${esc(s.name)}${s.name === me.name ? " (you)" : ""} <small>${esc(s.role)}</small></span>`).join("") : "";
+}
+
+// launch countdown, from Look & media
+let cdTimer = null;
+function renderCountdown() {
+    const l = (state.site && state.site.extras && state.site.extras.launch) || {}, at = l.enabled && l.at ? Date.parse(l.at) : NaN;
+    clearInterval(cdTimer);
+    if (!(at > Date.now())) { $("cd-panel").hidden = true; return; }
+    $("cd-panel").hidden = false;
+    $("cd-when").textContent = new Date(at).toLocaleString([], { dateStyle: "full", timeStyle: "short" });
+    const tick = () => {
+        const s = Math.max(0, Math.floor((at - Date.now()) / 1000));
+        if (!s) { clearInterval(cdTimer); $("cd-panel").hidden = true; confetti(4000); toast("It's launch time! Wheels up 🚀"); return; }
+        const parts = [Math.floor(s / 86400), Math.floor(s % 86400 / 3600), Math.floor(s % 3600 / 60), s % 60];
+        $("cd-big").innerHTML = ["days", "hours", "minutes", "seconds"].map((u, i) => `<div><strong>${String(parts[i]).padStart(2, "0")}</strong><span>${u}</span></div>`).join("");
+    };
+    tick(); cdTimer = setInterval(tick, 1000);
+}
+
+// launch checklist: what is still missing before going live
+function renderChecklist() {
+    const o = state.overview || {}, prods = state.products || [], sys = state.system, cfg = (state.site && state.site.config) || {};
+    const backupAge = sys && sys.last_backup ? Date.now() - Date.parse(String(sys.last_backup).replace(" ", "T") + "Z") : Infinity;
+    const items = [
+        [prods.length > 0, "Add your product", "Name, price, pictures and a description.", "products"],
+        [prods.some(p => p.status === "published"), "Mark a product as Available", "Then its Buy and Download buttons show on the site.", "products"],
+        [prods.some(p => p.download_url || p.has_download), "Add the installer download link", "In the product, under Download.", "products"],
+        [prods.some(p => (p.changelog || []).length), "Write the first version notes", "Version history in the product shows as What's new on Downloads.", "products"],
+        [!!o.email_ready, "Set up email sending", "RESEND_API_KEY on the server, so confirmations, keys and replies are emailed.", null],
+        [(o.posts || 0) > 0, "Publish a news post", "Tell people what is coming.", "news"],
+        [(o.licenses || 0) > 0, "Create licence keys", "For your first customers or testers.", "licenses"],
+        [Object.keys(cfg.socials || {}).length > 0, "Add your social links", "Discord, YouTube and more in the footer.", "site"],
+        [!(cfg.maintenance || {}).enabled, "Maintenance mode is off", "Visitors can see the site.", "site"],
+        sys ? [!!sys.admin_password, "Turn on the admin page password", "An extra lock in front of this page.", "security"] : null,
+        sys ? [backupAge < 30 * 864e5, "Download a backup this month", "Activity log, Download backup.", "activity"] : null,
+    ].filter(Boolean);
+    const done = items.filter(i => i[0]).length;
+    $("check-count").textContent = done === items.length ? "All done. Ready for take-off ✈️" : `${done} of ${items.length} done`;
+    $("checklist").innerHTML = items.map(([ok, title, hint, tab]) => `<li class="${ok ? "done" : ""}"><span class="tick">✓</span><span style="flex:1"><strong>${esc(title)}</strong><small>${esc(hint)}</small></span>` +
+        (!ok && tab ? `<a class="more" href="#${tab}" data-go="${tab}">Open</a>` : "") + "</li>").join("");
+}
+
+// search everything (Ctrl+K)
+const TAB_NAMES = [...document.querySelectorAll(".side .tab")].map(b => [b.dataset.tab, b.firstChild.textContent.trim()]);
+let palItems = [], palIndex = 0;
+function openPalette() { $("palette").classList.add("show"); $("pal-input").value = ""; renderPalette(); $("pal-input").focus(); }
+function closePalette() { $("palette").classList.remove("show"); }
+function paletteEntries(q) {
+    const out = [], has = (...v) => v.join(" ").toLowerCase().includes(q);
+    for (const [tab, name] of TAB_NAMES) if (!q || has(name)) out.push({ label: name, kind: "Page", run: () => showTab(tab) });
+    const actions = [["New product", () => openProduct()], ["Write a news post", () => { editPost(); showTab("news"); $("n-title").focus(); }],
+        ["Create licence keys", () => { showTab("licenses"); $("l-count").focus(); }], ["Write a note on the team board", () => { showTab("dashboard"); $("note-text").focus(); }],
+        ["Keyboard shortcuts", showKeys], ["Open the website", () => window.open("/", "_blank")]];
+    for (const [label, run] of actions) if (!q || has(label)) out.push({ label, kind: "Action", run });
+    if (!q) return out;
+    for (const p of state.products) if (has(p.name, p.id)) out.push({ label: p.name, kind: "Product", run: () => openProduct(p.id) });
+    for (const u of state.users) if (has(u.name, u.email)) out.push({ label: `${u.name} · ${u.email}`, kind: "User", run: () => openUser(u.id) });
+    for (const l of state.licenses || []) if (has(l.license_key, l.email || "", l.note || "")) out.push({ label: l.license_key + (l.email ? " · " + l.email : ""), kind: "Licence", run: () => openLicense(l.id) });
+    for (const p of state.posts) if (has(p.title)) out.push({ label: p.title, kind: "News post", run: () => { editPost(p.id); showTab("news"); } });
+    for (const m of state.messages || []) if (has(m.name || "", m.email || "", m.message || "")) out.push({ label: `${m.name || "Anonymous"}: ${String(m.message || "").slice(0, 70)}`, kind: "Message",
+        run: () => { state.msgFilter = "all"; $("msg-search").value = m.email || m.name || ""; renderMessages(); showTab("messages"); } });
+    for (const o of state.orders) if (has("#" + o.id, o.customer_name || "", o.customer_email || "")) out.push({ label: `Order #${o.id} · ${o.customer_name || o.customer_email || ""}`, kind: "Order",
+        run: () => { $("order-search").value = o.customer_email || o.customer_name || ""; renderOrders(); showTab("orders"); } });
+    return out.slice(0, 50);
+}
+function renderPalette() { palItems = paletteEntries(val("pal-input").toLowerCase()); palIndex = 0; drawPalette(); }
+function drawPalette() {
+    $("pal-list").innerHTML = palItems.length ? palItems.map((it, i) => `<div class="palette-item${i === palIndex ? " on" : ""}" data-pal="${i}"><span>${esc(it.label)}</span><small>${esc(it.kind)}</small></div>`).join("")
+        : '<div class="palette-empty">Nothing found.</div>';
+    const on = $("pal-list").querySelector(".on"); if (on) on.scrollIntoView({ block: "nearest" });
+}
+function runPalette(i) { const it = palItems[i]; if (!it) return; closePalette(); it.run(); }
+$("pal-input").oninput = renderPalette;
+$("pal-input").onkeydown = e => {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && palItems.length) { e.preventDefault(); palIndex = (palIndex + (e.key === "ArrowDown" ? 1 : -1) + palItems.length) % palItems.length; drawPalette(); }
+    else if (e.key === "Enter") { e.preventDefault(); runPalette(palIndex); }
+};
+$("pal-list").onclick = e => { const el = e.target.closest("[data-pal]"); if (el) runPalette(Number(el.dataset.pal)); };
+$("palette").onclick = e => { if (e.target === $("palette")) closePalette(); };
+document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); } });
+
+// inbox: saved answers, automatic reply, replying by email
+async function loadInbox() { state.inbox = await api("/api/admin/inbox"); renderInbox(); }
+function renderInbox() {
+    const a = state.inbox.autoreply || {};
+    $("ib-auto").checked = !!a.enabled; $("ib-subject").value = a.subject || ""; $("ib-text").value = a.text || "";
+    $("ib-state").innerHTML = a.enabled ? '<span class="badge published">Automatic reply on</span>' : `${(state.inbox.replies || []).length} saved ${(state.inbox.replies || []).length === 1 ? "answer" : "answers"}`;
+    state.savedReplies = (state.inbox.replies || []).map(r => ({ ...r }));
+    renderSaved();
+}
+function renderSaved() {
+    const list = state.savedReplies, last = list.length - 1;
+    $("ib-replies").innerHTML = list.map((r, i) => `<div class="list-row"><div class="fields"><input data-sr="title" data-i="${i}" maxlength="80" placeholder="Name, e.g. Works with a yoke" value="${esc(r.title)}">` +
+        `<textarea data-sr="text" data-i="${i}" rows="3" maxlength="3000" placeholder="The answer">${esc(r.text)}</textarea></div>${rowTools("sr", i, last)}</div>`).join("")
+        || '<p class="muted" style="font-size:14px;margin:0">No saved answers yet.</p>';
+}
+listEditor("ib-replies", "sr", "savedReplies", renderSaved);
+$("ib-add").onclick = () => { state.savedReplies.push({ title: "", text: "" }); renderSaved(); $("ib-replies").querySelector(`[data-i="${state.savedReplies.length - 1}"][data-sr="title"]`).focus(); };
+$("inbox-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        state.inbox = await post("/api/admin/inbox", { autoreply: { enabled: $("ib-auto").checked, subject: val("ib-subject"), text: $("ib-text").value }, replies: state.savedReplies });
+        renderInbox(); toast("Inbox settings saved"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+let replyTo = null;
+function openReply(id) {
+    const m = state.messages.find(x => x.id === id); if (!m) return;
+    replyTo = m;
+    $("rp-to").textContent = `${m.name || "Anonymous"} <${m.email || "no email"}>`;
+    $("rp-orig").textContent = m.message || "";
+    $("rp-subject").value = "Re: your message to Rotaidem"; $("rp-text").value = "";
+    const saved = state.inbox.replies || [];
+    $("rp-saved").hidden = !saved.length;
+    $("rp-saved").innerHTML = '<option value="">Insert a saved answer…</option>' + saved.map((r, i) => `<option value="${i}">${esc(r.title)}</option>`).join("");
+    $("rp-note").textContent = !state.emailReady ? "Email sending is not set up yet, so replies cannot be sent from here. Use the Email button to answer from your own mail program." : "";
+    $("rp-send").disabled = !state.emailReady;
+    $("reply-modal").classList.add("show"); $("rp-text").focus();
+}
+$("rp-saved").onchange = () => {
+    const r = (state.inbox.replies || [])[Number($("rp-saved").value)], t = $("rp-text");
+    if (r) t.value = (t.value.trim() ? t.value.trimEnd() + "\n\n" : "") + r.text;
+    $("rp-saved").value = ""; t.focus();
+};
+$("rp-send").onclick = async () => {
+    const b = $("rp-send"); b.disabled = true; b.textContent = "Sending…";
+    try {
+        await post(`/api/admin/messages/${replyTo.id}/reply`, { subject: val("rp-subject"), text: $("rp-text").value });
+        $("reply-modal").classList.remove("show"); toast("Reply sent to " + replyTo.email); loadMessages(); loadOverview(); loadAudit();
+    } catch (err) { $("rp-note").textContent = err.message; }
+    finally { b.disabled = !state.emailReady; b.textContent = "Send reply"; }
+};
+function messageToFaq(id) {
+    const m = state.messages.find(x => x.id === id); if (!m || !state.faq) return;
+    state.faq.push({ q: String(m.message || "").trim().slice(0, 200), a: String(m.reply || "").trim().slice(0, 2000) });
+    showTab("pages"); renderFaq();
+    const el = $("faq-list").querySelector(`[data-i="${state.faq.length - 1}"][data-fq="q"]`);
+    el.scrollIntoView({ block: "center" }); el.focus();
+    toast("Added to the FAQ list. Tidy up the wording, then press Save FAQ.");
+}
+
+// blocklist and system (Owner and Admins)
+async function loadBlocklist() {
+    try { $("bl-text").value = ((await api("/api/admin/blocklist")).entries || []).join("\n"); $("bl-form").hidden = false; }
+    catch (err) { $("bl-form").hidden = true; }
+}
+$("bl-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const r = await post("/api/admin/blocklist", { entries: lines("bl-text") });
+        $("bl-text").value = r.entries.join("\n");
+        toast(r.entries.length ? `Blocklist saved: ${r.entries.length} blocked` : "Blocklist saved: nobody is blocked"); loadAudit(); loadSystem();
+    } catch (err) { toast(err.message, true); }
+};
+const TABLE_NAMES = { users: "Accounts", products: "Products", posts: "News posts", messages: "Messages", orders: "Orders", subscribers: "Subscribers", licenses: "Licences",
+    license_activations: "Activated computers", media: "Images", campaigns: "Emails sent", sessions: "Logged-in browsers", downloads: "Downloads", audit_logs: "Activity entries",
+    shared_profiles: "Shared profiles", liveries: "Liveries", meta: "Settings" };
+async function loadSystem() {
+    try { state.system = await api("/api/admin/system"); } catch (err) { state.system = null; $("sys-panel").hidden = true; return; }
+    const s = state.system, size = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " KB";
+    $("sys-panel").hidden = false;
+    $("sys-list").innerHTML = [["Website address", s.site_url], ["Database", s.database], ["Python", s.python], ["Data version", s.schema], ["Server time", s.server_time + " UTC"],
+        ["Email sending", s.email_ready ? "Set up, sent from " + s.mail_from : "Not set up (RESEND_API_KEY is missing)"], ["Admin page password", s.admin_password ? "On" : "Off"],
+        ["Images stored", `${s.tables.media || 0} (${size(s.media_bytes || 0)})`], ["Blocked addresses", String(s.blocked)], ["Last backup", s.last_backup ? date(s.last_backup) + " UTC" : "Never downloaded"]]
+        .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${k === "Last backup" ? v : esc(v)}</dd>`).join("");
+    $("sys-tables").innerHTML = Object.entries(s.tables).filter(([t]) => TABLE_NAMES[t]).map(([t, n]) => `<div><strong>${Number(n).toLocaleString()}</strong>${esc(TABLE_NAMES[t])}</div>`).join("");
+    renderChecklist();
+}
 
 (async () => {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

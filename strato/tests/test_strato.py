@@ -897,6 +897,66 @@ class StratoCGITests:
         left = self.ok(self.w.cgi("DELETE", f"/api/admin/notes/{first['id']}", token=t))["notes"]
         self.assertNotIn(first["id"], [n["id"] for n in left])
 
+    def test_reply_by_email_saved_answers_and_auto_reply(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Pilot Pete", "email": "pete@example.com", "message": "Does it work with a yoke?"}))
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["email"] == "pete@example.com")
+        self.resend.requests.clear()
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "  "}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "Yes!\n\nAny yoke that MSFS sees works."}, token=t))
+        sent = self.resend.requests[-1]["body"][0]
+        self.assertEqual((sent["to"], sent["subject"], sent["reply_to"]), (["pete@example.com"], "Re: your message to Rotaidem", "Eliaz@rotaidem.com"))
+        self.assertIn("Any yoke that MSFS sees works.", sent["html"])
+        self.assertIn("Does it work with a yoke?", sent["html"], "the original message is quoted")
+        msg = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if m["id"] == msg["id"])
+        self.assertEqual((int(msg["handled"]), msg["reply"]), (1, "Yes!\n\nAny yoke that MSFS sees works."))
+        self.assertTrue(msg["replied_by"] and msg["replied_at"])
+        self.assertEqual(self.w.cgi("POST", "/api/admin/messages/999999/reply", {"text": "x"}, token=t).status, 404)
+        # saved answers and the automatic reply
+        self.assertEqual(self.w.cgi("POST", "/api/admin/inbox", {"replies": [{"title": "No text"}]}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/inbox", {"autoreply": {"enabled": True, "subject": "Thanks!", "text": "We will answer soon."},
+                                                            "replies": [{"title": "Yoke", "text": "Any yoke works."}, {"title": "", "text": ""}]}, token=t))
+        self.assertEqual(r["replies"], [{"title": "Yoke", "text": "Any yoke works."}])
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Auto Al", "email": "al@example.com", "message": "Hello"}))
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Auto Al", "email": "al@example.com", "message": "Hello again"}))
+        auto = [x["body"][0] for x in self.resend.requests]
+        self.assertEqual([(a["to"], a["subject"]) for a in auto], [(["al@example.com"], "Thanks!")], "one automatic reply a day per address")
+        self.assertIn("We will answer soon.", auto[0]["html"])
+        self.ok(self.w.cgi("POST", "/api/admin/inbox", {"autoreply": {"enabled": False}, "replies": []}, token=t))
+        customer, _ = self.customer("inboxpeek")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/inbox", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/messages/{msg['id']}/reply", {"text": "x"}, token=customer).status, 403)
+
+    def test_blocklist_and_system_info(self):
+        t = self.owner_token
+        self.assertEqual(self.w.cgi("POST", "/api/admin/blocklist", {"entries": ["not valid!"]}, token=t).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/admin/blocklist", {"entries": ["@spam.test", "Bad@Example.com", "192.0.2.", "", "@spam.test"]}, token=t))
+        self.assertEqual(r["entries"], ["@spam.test", "bad@example.com", "192.0.2."])
+        try:
+            r = self.w.cgi("POST", "/api/signup", {"name": "Spammer", "email": "x@spam.test", "password": "spam-pass-1"})
+            self.assertEqual(r.status, 403)
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Bad", "email": "bad@example.com", "message": "Buy now"}))
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Ip", "email": "fine@example.com", "message": "From a blocked network"}, remote_addr="192.0.2.9"))
+            self.ok(self.w.cgi("POST", "/api/subscribe", {"email": "list@spam.test"}))
+            messages = [m["message"] for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"]]
+            self.assertNotIn("Buy now", messages)
+            self.assertNotIn("From a blocked network", messages)
+            self.assertNotIn("list@spam.test", [s["email"] for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"]])
+            self.ok(self.w.cgi("POST", "/api/contact", {"name": "Ok", "email": "fine@example.com", "message": "Allowed"}, remote_addr="198.51.100.9"))
+            system = self.ok(self.w.cgi("GET", "/api/admin/system", token=t))
+            self.assertEqual(system["blocked"], 3)
+            self.assertGreaterEqual(system["tables"]["users"], 1)
+            self.assertIn(system["database"], ("SQLite", "MySQL / MariaDB"))
+            self.assertNotIn("re_test", json.dumps(system), "no secrets in the system info")
+            customer, _ = self.customer("blockpeek")
+            for path in ("/api/admin/blocklist", "/api/admin/system"):
+                self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/blocklist", {"entries": []}, token=t))
+        overview = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))
+        self.assertIn(overview["name"], [s["name"] for s in overview["staff_online"]])
+
     def test_user_notes_and_scheduled_posts(self):
         t = self.owner_token
         _, email = self.customer("noted")

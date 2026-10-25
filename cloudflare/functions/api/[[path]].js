@@ -35,6 +35,12 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/notes") return adminNotes(request, env);
     if (method === "POST" && path === "/api/admin/notes") return adminAddNote(request, env);
     if (method === "DELETE" && /^\/api\/admin\/notes\/\w+$/.test(path)) return adminDeleteNote(request, env, path.split("/").pop());
+    if (method === "GET" && path === "/api/admin/inbox") return adminInbox(request, env);
+    if (method === "POST" && path === "/api/admin/inbox") return adminSaveInbox(request, env);
+    if (method === "POST" && /^\/api\/admin\/messages\/\d+\/reply$/.test(path)) return adminReplyMessage(request, env, Number(path.split("/")[4]));
+    if (method === "GET" && path === "/api/admin/blocklist") return adminBlocklist(request, env);
+    if (method === "POST" && path === "/api/admin/blocklist") return adminSaveBlocklist(request, env);
+    if (method === "GET" && path === "/api/admin/system") return adminSystem(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
@@ -126,7 +132,8 @@ async function ensure(env) {
   // One row per logged-in browser; only a hash of the token is stored.
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, user_id INTEGER, ip_address TEXT, created_at TEXT)").run();
-  for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"]]) {
+  for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"],
+                             ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
@@ -172,6 +179,7 @@ async function signup(request, env) {
   const password = String(body.password || "");
   if (!name || !email || password.length < 6) return json({ error: "Name, email and a 6 character password are required" }, 400);
   if (!EMAIL_RE.test(email)) return json({ error: "Enter a valid email address" }, 400);
+  if (await isBlocked(request, env, email)) return json({ error: "Sign-ups from this address are not possible. Contact us if you think this is a mistake." }, 403);
   if (!resendKey(env)) {
     // Without email there is no way to confirm an address: the account works at once, as before.
     try {
@@ -528,7 +536,11 @@ async function deleteNewsletter(request, env, id) {
 
 async function contact(request, env) {
   const body = await request.json();
-  await env.DB.prepare("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)").bind(body.name || "", body.email || "", body.message || "").run();
+  if (!String(body.message || "").trim()) return json({ error: "Message is required" }, 400);
+  const name = String(body.name || "").slice(0, 200), email = String(body.email || "").trim().slice(0, 200);
+  if (await isBlocked(request, env, email)) return json({ ok: true }); // dropped quietly: a spammer learns nothing
+  await env.DB.prepare("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)").bind(name, email, String(body.message).slice(0, 5000)).run();
+  await sendAutoReply(env, name, email);
   return json({ ok: true });
 }
 
@@ -549,7 +561,7 @@ async function adminOverview(request, env) {
   const dlCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM downloads").first();
   const mailCount = await env.DB.prepare("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns").first();
   const mediaCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM media").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, staff_online: await staffOnline(env), revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -615,6 +627,161 @@ async function adminDeleteMessage(request, env, id) {
   await env.DB.prepare("DELETE FROM messages WHERE id = ?").bind(Number(id)).run();
   return json({ ok: true });
 }
+
+// Staff seen in the last 15 minutes (a session's last_seen moves at most every 5).
+async function staffOnline(env) {
+  const rows = await env.DB.prepare("SELECT u.id, u.name, u.role, MAX(s.last_seen) AS last_seen FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.role IN ('Owner', 'Admin', 'Support') AND s.last_seen >= ? GROUP BY u.id, u.name, u.role ORDER BY last_seen DESC").bind(utcStamp(15 * 60)).all();
+  return (rows.results || []).map(r => ({ name: r.name, role: r.role, last_seen: String(r.last_seen || "") }));
+}
+
+// ---------- inbox: replies by email, saved answers, automatic reply (same as server.py) ----------
+const AUTO_REPLY_DEFAULT = { enabled: false, subject: "We got your message", text: "Thanks for writing to Rotaidem. We read every message and usually answer within a day or two.\n\nIf it is about a licence, reply to this email with your licence key and we will help you." };
+const SAVED_REPLIES_MAX = 30;
+async function inboxSettings(env) {
+  const saved = (await getSetting(env, "inbox.settings", {})) || {};
+  const a = saved.autoreply && typeof saved.autoreply === "object" ? saved.autoreply : {};
+  return { autoreply: { enabled: !!a.enabled, subject: String(a.subject || "").trim().slice(0, 150) || AUTO_REPLY_DEFAULT.subject, text: String(a.text || "").trim().slice(0, 3000) || AUTO_REPLY_DEFAULT.text },
+    replies: (Array.isArray(saved.replies) ? saved.replies : []).filter(r => r && typeof r === "object").slice(0, SAVED_REPLIES_MAX) };
+}
+function cleanInbox(b) {
+  const a = b.autoreply || {};
+  const subject = String(a.subject || "").trim(), text = String(a.text || "").trim();
+  if (subject.length > 150 || text.length > 3000) throw new Error("The automatic reply is too long (subject 150, text 3000 characters)");
+  if (a.enabled && !text) throw new Error("Write the automatic reply before switching it on");
+  const replies = [];
+  for (const r of Array.isArray(b.replies) ? b.replies : []) {
+    const title = String((r || {}).title || "").trim(), bodyText = String((r || {}).text || "").trim();
+    if (!title && !bodyText) continue;
+    if (!title || !bodyText) throw new Error("Each saved answer needs a name and a text");
+    if (title.length > 80 || bodyText.length > 3000) throw new Error(`The saved answer "${title.slice(0, 40)}" is too long (name 80, text 3000 characters)`);
+    replies.push({ title, text: bodyText });
+  }
+  if (replies.length > SAVED_REPLIES_MAX) throw new Error(`At most ${SAVED_REPLIES_MAX} saved answers`);
+  return { autoreply: { enabled: !!a.enabled, subject, text }, replies };
+}
+function replyEmailHtml(name, text, signer, original = "") {
+  const br = v => escHtml(v).replace(/\n/g, "<br>");
+  const paragraphs = text.trim().split(/\n\s*\n/).filter(p => p.trim()).map(p => `<p style="margin:0 0 14px">${br(p)}</p>`).join("");
+  const quoted = original ? `<tr><td style="padding:0 28px 24px"><div style="border-left:3px solid #e4e4e7;padding:4px 0 4px 14px;color:#6d6f75;font-size:14px;line-height:1.5"><div style="font-size:12px;margin-bottom:6px">You wrote:</div>${br(original.slice(0, 2000))}</div></td></tr>` : "";
+  return `<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6"><p style="margin:0 0 14px">Hi ${escHtml(name || "there")},</p>${paragraphs}
+<p style="margin:0 0 4px">${escHtml(signer)}<br><span style="color:#6d6f75">Rotaidem</span></p></td></tr>${quoted}
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">You can answer this email directly.</td></tr>
+</table></td></tr></table></body></html>`;
+}
+// One email, with replies going to the contact address. Returns an error text, or "".
+async function sendOne(env, to, subject, html) {
+  try {
+    const res = await fetch("https://api.resend.com/emails/batch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify([{ from: mailFrom(env), to: [to], subject, html, reply_to: (await siteConfig(env)).contact_email }]),
+    });
+    if (!res.ok) return explainResendError(env, res.status, await res.text());
+  } catch (err) { return String(err); }
+  return "";
+}
+// The automatic "we got your message" email, at most once a day per address.
+async function sendAutoReply(env, name, email) {
+  const a = (await inboxSettings(env)).autoreply;
+  if (!a.enabled || !resendKey(env) || !EMAIL_RE.test(email || "")) return;
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE LOWER(email) = ? AND created_at >= ?").bind(email.toLowerCase(), utcStamp(86400)).first();
+  if (recent && (recent.n || 0) > 1) return;
+  await sendOne(env, email, a.subject, replyEmailHtml(name, a.text, "The Rotaidem team"));
+}
+async function adminInbox(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  return json({ ...(await inboxSettings(env)), email_ready: !!resendKey(env) });
+}
+async function adminSaveInbox(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  let cleaned;
+  try { cleaned = cleanInbox(await request.json().catch(() => ({}))); } catch (err) { return json({ error: err.message }, 400); }
+  await setSetting(env, "inbox.settings", cleaned);
+  await audit(env, user, "save_inbox", "automatic reply " + (cleaned.autoreply.enabled ? "on" : "off"));
+  return json({ ok: true, ...(await inboxSettings(env)) });
+}
+async function adminReplyMessage(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const msg = await env.DB.prepare("SELECT * FROM messages WHERE id = ?").bind(id).first();
+  if (!msg) return json({ error: "Message not found" }, 404);
+  const body = await request.json().catch(() => ({}));
+  const text = String(body.text || "").trim();
+  if (!text) return json({ error: "Write your reply first" }, 400);
+  if (text.length > 10000) return json({ error: "The reply is too long" }, 400);
+  if (!EMAIL_RE.test(String(msg.email || ""))) return json({ error: "This message has no valid email address to reply to" }, 400);
+  if (!resendKey(env)) return json({ error: "Email is not set up (RESEND_API_KEY is missing). Use the Email button to answer from your own mail program." }, 400);
+  const subject = String(body.subject || "").trim().slice(0, 150) || "Re: your message to Rotaidem";
+  const error = await sendOne(env, msg.email, subject, replyEmailHtml(msg.name, text, user.name, String(msg.message || "")));
+  if (error) return json({ error }, 502);
+  await env.DB.prepare("UPDATE messages SET handled = 1, reply = ?, replied_at = ?, replied_by = ? WHERE id = ?").bind(text, utcStamp(), user.name, id).run();
+  await audit(env, user, "reply_message", msg.email);
+  return json({ ok: true });
+}
+
+// ---------- blocklist and system (same as server.py) ----------
+const BLOCK_IP = /^[0-9a-f.:]{3,45}$/;
+async function blocklist(env) {
+  return ((await getSetting(env, "security.blocklist", [])) || []).map(x => String(x).trim().toLowerCase()).filter(Boolean);
+}
+// True when the email, its domain (@example.com) or the visitor's IP address (or prefix like 203.0.113.) is on the blocklist.
+async function isBlocked(request, env, email = "") {
+  email = String(email || "").trim().toLowerCase();
+  const ip = (request.headers.get("CF-Connecting-IP") || "").toLowerCase();
+  for (const entry of await blocklist(env)) {
+    if (entry.startsWith("@")) { if (email.endsWith(entry)) return true; }
+    else if (entry.includes("@")) { if (email === entry) return true; }
+    else if (ip && (ip === entry || (".:".includes(entry.slice(-1)) && ip.startsWith(entry)))) return true;
+  }
+  return false;
+}
+function cleanBlocklist(entries) {
+  const out = [];
+  for (const raw of Array.isArray(entries) ? entries : []) {
+    const entry = String(raw || "").trim().toLowerCase();
+    if (!entry || out.includes(entry)) continue;
+    const ok = (entry.startsWith("@") && entry.includes(".") && EMAIL_RE.test("x" + entry)) || EMAIL_RE.test(entry) || BLOCK_IP.test(entry);
+    if (!ok || entry.length > 200) throw new Error(`"${entry.slice(0, 60)}" is not an email, @domain or IP address`);
+    out.push(entry);
+  }
+  if (out.length > 500) throw new Error("At most 500 blocked entries");
+  return out;
+}
+async function adminBlocklist(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can see the blocklist" }, 403);
+  return json({ entries: await blocklist(env) });
+}
+async function adminSaveBlocklist(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change the blocklist" }, 403);
+  let entries;
+  try { entries = cleanBlocklist((await request.json().catch(() => ({}))).entries); } catch (err) { return json({ error: err.message }, 400); }
+  await setSetting(env, "security.blocklist", entries);
+  await audit(env, user, "save_blocklist", `${entries.length} entries`);
+  return json({ ok: true, entries });
+}
+// What the site runs on, for the Owner and Admins. No secrets.
+async function adminSystem(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can see this" }, 403);
+  const tables = {};
+  for (const t of ["users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers", "licenses", "license_activations", "media", "campaigns", "sessions", "downloads"]) {
+    try { tables[t] = ((await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first()) || {}).n || 0; } catch (err) { tables[t] = 0; }
+  }
+  const mediaBytes = ((await env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS n FROM media").first()) || {}).n || 0;
+  const lastBackup = await env.DB.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'download_backup'").first();
+  return json({ database: "Cloudflare D1", schema: "d1", python: "Cloudflare Workers", server_time: utcStamp(), site_url: (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, ""),
+    email_ready: !!resendKey(env), mail_from: mailFrom(env), admin_password: !!(await gateHash(env)), tables, media_bytes: Number(mediaBytes),
+    last_backup: String((lastBackup || {}).at || ""), blocked: (await blocklist(env)).length });
+}
+
 
 async function adminAudit(request, env) {
   const user = await currentUser(request, env);
@@ -1410,6 +1577,7 @@ async function subscribe(request, env) {
   const body = await request.json();
   const email = String(body.email || "").trim().toLowerCase();
   if (!EMAIL_RE.test(email) || email.length > 200) return json({ error: "Please enter a valid email address" }, 400);
+  if (await isBlocked(request, env, email)) return json({ ok: true });
   await env.DB.prepare("INSERT INTO subscribers (email, source) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET unsubscribed = 0").bind(email, String(body.source || "").slice(0, 100)).run();
   return json({ ok: true });
 }

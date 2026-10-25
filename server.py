@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import re
 import secrets
 import sqlite3
@@ -145,7 +146,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-25-downloads"
+SCHEMA_VERSION = "2026-10-26-replies"
 
 
 def ensure_schema():
@@ -193,7 +194,8 @@ def ensure_schema():
                           # accounts from before email confirmation count as confirmed; new sign-ups are stored as 0
                           ("users", "email_verified INTEGER DEFAULT 1"),
                           ("products", f"download_gate {word} DEFAULT 'public'"), ("products", "changelog TEXT"),
-                          ("users", "admin_note TEXT"), ("posts", f"publish_at {word}")):
+                          ("users", "admin_note TEXT"), ("posts", f"publish_at {word}"),
+                          ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -404,6 +406,8 @@ def signup():
         return err("Name, email and a 6 character password are required", 400)
     if not EMAIL_RE.match(email):
         return err("Enter a valid email address", 400)
+    if is_blocked(email):
+        return err("Sign-ups from this address are not possible. Contact us if you think this is a mistake.", 403)
     if db().first("SELECT id FROM users WHERE LOWER(email) = ?", email):
         return err("Email already exists", 400)
     if not RESEND_API_KEY:
@@ -1126,8 +1130,12 @@ def contact():
     b = body()
     if not str(b.get("message", "")).strip():
         return err("Message is required", 400)
+    email = str(b.get("email", "")).strip()[:200]
+    if is_blocked(email):
+        return jsonify({"ok": True})  # dropped quietly: a spammer learns nothing
     db().run("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)",
-             str(b.get("name", ""))[:200], str(b.get("email", ""))[:200], str(b.get("message", ""))[:5000])
+             str(b.get("name", ""))[:200], email, str(b.get("message", ""))[:5000])
+    send_auto_reply(str(b.get("name", ""))[:200], email)
     return jsonify({"ok": True})
 
 
@@ -1137,6 +1145,8 @@ def subscribe():
     email = str(b.get("email", "")).strip().lower()
     if not EMAIL_RE.match(email) or len(email) > 200:
         return err("Please enter a valid email address", 400)
+    if is_blocked(email):
+        return jsonify({"ok": True})
     existing = db().first("SELECT id FROM subscribers WHERE email = ?", email)
     if existing:
         db().run("UPDATE subscribers SET unsubscribed = 0 WHERE id = ?", existing["id"])
@@ -1185,6 +1195,7 @@ def admin_overview():
                     "downloads": n("SELECT COUNT(*) AS n FROM downloads"),
                     "emails_sent": n("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns"),
                     "media": n("SELECT COUNT(*) AS n FROM media"),
+                    "staff_online": staff_online(),
                     "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
@@ -1279,6 +1290,216 @@ def admin_delete_message(msg_id):
         return err("Admin only", 403)
     db().run("DELETE FROM messages WHERE id = ?", msg_id)
     return jsonify({"ok": True})
+
+
+def staff_online():
+    """Staff seen in the last 15 minutes (a session's last_seen moves at most every 5)."""
+    rows = db().all("SELECT u.id, u.name, u.role, MAX(s.last_seen) AS last_seen FROM sessions s JOIN users u ON u.id = s.user_id "
+                    "WHERE u.role IN ('Owner', 'Admin', 'Support') AND s.last_seen >= ? GROUP BY u.id, u.name, u.role ORDER BY last_seen DESC",
+                    utc_stamp(15 * 60))
+    return [{"name": r["name"], "role": r["role"], "last_seen": str(r["last_seen"] or "")} for r in rows]
+
+
+# ---------- inbox: replies by email, saved answers, automatic reply ----------
+
+AUTO_REPLY_DEFAULT = {"enabled": False, "subject": "We got your message",
+                      "text": "Thanks for writing to Rotaidem. We read every message and usually answer within a day or two.\n\nIf it is about a licence, "
+                              "reply to this email with your licence key and we will help you."}
+SAVED_REPLIES_MAX = 30
+
+
+def inbox_settings():
+    saved = get_setting("inbox.settings", {}) or {}
+    a = saved.get("autoreply") if isinstance(saved.get("autoreply"), dict) else {}
+    return {"autoreply": {"enabled": bool(a.get("enabled")),
+                          "subject": str(a.get("subject") or "").strip()[:150] or AUTO_REPLY_DEFAULT["subject"],
+                          "text": str(a.get("text") or "").strip()[:3000] or AUTO_REPLY_DEFAULT["text"]},
+            "replies": [r for r in (saved.get("replies") or []) if isinstance(r, dict)][:SAVED_REPLIES_MAX]}
+
+
+def clean_inbox(b):
+    """Inbox settings from the admin, checked; raises ValueError with a message for the admin."""
+    a = b.get("autoreply") or {}
+    subject, text = str(a.get("subject") or "").strip(), str(a.get("text") or "").strip()
+    if len(subject) > 150 or len(text) > 3000:
+        raise ValueError("The automatic reply is too long (subject 150, text 3000 characters)")
+    if a.get("enabled") and not text:
+        raise ValueError("Write the automatic reply before switching it on")
+    replies = []
+    for r in b.get("replies") or []:
+        title, body_text = str((r or {}).get("title") or "").strip(), str((r or {}).get("text") or "").strip()
+        if not title and not body_text:
+            continue
+        if not title or not body_text:
+            raise ValueError("Each saved answer needs a name and a text")
+        if len(title) > 80 or len(body_text) > 3000:
+            raise ValueError(f'The saved answer "{title[:40]}" is too long (name 80, text 3000 characters)')
+        replies.append({"title": title, "text": body_text})
+    if len(replies) > SAVED_REPLIES_MAX:
+        raise ValueError(f"At most {SAVED_REPLIES_MAX} saved answers")
+    return {"autoreply": {"enabled": bool(a.get("enabled")), "subject": subject, "text": text}, "replies": replies}
+
+
+def reply_email_html(name, text, signer, original=""):
+    paragraphs = "".join(f'<p style="margin:0 0 14px">{escape(p).replace(chr(10), "<br>")}</p>' for p in re.split(r"\n\s*\n", text.strip()) if p.strip())
+    quoted = (f'<tr><td style="padding:0 28px 24px"><div style="border-left:3px solid #e4e4e7;padding:4px 0 4px 14px;color:#6d6f75;font-size:14px;line-height:1.5">'
+              f'<div style="font-size:12px;margin-bottom:6px">You wrote:</div>{escape(original[:2000]).replace(chr(10), "<br>")}</div></td></tr>') if original else ""
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#3a3c40">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff">
+<tr><td style="background:#111315;padding:20px 28px;color:#ffffff;font-weight:bold;letter-spacing:3px;font-size:15px">ROTAIDEM</td></tr>
+<tr><td style="padding:28px 28px 6px;font-size:16px;line-height:1.6"><p style="margin:0 0 14px">Hi {escape(name or "there")},</p>{paragraphs}
+<p style="margin:0 0 4px">{escape(signer)}<br><span style="color:#6d6f75">Rotaidem</span></p></td></tr>{quoted}
+<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">You can answer this email directly.</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def send_one(to, subject, html):
+    """One email, with replies going to the contact address. Returns an error text, or ''."""
+    _sent, error = send_batch([{"from": MAIL_FROM, "to": [to], "subject": subject, "html": html, "reply_to": site_config()["contact_email"]}])
+    return error
+
+
+def send_auto_reply(name, email):
+    """The automatic "we got your message" email, at most once a day per address."""
+    a = inbox_settings()["autoreply"]
+    if not (a["enabled"] and RESEND_API_KEY and EMAIL_RE.match(email or "")):
+        return
+    recent = db().first("SELECT COUNT(*) AS n FROM messages WHERE LOWER(email) = ? AND created_at >= ?", email.lower(), utc_stamp(86400))
+    if recent and (recent["n"] or 0) > 1:
+        return
+    error = send_one(email, a["subject"], reply_email_html(name, a["text"], "The Rotaidem team"))
+    if error:
+        app.logger.error("Automatic reply failed: %s", error)
+
+
+@app.get("/api/admin/inbox")
+def admin_inbox():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({**inbox_settings(), "email_ready": bool(RESEND_API_KEY)})
+
+
+@app.post("/api/admin/inbox")
+def admin_save_inbox():
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    try:
+        cleaned = clean_inbox(body())
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("inbox.settings", cleaned)
+    audit(user, "save_inbox", "automatic reply " + ("on" if cleaned["autoreply"]["enabled"] else "off"))
+    return jsonify({"ok": True, **inbox_settings()})
+
+
+@app.post("/api/admin/messages/<int:msg_id>/reply")
+def admin_reply_message(msg_id):
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    msg = db().first("SELECT * FROM messages WHERE id = ?", msg_id)
+    if not msg:
+        return err("Message not found", 404)
+    b = body()
+    text = str(b.get("text") or "").strip()
+    if not text:
+        return err("Write your reply first", 400)
+    if len(text) > 10000:
+        return err("The reply is too long", 400)
+    if not EMAIL_RE.match(str(msg["email"] or "")):
+        return err("This message has no valid email address to reply to", 400)
+    if not RESEND_API_KEY:
+        return err("Email is not set up (RESEND_API_KEY is missing). Use the Email button to answer from your own mail program.", 400)
+    subject = str(b.get("subject") or "").strip()[:150] or "Re: your message to Rotaidem"
+    error = send_one(msg["email"], subject, reply_email_html(msg["name"], text, user["name"], str(msg["message"] or "")))
+    if error:
+        return err(error, 502)
+    db().run("UPDATE messages SET handled = 1, reply = ?, replied_at = ?, replied_by = ? WHERE id = ?", text, utc_stamp(), user["name"], msg_id)
+    audit(user, "reply_message", msg["email"])
+    return jsonify({"ok": True})
+
+
+# ---------- blocklist and system ----------
+
+BLOCK_IP = re.compile(r"^[0-9a-f.:]{3,45}$")
+
+
+def blocklist():
+    return [str(x).strip().lower() for x in (get_setting("security.blocklist", []) or []) if str(x).strip()]
+
+
+def is_blocked(email=""):
+    """True when the email, its domain (@example.com) or the visitor's IP address (or prefix like 203.0.113.) is on the blocklist."""
+    email, ip = str(email or "").strip().lower(), (request.remote_addr or "").lower()
+    for entry in blocklist():
+        if entry.startswith("@"):
+            if email.endswith(entry):
+                return True
+        elif "@" in entry:
+            if email == entry:
+                return True
+        elif ip and (ip == entry or (entry[-1] in ".:" and ip.startswith(entry))):
+            return True
+    return False
+
+
+def clean_blocklist(entries):
+    out = []
+    for raw in entries if isinstance(entries, list) else []:
+        entry = str(raw or "").strip().lower()
+        if not entry or entry in out:
+            continue
+        ok = (entry.startswith("@") and "." in entry and EMAIL_RE.match("x" + entry)) or EMAIL_RE.match(entry) or BLOCK_IP.match(entry)
+        if not ok or len(entry) > 200:
+            raise ValueError(f'"{entry[:60]}" is not an email, @domain or IP address')
+        out.append(entry)
+    if len(out) > 500:
+        raise ValueError("At most 500 blocked entries")
+    return out
+
+
+@app.get("/api/admin/blocklist")
+def admin_blocklist():
+    if not manager_user():
+        return err("Only the Owner or an Admin can see the blocklist", 403)
+    return jsonify({"entries": blocklist()})
+
+
+@app.post("/api/admin/blocklist")
+def admin_save_blocklist():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change the blocklist", 403)
+    try:
+        entries = clean_blocklist(body().get("entries"))
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("security.blocklist", entries)
+    audit(user, "save_blocklist", f"{len(entries)} entries")
+    return jsonify({"ok": True, "entries": entries})
+
+
+@app.get("/api/admin/system")
+def admin_system():
+    """What the site runs on, for the Owner and Admins. No secrets."""
+    if not manager_user():
+        return err("Only the Owner or an Admin can see this", 403)
+    n = lambda sql: (db().first(sql) or {}).get("n") or 0  # noqa: E731
+    tables = {}
+    for table in BACKUP_TABLES + ("sessions", "downloads"):
+        try:
+            tables[table] = int(n(f"SELECT COUNT(*) AS n FROM {table}"))
+        except Exception:  # noqa: BLE001 - a table that does not exist yet
+            tables[table] = 0
+    last_backup = db().first("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'download_backup'")
+    return jsonify({"database": "MySQL / MariaDB" if USE_MYSQL else ("PostgreSQL" if USE_PG else "SQLite"),
+                    "schema": SCHEMA_VERSION, "python": platform.python_version(), "server_time": utc_stamp(),
+                    "site_url": site_url(), "email_ready": bool(RESEND_API_KEY), "mail_from": MAIL_FROM,
+                    "admin_password": bool(gate_hash()), "tables": tables,
+                    "media_bytes": int(n("SELECT COALESCE(SUM(size), 0) AS n FROM media")),
+                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist())})
 
 
 @app.get("/api/admin/audit")
