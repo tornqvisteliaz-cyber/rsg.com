@@ -870,6 +870,33 @@ class StratoCGITests:
         self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["url"], product["download_url"])
         self.assertEqual(self.w.cgi("POST", "/api/download/no-such-product").status, 404)
 
+    def test_dashboard_recap_and_team_board(self):
+        t = self.owner_token
+        before = self.ok(self.w.cgi("GET", "/api/admin/insights", token=t))
+        self.customer("recapped")
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Recap App", "id": "recap-app", "download_url": "https://rotaidem.test/files/R.exe", "status": "published"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/download/recap-app", remote_addr="198.51.100.31"))
+        after = self.ok(self.w.cgi("GET", "/api/admin/insights", token=t))
+        self.assertEqual(after["recap"]["accounts"]["this_week"], before["recap"]["accounts"]["this_week"] + 1)
+        self.assertEqual(after["recap"]["downloads"]["this_week"], before["recap"]["downloads"]["this_week"] + 1)
+        self.assertEqual(sum(after["heatmap"].values()), sum(before["heatmap"].values()) + 2)
+        overview = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))
+        self.assertGreaterEqual(overview["downloads"], 1)
+        self.assertIn("emails_sent", overview)
+        self.assertIn("media", overview)
+        # sticky notes on the team board
+        self.assertEqual(self.w.cgi("POST", "/api/admin/notes", {"text": "   "}, token=t).status, 400)
+        first = self.ok(self.w.cgi("POST", "/api/admin/notes", {"text": "Ship 1.3 on Friday", "colour": "blue"}, token=t))["notes"][0]
+        self.ok(self.w.cgi("POST", "/api/admin/notes", {"text": "Order coffee", "colour": "purple"}, token=t))
+        notes = self.ok(self.w.cgi("GET", "/api/admin/notes", token=t))["notes"]
+        self.assertEqual([(n["text"], n["colour"]) for n in notes[:2]], [("Order coffee", "yellow"), ("Ship 1.3 on Friday", "blue")])
+        self.assertTrue(first["author"])
+        customer, _ = self.customer("peeker")
+        for method, path in (("GET", "/api/admin/notes"), ("POST", "/api/admin/notes"), ("DELETE", f"/api/admin/notes/{first['id']}"), ("GET", "/api/admin/insights")):
+            self.assertEqual(self.w.cgi(method, path, {"text": "hi"}, token=customer).status, 403, path)
+        left = self.ok(self.w.cgi("DELETE", f"/api/admin/notes/{first['id']}", token=t))["notes"]
+        self.assertNotIn(first["id"], [n["id"] for n in left])
+
     def test_user_notes_and_scheduled_posts(self):
         t = self.owner_token
         _, email = self.customer("noted")

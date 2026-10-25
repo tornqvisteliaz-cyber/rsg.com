@@ -31,6 +31,10 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/account/sessions") return accountSessions(request, env);
     if (method === "POST" && /^\/api\/download\/[\w.-]+$/.test(path)) return download(request, env, decodeURIComponent(path.split("/").pop()));
     if (method === "GET" && path === "/api/admin/downloads") return adminDownloads(request, env);
+    if (method === "GET" && path === "/api/admin/insights") return adminInsights(request, env);
+    if (method === "GET" && path === "/api/admin/notes") return adminNotes(request, env);
+    if (method === "POST" && path === "/api/admin/notes") return adminAddNote(request, env);
+    if (method === "DELETE" && /^\/api\/admin\/notes\/\w+$/.test(path)) return adminDeleteNote(request, env, path.split("/").pop());
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
@@ -364,6 +368,52 @@ async function download(request, env, pid) {
   }
   return json({ url });
 }
+// ---------- the fun part of the dashboard ----------
+// This week against last week, and a year of activity per day for the heatmap.
+async function adminInsights(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const week = utcStamp(7 * 86400).slice(0, 10), twoWeeks = utcStamp(14 * 86400).slice(0, 10), year = utcStamp(366 * 86400);
+  const sources = { downloads: "downloads", accounts: "users", orders: "orders", messages: "messages", subscribers: "subscribers" };
+  const recap = {}, heatmap = {};
+  for (const [name, table] of Object.entries(sources)) {
+    const days = {};
+    for (const r of (await env.DB.prepare(`SELECT created_at FROM ${table} WHERE created_at >= ?`).bind(year).all()).results || []) {
+      const d = String(r.created_at || "").slice(0, 10); if (d) days[d] = (days[d] || 0) + 1;
+    }
+    const sum = test => Object.entries(days).filter(([d]) => test(d)).reduce((a, [, v]) => a + v, 0);
+    recap[name] = { this_week: sum(d => d >= week), last_week: sum(d => d >= twoWeeks && d < week) };
+    if (["downloads", "accounts", "orders"].includes(name)) for (const [d, v] of Object.entries(days)) heatmap[d] = (heatmap[d] || 0) + v;
+  }
+  return json({ recap, heatmap });
+}
+const STAFF_NOTE_COLOURS = ["yellow", "blue", "green", "pink"];
+async function adminNotes(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  return json({ notes: (await getSetting(env, "staff.notes", [])) || [] });
+}
+// A sticky note on the dashboard, shared by all staff.
+async function adminAddNote(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const text = String(body.text || "").trim().slice(0, 500);
+  if (!text) return json({ error: "Write something on the note first" }, 400);
+  const notes = (await getSetting(env, "staff.notes", [])) || [];
+  if (notes.length >= 40) return json({ error: "The board is full. Remove an old note first." }, 400);
+  notes.unshift({ id: crypto.randomUUID().replace(/-/g, "").slice(0, 12), text, author: user.name, created_at: utcStamp(), colour: STAFF_NOTE_COLOURS.includes(body.colour) ? body.colour : "yellow" });
+  await setSetting(env, "staff.notes", notes);
+  return json({ ok: true, notes });
+}
+async function adminDeleteNote(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const notes = ((await getSetting(env, "staff.notes", [])) || []).filter(n => n.id !== id);
+  await setSetting(env, "staff.notes", notes);
+  return json({ ok: true, notes });
+}
+
 async function adminDownloads(request, env) {
   const user = await currentUser(request, env);
   if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
@@ -496,7 +546,10 @@ async function adminOverview(request, env) {
   const revenue = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM orders WHERE payment_status = 'Paid'").first();
   const subCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0").first();
   const licCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  const dlCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM downloads").first();
+  const mailCount = await env.DB.prepare("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns").first();
+  const mediaCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM media").first();
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
 }
 
 async function adminCustomers(request, env) {

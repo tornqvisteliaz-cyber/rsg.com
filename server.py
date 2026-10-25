@@ -914,6 +914,78 @@ def download(pid):
     return jsonify({"url": url})
 
 
+# ---------- the fun part of the dashboard ----------
+
+def day_counts(sql, since):
+    """{"YYYY-MM-DD": n} from a query that returns one created_at per row."""
+    out = {}
+    for r in db().all(sql, since):
+        day = str(r["created_at"] or "")[:10]
+        if day:
+            out[day] = out.get(day, 0) + 1
+    return out
+
+
+@app.get("/api/admin/insights")
+def admin_insights():
+    """This week against last week, and a year of activity per day for the heatmap."""
+    if not staff_user():
+        return err("Admin only", 403)
+    week, two_weeks, year = utc_stamp(7 * 86400), utc_stamp(14 * 86400), utc_stamp(366 * 86400)
+    sources = {"downloads": "SELECT created_at FROM downloads WHERE created_at >= ?",
+               "accounts": "SELECT created_at FROM users WHERE created_at >= ?",
+               "orders": "SELECT created_at FROM orders WHERE created_at >= ?",
+               "messages": "SELECT created_at FROM messages WHERE created_at >= ?",
+               "subscribers": "SELECT created_at FROM subscribers WHERE created_at >= ?"}
+    recap, heatmap = {}, {}
+    for name, sql in sources.items():
+        days = day_counts(sql, year)
+        recap[name] = {"this_week": sum(v for d, v in days.items() if d >= week[:10]),
+                       "last_week": sum(v for d, v in days.items() if two_weeks[:10] <= d < week[:10])}
+        if name in ("downloads", "accounts", "orders"):
+            for d, v in days.items():
+                heatmap[d] = heatmap.get(d, 0) + v
+    return jsonify({"recap": recap, "heatmap": heatmap})
+
+
+STAFF_NOTE_COLOURS = ("yellow", "blue", "green", "pink")
+
+
+@app.get("/api/admin/notes")
+def admin_notes():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"notes": get_setting("staff.notes", []) or []})
+
+
+@app.post("/api/admin/notes")
+def admin_add_note():
+    """A sticky note on the dashboard, shared by all staff."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    b = body()
+    text = str(b.get("text") or "").strip()[:500]
+    if not text:
+        return err("Write something on the note first", 400)
+    notes = get_setting("staff.notes", []) or []
+    if len(notes) >= 40:
+        return err("The board is full. Remove an old note first.", 400)
+    notes.insert(0, {"id": uuid.uuid4().hex[:12], "text": text, "author": user["name"], "created_at": utc_stamp(),
+                     "colour": b.get("colour") if b.get("colour") in STAFF_NOTE_COLOURS else "yellow"})
+    set_setting("staff.notes", notes)
+    return jsonify({"ok": True, "notes": notes})
+
+
+@app.delete("/api/admin/notes/<note_id>")
+def admin_delete_note(note_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    notes = [n for n in (get_setting("staff.notes", []) or []) if n.get("id") != note_id]
+    set_setting("staff.notes", notes)
+    return jsonify({"ok": True, "notes": notes})
+
+
 @app.get("/api/admin/downloads")
 def admin_downloads():
     """Downloads per product (all time, 7 and 30 days) and per day for the last 30 days."""
@@ -1110,6 +1182,9 @@ def admin_overview():
                     "open_messages": n("SELECT COUNT(*) AS n FROM messages WHERE handled IS NULL OR handled = 0"),
                     "subscribers": n("SELECT COUNT(*) AS n FROM subscribers WHERE unsubscribed = 0"),
                     "licenses": n("SELECT COUNT(*) AS n FROM licenses WHERE status = 'active'"),
+                    "downloads": n("SELECT COUNT(*) AS n FROM downloads"),
+                    "emails_sent": n("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns"),
+                    "media": n("SELECT COUNT(*) AS n FROM media"),
                     "email_ready": bool(RESEND_API_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
