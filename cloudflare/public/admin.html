@@ -2098,7 +2098,7 @@ function auditLabel(a) {
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
         reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist",
         update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals",
-        save_hub: "Changed RotaHub", claim_license: "Added a key to their account" }[a] || a);
+        save_hub: "Changed RotaHub", license_claimed: "Added a key to their account" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;

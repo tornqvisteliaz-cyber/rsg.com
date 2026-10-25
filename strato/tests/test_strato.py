@@ -1015,7 +1015,7 @@ class StratoCGITests:
 
     def test_rotahub_add_a_key(self):
         t = self.owner_token
-        alice, alice_email = self.customer("hubalice")
+        alice, _ = self.customer("hubalice")
         bob, _ = self.customer("hubbob")
         keys = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 3, "send_email": False}, token=t))["keys"]
         self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}).status, 401)
@@ -1026,10 +1026,10 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=alice))  # again: fine
         r = self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=bob)
         self.assertEqual(r.status, 409, "a key on another account stays there")
-        # a key sold to the email of another existing account is theirs too
+        # a key sold to another address (a gift) can be added by whoever has it
         lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[1])
-        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"email": alice_email}, token=t))
-        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[1]}, token=bob).status, 409)
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"email": "gift-giver@example.com"}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[1]}, token=bob))["license"]["license_key"], keys[1])
         lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[2])
         self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"status": "revoked"}, token=t))
         self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[2]}, token=bob).status, 403)

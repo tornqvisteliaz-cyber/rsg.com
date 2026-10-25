@@ -297,7 +297,9 @@ def current_user():
 def device_label(user_agent):
     """"Chrome on Windows" and so on, from the browser's User-Agent."""
     ua = str(user_agent or "")
-    browser = next((name for key, name in (("RotaHub", "RotaHub"), ("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
+    if ua.startswith("RotaHub"):  # the desktop app logs in like a browser and says so in its User-Agent
+        return "RotaHub on Windows"
+    browser = next((name for key, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"),
                                            ("Safari/", "Safari")) if key in ua), "A browser")
     system = next((name for key, name in (("Windows", "Windows"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
                                           ("Mac OS X", "Mac"), ("CrOS", "Chromebook"), ("Linux", "Linux")) if key in ua), "")
@@ -2229,7 +2231,8 @@ def account_licenses():
 
 @app.post("/api/account/licenses/claim")
 def account_claim_license():
-    """RotaHub's "Add a key": puts a key the account does not list yet (e.g. bought with another address) on this account."""
+    """Adds a key the customer has (bought with another address, a gift) to their account, so it
+    shows here and in RotaHub on every PC. A key already on another account stays there."""
     user = current_user()
     if not user:
         return err("Unauthorized", 401)
@@ -2237,23 +2240,22 @@ def account_claim_license():
         return err("Too many wrong licence keys from this address. Try again in an hour.", 429)
     key = normalize_key(body().get("key"))
     if not key:
-        return license_failed(*err("That is not a valid licence key.", 400))
+        return license_failed(jsonify({"error": "That is not a valid licence key."}), 400)
     lic = db().first("SELECT * FROM licenses WHERE license_key = ?", key)
     if not lic:
-        return license_failed(*err("This licence key does not exist.", 404))
+        return license_failed(jsonify({"error": "This licence key does not exist."}), 404)
     if lic["status"] != "active":
-        return err("This licence key has been revoked. Contact us if you think this is a mistake.", 403)
-    email = (user["email"] or "").lower()
-    if lic["customer_id"] and lic["customer_id"] != user["id"]:
-        return err("This key is on another account. Contact us if you think this is a mistake.", 409)
-    owner_email = (lic["email"] or "").lower()
-    if not lic["customer_id"] and owner_email and owner_email != email and db().first("SELECT id FROM users WHERE LOWER(email) = ?", owner_email):
-        return err("This key is on another account. Contact us if you think this is a mistake.", 409)
-    db().run("UPDATE licenses SET customer_id = ?, email = ? WHERE id = ?", user["id"], email, lic["id"])
-    audit(user, "claim_license", key)
+        return err("This licence key has been revoked.", 403)
+    if lic["customer_id"] and int(lic["customer_id"]) != int(user["id"]):
+        return err("This key is on another Rotaidem account. It can still be activated on this PC.", 409)
+    if not lic["customer_id"]:
+        db().run("UPDATE licenses SET customer_id = ? WHERE id = ?", user["id"], lic["id"])
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)",
+                 user["id"], key, request.remote_addr or "", utc_stamp())
     row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
-                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE id = ?", lic["id"])
-    return jsonify({"ok": True, "license": row})
+                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
+                     "FROM licenses WHERE id = ?", lic["id"])
+    return jsonify({"license": row})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
