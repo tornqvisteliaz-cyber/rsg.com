@@ -990,6 +990,70 @@ def admin_delete_note(note_id):
     return jsonify({"ok": True, "notes": notes})
 
 
+# ---------- short link clicks, goals, crew leaderboard ----------
+
+@app.post("/api/link-hit/<slug>")
+def link_hit(slug):
+    """Counted by 404.html just before it forwards a short link. Only existing short links count."""
+    slug = str(slug or "").strip().lower()
+    if slug not in (get_setting("site.links", {}) or {}):
+        return jsonify({"ok": True})
+    hits = get_setting("links.hits", {}) or {}
+    row = hits.get(slug) if isinstance(hits.get(slug), dict) else {}
+    hits[slug] = {"total": int(row.get("total") or 0) + 1, "last": utc_stamp()}
+    set_setting("links.hits", hits)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/admin/link-hits")
+def admin_link_hits():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"hits": get_setting("links.hits", {}) or {}})
+
+
+GOAL_KEYS = ("revenue", "customers", "downloads", "subscribers")
+
+
+@app.get("/api/admin/goals")
+def admin_goals():
+    if not staff_user():
+        return err("Admin only", 403)
+    saved = get_setting("dashboard.goals", {}) or {}
+    return jsonify({"goals": {k: saved.get(k) or 0 for k in GOAL_KEYS}})
+
+
+@app.post("/api/admin/goals")
+def admin_save_goals():
+    """Targets shown as progress bars on the dashboard; 0 hides one."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can set goals", 403)
+    b, goals = body(), {}
+    for k in GOAL_KEYS:
+        try:
+            v = float(b.get(k) or 0)
+        except (TypeError, ValueError):
+            return err(f"The {k} goal must be a number", 400)
+        if v < 0 or v > 1e9:
+            return err(f"The {k} goal is out of range", 400)
+        goals[k] = round(v, 2) if k == "revenue" else int(v)
+    set_setting("dashboard.goals", goals)
+    audit(user, "save_goals", ", ".join(f"{k} {v}" for k, v in goals.items() if v))
+    return jsonify({"ok": True, "goals": goals})
+
+
+@app.get("/api/admin/leaderboard")
+def admin_leaderboard():
+    """What each staff member did this month, from the activity log."""
+    if not staff_user():
+        return err("Admin only", 403)
+    since = datetime.now(timezone.utc).strftime("%Y-%m-01 00:00:00")
+    rows = db().all("SELECT u.name AS name, a.action AS action, COUNT(*) AS n FROM audit_logs a JOIN users u ON u.id = a.admin_id "
+                    "WHERE a.created_at >= ? AND u.role IN ('Owner', 'Admin', 'Support') GROUP BY u.name, a.action", since)
+    return jsonify({"since": since[:10], "rows": [{"name": r["name"], "action": r["action"], "n": int(r["n"] or 0)} for r in rows]})
+
+
 @app.get("/api/admin/downloads")
 def admin_downloads():
     """Downloads per product (all time, 7 and 30 days) and per day for the last 30 days."""
@@ -1263,6 +1327,45 @@ def admin_save_order():
                 audit(user, "email_licenses", email)
             return jsonify({"ok": True, "license_key": key, **email_reply(email, error)})
     return jsonify({"ok": True, "license_key": key})
+
+
+ORDER_PAYMENTS = ("Paid", "Pending", "Refunded")
+
+
+@app.post("/api/admin/orders/<int:order_id>")
+def admin_update_order(order_id):
+    """Change an order's payment (e.g. mark it refunded) or amount. Owner and Admins only."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change orders", 403)
+    order = db().first("SELECT * FROM orders WHERE id = ?", order_id)
+    if not order:
+        return err("Order not found", 404)
+    b = body()
+    payment = b.get("payment_status", order["payment_status"])
+    if payment not in ORDER_PAYMENTS:
+        return err("Payment must be Paid, Pending or Refunded", 400)
+    try:
+        amount = round(float(b.get("amount", order["amount"]) or 0), 2)
+    except (TypeError, ValueError):
+        return err("The amount must be a number", 400)
+    if amount < 0:
+        return err("The amount cannot be negative", 400)
+    db().run("UPDATE orders SET payment_status = ?, amount = ? WHERE id = ?", payment, amount, order_id)
+    audit(user, "update_order", f"#{order_id} {payment} {amount:.2f}")
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/orders/<int:order_id>")
+def admin_delete_order(order_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete orders", 403)
+    if not db().first("SELECT id FROM orders WHERE id = ?", order_id):
+        return err("Order not found", 404)
+    db().run("DELETE FROM orders WHERE id = ?", order_id)
+    audit(user, "delete_order", f"#{order_id}")
+    return jsonify({"ok": True})
 
 
 @app.get("/api/admin/messages")
@@ -1716,6 +1819,29 @@ def admin_update_license(license_id):
              str(b.get("note", lic["note"]) or "")[:200], product_id, license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
     return jsonify({"ok": True})
+
+
+@app.post("/api/admin/licenses/bulk")
+def admin_bulk_licenses():
+    """Revoke or restore many licences at once."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change licences", 403)
+    b = body()
+    status = {"revoke": "revoked", "activate": "active"}.get(b.get("action"))
+    if not status:
+        return err("Choose revoke or activate", 400)
+    ids = sorted({int(i) for i in (b.get("ids") or []) if str(i).isdigit()})[:1000]
+    if not ids:
+        return err("Select at least one licence", 400)
+    changed = 0
+    for license_id in ids:
+        lic = db().first("SELECT id, status FROM licenses WHERE id = ?", license_id)
+        if lic and lic["status"] != status:
+            db().run("UPDATE licenses SET status = ? WHERE id = ?", status, license_id)
+            changed += 1
+    audit(user, "bulk_licenses", f"{changed} {status}")
+    return jsonify({"ok": True, "changed": changed})
 
 
 @app.post("/api/admin/licenses/<int:license_id>/email")
@@ -2536,6 +2662,9 @@ def admin_user_detail(user_id):
     u["licenses"] = db().all("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                              "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user_id, (u["email"] or "").lower())
     u["sessions"] = session_rows(user_id)
+    u["messages"] = db().all("SELECT id, message, created_at, handled, reply, replied_at, replied_by FROM messages WHERE LOWER(email) = ? ORDER BY id DESC LIMIT 50",
+                             (u["email"] or "").lower())
+    u["downloads"] = db().all("SELECT product_id, created_at FROM downloads WHERE user_id = ? ORDER BY id DESC LIMIT 50", user_id)
     return jsonify({"user": u})
 
 

@@ -41,6 +41,14 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/blocklist") return adminBlocklist(request, env);
     if (method === "POST" && path === "/api/admin/blocklist") return adminSaveBlocklist(request, env);
     if (method === "GET" && path === "/api/admin/system") return adminSystem(request, env);
+    if (method === "POST" && /^\/api\/admin\/orders\/\d+$/.test(path)) return adminUpdateOrder(request, env, Number(path.split("/").pop()));
+    if (method === "DELETE" && /^\/api\/admin\/orders\/\d+$/.test(path)) return adminDeleteOrder(request, env, Number(path.split("/").pop()));
+    if (method === "POST" && path === "/api/admin/licenses/bulk") return adminBulkLicenses(request, env);
+    if (method === "POST" && /^\/api\/link-hit\/[\w-]+$/.test(path)) return linkHit(env, path.split("/").pop());
+    if (method === "GET" && path === "/api/admin/link-hits") return adminLinkHits(request, env);
+    if (method === "GET" && path === "/api/admin/goals") return adminGoals(request, env);
+    if (method === "POST" && path === "/api/admin/goals") return adminSaveGoals(request, env);
+    if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
@@ -725,6 +733,95 @@ async function adminReplyMessage(request, env, id) {
   return json({ ok: true });
 }
 
+// ---------- orders, bulk licences, short link clicks, goals, leaderboard (same as server.py) ----------
+const ORDER_PAYMENTS = ["Paid", "Pending", "Refunded"];
+async function adminUpdateOrder(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change orders" }, 403);
+  const order = await env.DB.prepare("SELECT * FROM orders WHERE id = ?").bind(id).first();
+  if (!order) return json({ error: "Order not found" }, 404);
+  const body = await request.json().catch(() => ({}));
+  const payment = body.payment_status ?? order.payment_status;
+  if (!ORDER_PAYMENTS.includes(payment)) return json({ error: "Payment must be Paid, Pending or Refunded" }, 400);
+  const amount = Math.round(Number(body.amount ?? order.amount ?? 0) * 100) / 100;
+  if (!Number.isFinite(amount)) return json({ error: "The amount must be a number" }, 400);
+  if (amount < 0) return json({ error: "The amount cannot be negative" }, 400);
+  await env.DB.prepare("UPDATE orders SET payment_status = ?, amount = ? WHERE id = ?").bind(payment, amount, id).run();
+  await audit(env, user, "update_order", `#${id} ${payment} ${amount.toFixed(2)}`);
+  return json({ ok: true });
+}
+async function adminDeleteOrder(request, env, id) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can delete orders" }, 403);
+  if (!(await env.DB.prepare("SELECT id FROM orders WHERE id = ?").bind(id).first())) return json({ error: "Order not found" }, 404);
+  await env.DB.prepare("DELETE FROM orders WHERE id = ?").bind(id).run();
+  await audit(env, user, "delete_order", `#${id}`);
+  return json({ ok: true });
+}
+// Revoke or restore many licences at once.
+async function adminBulkLicenses(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change licences" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const status = { revoke: "revoked", activate: "active" }[body.action];
+  if (!status) return json({ error: "Choose revoke or activate" }, 400);
+  const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).filter(i => /^\d+$/.test(String(i))).map(Number))].sort((a, b) => a - b).slice(0, 1000);
+  if (!ids.length) return json({ error: "Select at least one licence" }, 400);
+  let changed = 0;
+  for (const id of ids) {
+    const lic = await env.DB.prepare("SELECT id, status FROM licenses WHERE id = ?").bind(id).first();
+    if (lic && lic.status !== status) { await env.DB.prepare("UPDATE licenses SET status = ? WHERE id = ?").bind(status, id).run(); changed++; }
+  }
+  await audit(env, user, "bulk_licenses", `${changed} ${status}`);
+  return json({ ok: true, changed });
+}
+// Counted by 404.html just before it forwards a short link. Only existing short links count.
+async function linkHit(env, slug) {
+  slug = String(slug || "").trim().toLowerCase();
+  const links = (await getSetting(env, "site.links", {})) || {};
+  if (!Object.prototype.hasOwnProperty.call(links, slug)) return json({ ok: true });
+  const hits = (await getSetting(env, "links.hits", {})) || {};
+  const row = hits[slug] && typeof hits[slug] === "object" ? hits[slug] : {};
+  hits[slug] = { total: Number(row.total || 0) + 1, last: utcStamp() };
+  await setSetting(env, "links.hits", hits);
+  return json({ ok: true });
+}
+async function adminLinkHits(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  return json({ hits: (await getSetting(env, "links.hits", {})) || {} });
+}
+const GOAL_KEYS = ["revenue", "customers", "downloads", "subscribers"];
+async function adminGoals(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const saved = (await getSetting(env, "dashboard.goals", {})) || {};
+  return json({ goals: Object.fromEntries(GOAL_KEYS.map(k => [k, saved[k] || 0])) });
+}
+// Targets shown as progress bars on the dashboard; 0 hides one.
+async function adminSaveGoals(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can set goals" }, 403);
+  const body = await request.json().catch(() => ({})), goals = {};
+  for (const k of GOAL_KEYS) {
+    const v = Number(body[k] || 0);
+    if (!Number.isFinite(v)) return json({ error: `The ${k} goal must be a number` }, 400);
+    if (v < 0 || v > 1e9) return json({ error: `The ${k} goal is out of range` }, 400);
+    goals[k] = k === "revenue" ? Math.round(v * 100) / 100 : Math.trunc(v);
+  }
+  await setSetting(env, "dashboard.goals", goals);
+  await audit(env, user, "save_goals", Object.entries(goals).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", "));
+  return json({ ok: true, goals });
+}
+// What each staff member did this month, from the activity log.
+async function adminLeaderboard(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const since = new Date().toISOString().slice(0, 8) + "01 00:00:00";
+  const rows = (await env.DB.prepare("SELECT u.name AS name, a.action AS action, COUNT(*) AS n FROM audit_logs a JOIN users u ON u.id = a.admin_id WHERE a.created_at >= ? AND u.role IN ('Owner', 'Admin', 'Support') GROUP BY u.name, a.action").bind(since).all()).results || [];
+  return json({ since: since.slice(0, 10), rows: rows.map(r => ({ name: r.name, action: r.action, n: Number(r.n || 0) })) });
+}
+
 // ---------- blocklist and system (same as server.py) ----------
 const BLOCK_IP = /^[0-9a-f.:]{3,45}$/;
 async function blocklist(env) {
@@ -1010,6 +1107,8 @@ async function adminUserDetail(request, env, id) {
   u.licenses = (await env.DB.prepare("SELECT licenses.*, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC")
     .bind(id, String(u.email || "").toLowerCase()).all()).results || [];
   u.sessions = await sessionRows(env, id);
+  u.messages = (await env.DB.prepare("SELECT id, message, created_at, handled, reply, replied_at, replied_by FROM messages WHERE LOWER(email) = ? ORDER BY id DESC LIMIT 50").bind(String(u.email || "").toLowerCase()).all()).results || [];
+  u.downloads = (await env.DB.prepare("SELECT product_id, created_at FROM downloads WHERE user_id = ? ORDER BY id DESC LIMIT 50").bind(id).all()).results || [];
   return json({ user: u });
 }
 

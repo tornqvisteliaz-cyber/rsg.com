@@ -12,7 +12,9 @@
     // Short links from the admin (rotaidem.com/discord and so on) land here first: forward them.
     (function () {
         var links = (window.RSG_SITE || {}).links || {}, slug = location.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
-        if (Object.prototype.hasOwnProperty.call(links, slug)) location.replace(links[slug]);
+        if (!Object.prototype.hasOwnProperty.call(links, slug)) return;
+        try { fetch("/api/link-hit/" + encodeURIComponent(slug), { method: "POST", keepalive: true }); } catch (e) {} // click count for the admin
+        location.replace(links[slug]);
     })();
     </script>
 </head>

@@ -957,6 +957,62 @@ class StratoCGITests:
         overview = self.ok(self.w.cgi("GET", "/api/admin/overview", token=t))
         self.assertIn(overview["name"], [s["name"] for s in overview["staff_online"]])
 
+    def test_orders_bulk_licences_and_timeline(self):
+        t = self.owner_token
+        customer, email = self.customer("timeline")
+        user = next(u for u in self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))["customers"] if u["email"] == email)
+        self.ok(self.w.cgi("POST", "/api/admin/orders", {"customer_id": user["id"], "product_id": "heavypro", "amount": "29.99"}, token=t))
+        order = next(o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o["customer_id"] == user["id"])
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"payment_status": "Lost"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"amount": -1}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", f"/api/admin/orders/{order['id']}", {"payment_status": "Refunded"}, token=t))
+        order = next(o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o["id"] == order["id"])
+        self.assertEqual((order["payment_status"], float(order["amount"])), ("Refunded", 29.99))
+        # the timeline: messages from their address and their downloads come with the user
+        self.ok(self.w.cgi("POST", "/api/contact", {"name": "Timeline", "email": email, "message": "Where is my key?"}))
+        detail = self.ok(self.w.cgi("GET", f"/api/admin/users/{user['id']}", token=t))["user"]
+        self.assertEqual([m["message"] for m in detail["messages"]], ["Where is my key?"])
+        self.assertEqual(detail["downloads"], [])
+        # bulk licence changes
+        keys = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 3, "send_email": False}, token=t))["keys"]
+        ids = [l["id"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] in keys]
+        self.assertEqual(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "explode"}, token=t).status, 400)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids[:2], "action": "revoke"}, token=t))["changed"], 2)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "revoke"}, token=t))["changed"], 1)
+        statuses = {l["id"]: l["status"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"]}
+        self.assertEqual({statuses[i] for i in ids}, {"revoked"})
+        self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"ids": ids, "action": "activate"}, token=t))
+        for method, path in (("POST", f"/api/admin/orders/{order['id']}"), ("DELETE", f"/api/admin/orders/{order['id']}"), ("POST", "/api/admin/licenses/bulk")):
+            self.assertEqual(self.w.cgi(method, path, {"ids": ids, "action": "revoke"}, token=customer).status, 403, path)
+        self.ok(self.w.cgi("DELETE", f"/api/admin/orders/{order['id']}", token=t))
+        self.assertNotIn(order["id"], [o["id"] for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"]])
+        self.assertEqual(self.w.cgi("DELETE", f"/api/admin/orders/{order['id']}", token=t).status, 404)
+
+    def test_link_clicks_goals_and_leaderboard(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {"discord": "https://discord.gg/rotaidem"}}, token=t))
+        try:
+            before = (self.ok(self.w.cgi("GET", "/api/admin/link-hits", token=t))["hits"].get("discord") or {}).get("total", 0)
+            self.ok(self.w.cgi("POST", "/api/link-hit/discord"))
+            self.ok(self.w.cgi("POST", "/api/link-hit/discord"))
+            self.ok(self.w.cgi("POST", "/api/link-hit/not-a-link"))
+            hits = self.ok(self.w.cgi("GET", "/api/admin/link-hits", token=t))["hits"]
+            self.assertEqual(hits["discord"]["total"], before + 2)
+            self.assertNotIn("not-a-link", hits)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/settings", {"links": {}}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"revenue": "lots"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"customers": -5}, token=t).status, 400)
+        goals = self.ok(self.w.cgi("POST", "/api/admin/goals", {"revenue": "1000.5", "customers": "50", "downloads": 0}, token=t))["goals"]
+        self.assertEqual(goals, {"revenue": 1000.5, "customers": 50, "downloads": 0, "subscribers": 0})
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/goals", token=t))["goals"], goals)
+        board = self.ok(self.w.cgi("GET", "/api/admin/leaderboard", token=t))
+        self.assertTrue(any(r["action"] == "save_goals" and r["n"] >= 1 for r in board["rows"]))
+        customer, _ = self.customer("goalpeek")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/goals", {"revenue": 1}, token=customer).status, 403)
+        for path in ("/api/admin/goals", "/api/admin/leaderboard", "/api/admin/link-hits"):
+            self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403, path)
+
     def test_user_notes_and_scheduled_posts(self):
         t = self.owner_token
         _, email = self.customer("noted")

@@ -107,6 +107,31 @@
         .tbl-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 18px; }
         .tbl-counts div { background: var(--bg-2); border: 1px solid var(--line); padding: 8px 10px; font-size: 12px; color: var(--muted); }
         .tbl-counts strong { display: block; color: var(--ink); font-size: 17px; font-weight: 600; }
+        .bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 20px; background: rgba(var(--accent-rgb), .12); border-bottom: 1px solid var(--line); font-size: 14px; color: var(--ink); }
+        .bulk[hidden] { display: none; }
+        .bulk strong { margin-right: 6px; font-weight: 600; }
+        .table td.pick, .table th.pick { width: 38px; padding-right: 0; }
+        .goal { padding: 14px 20px; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .goal:last-child { border-bottom: 0; }
+        .goal .row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: var(--muted); }
+        .goal .row strong { color: var(--ink); font-weight: 600; }
+        .goal .meter { height: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+        .goal .meter i { display: block; height: 100%; background: var(--accent); }
+        .goal.won .meter i { background: var(--ok); }
+        .goal-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; padding: 16px 20px 4px; border-bottom: 1px solid var(--line); }
+        .goal-form[hidden] { display: none; }
+        .crew { list-style: none; margin: 0; padding: 6px 20px 12px; }
+        .crew li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .crew li:last-child { border-bottom: 0; }
+        .crew .medal { width: 26px; font-size: 20px; text-align: center; flex: none; color: var(--muted); }
+        .crew .pts { margin-left: auto; color: var(--ink); font-weight: 600; white-space: nowrap; }
+        .crew small { display: block; color: var(--muted); font-size: 13px; }
+        .timeline { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+        .timeline li { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .timeline li:last-child { border-bottom: 0; }
+        .timeline small { color: var(--muted); font-size: 13px; white-space: nowrap; }
+        .timeline .what { overflow: hidden; text-overflow: ellipsis; }
+        .link-row .hits { font-size: 13px; color: var(--muted); white-space: nowrap; min-width: 70px; text-align: right; }
         details.panel > summary { cursor: pointer; list-style: none; }
         details.panel > summary::-webkit-details-marker { display: none; }
         @media (max-width: 700px) { .sys { grid-template-columns: 1fr; gap: 2px; } .sys dd { margin-bottom: 10px; } .clock { display: none; } }
@@ -145,7 +170,7 @@
         .list-row .tools button { background: none; border: 1px solid var(--line); color: var(--text); width: 32px; height: 28px; cursor: pointer; font: inherit; }
         .list-row .tools button:hover:not([disabled]) { background: var(--navy-hover); color: var(--ink); }
         .list-row .tools button[disabled] { opacity: .3; cursor: default; }
-        .link-row { display: grid; grid-template-columns: 220px 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+        .link-row { display: grid; grid-template-columns: 220px 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
         .link-row .slug { display: flex; align-items: center; }
         .link-row .slug span { color: var(--muted); font-size: 14px; padding-right: 6px; white-space: nowrap; }
         @media (max-width: 700px) { .list-row .fields.two-col, .link-row { grid-template-columns: 1fr; } }
@@ -232,7 +257,7 @@
             .menu-btn { display: inline-flex; }
             .bar, .content { padding-left: 16px; padding-right: 16px; }
             .stats { grid-template-columns: repeat(2, 1fr); }
-            .form-grid { grid-template-columns: 1fr; }
+            .form-grid, #order-form .form-grid { grid-template-columns: 1fr !important; }
             .search { width: 100%; }
         }
     </style>
@@ -280,6 +305,18 @@
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>This week</h2><span class="muted" style="font-size:13px">Compared with the week before</span></div><div class="recap" id="recap"></div></div>
         <div class="panel" id="cd-panel" style="margin-bottom:24px" hidden><div class="panel-head"><h2>Launch countdown</h2><span class="muted" style="font-size:13px" id="cd-when"></span></div><div class="cd-big" id="cd-big"></div></div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Launch checklist</h2><span class="muted" style="font-size:13px" id="check-count"></span></div><ul class="checklist" id="checklist"></ul></div>
+        <div class="two" style="margin-bottom:24px">
+            <div class="panel"><div class="panel-head"><h2>Goals</h2><button class="btn btn-ghost btn-sm" type="button" id="goal-edit" hidden>Set goals</button></div>
+                <form class="goal-form" id="goal-form" hidden>
+                    <div class="field"><label for="g-revenue">Revenue ($)</label><input id="g-revenue" type="number" min="0" step="0.01" placeholder="0 = no goal"></div>
+                    <div class="field"><label for="g-customers">Customers</label><input id="g-customers" type="number" min="0" step="1" placeholder="0 = no goal"></div>
+                    <div class="field"><label for="g-downloads">Downloads</label><input id="g-downloads" type="number" min="0" step="1" placeholder="0 = no goal"></div>
+                    <div class="field"><label for="g-subscribers">Subscribers</label><input id="g-subscribers" type="number" min="0" step="1" placeholder="0 = no goal"></div>
+                    <div class="actions" style="justify-content:flex-start;margin-bottom:14px;grid-column:1/-1"><button class="btn btn-sm">Save goals</button><button class="btn btn-ghost btn-sm" type="button" id="goal-cancel">Cancel</button></div>
+                </form>
+                <div id="goals"></div></div>
+            <div class="panel"><div class="panel-head"><h2>Crew of the month</h2><span class="muted" style="font-size:13px" id="crew-since"></span></div><ul class="crew" id="crew"></ul></div>
+        </div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Achievements</h2><span class="muted" style="font-size:13px" id="badge-count"></span></div><div class="badges" id="badges"></div></div>
         <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>Team board</h2><span class="muted" style="font-size:13px">Sticky notes every admin sees</span></div>
             <div class="board" id="board"></div>
@@ -547,6 +584,7 @@
         <div class="panel">
             <div class="panel-head"><h2>Newsletter subscribers</h2><div class="actions"><input class="search" id="sub-search" placeholder="Search email"><button class="btn btn-ghost btn-sm" onclick="exportSubscribers()">Export CSV</button></div></div>
             <form class="panel-body" id="sub-form" style="border-bottom:1px solid var(--line)"><div style="display:flex;gap:0;align-items:stretch"><textarea id="sub-email" rows="2" placeholder="Add addresses by hand: one, or paste many separated by commas or new lines" required style="resize:vertical"></textarea><button class="btn">Add</button></div><div class="hint">Addresses already on the list are skipped, and people who unsubscribed are never added back.</div></form>
+            <div style="border-bottom:1px solid var(--line);padding-top:16px"><div class="bars" id="sub-chart" style="height:80px"></div><div class="bars-legend"><span id="sub-chart-label"></span><span>Today</span></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th>Signed up from</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody id="subs-list"></tbody></table></div>
         </div>
     </section>
@@ -563,13 +601,14 @@
                 <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="o-license" checked> Create a licence key for this order and email it to the customer</label>
             </div>
         </form>
-        <div class="panel"><div class="panel-head"><h2>All orders</h2><div class="actions"><input class="search" id="order-search" placeholder="Search customer, email or product"><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><h2>All orders</h2><div class="actions"><input class="search" id="order-search" placeholder="Search customer, email or product"><button class="btn btn-ghost btn-sm" type="button" onclick="exportOrders()">Export CSV</button></div></div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Amount</th><th>Payment</th><th>Date</th><th></th></tr></thead><tbody id="orders-list"></tbody></table></div></div>
     </section>
 
     <section class="pane" id="pane-users" data-title="Users">
         <div class="panel">
             <div class="panel-head"><h2>Registered users</h2><div class="actions"><select id="user-filter" style="width:auto;padding:8px 12px" aria-label="Show"><option value="">Everyone</option><option value="Customer">Customers</option><option value="staff">Staff</option><option value="unconfirmed">Email not confirmed</option></select><input class="search" id="user-search" placeholder="Search name or email"><button class="btn btn-ghost btn-sm" type="button" onclick="exportUsers()">Export CSV</button></div></div>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
+            <div class="bulk" id="user-bulk" hidden><strong id="user-bulk-n"></strong><button class="btn btn-sm" type="button" id="user-bulk-mail">Email them</button><button class="btn btn-ghost btn-sm" type="button" id="user-bulk-csv">Export CSV</button><button class="btn btn-ghost btn-sm" type="button" data-sel-clear="user">Clear</button></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th class="pick"><input type="checkbox" data-sel-all="user" aria-label="Select all"></th><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead><tbody id="users-list"></tbody></table></div>
         </div>
         <p class="muted" style="font-size:13px;margin-top:12px">Only the Owner can change roles. Changing a role signs that user out.</p>
     </section>
@@ -605,7 +644,8 @@
         </div>
         <div class="panel">
             <div class="panel-head"><h2>All licences</h2><div class="actions"><select id="lic-filter" style="width:auto;padding:8px 12px" aria-label="Show"><option value="">All licences</option><option value="active">Active</option><option value="revoked">Revoked</option><option value="unused">Never activated</option><option value="full">All computers used</option></select><input class="search" id="lic-search" placeholder="Search key, email or note"><button class="btn btn-ghost btn-sm" type="button" onclick="exportLicenses()">Export CSV</button></div></div>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
+            <div class="bulk" id="lic-bulk" hidden><strong id="lic-bulk-n"></strong><button class="btn btn-danger btn-sm" type="button" id="lic-bulk-revoke">Revoke</button><button class="btn btn-ghost btn-sm" type="button" id="lic-bulk-restore">Make active again</button><button class="btn btn-ghost btn-sm" type="button" id="lic-bulk-copy">Copy keys</button><button class="btn btn-ghost btn-sm" type="button" id="lic-bulk-csv">Export CSV</button><button class="btn btn-ghost btn-sm" type="button" data-sel-clear="lic">Clear</button></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th class="pick"><input type="checkbox" data-sel-all="lic" aria-label="Select all"></th><th>Key</th><th>Product</th><th>Customer</th><th>Computers</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody id="lic-list"></tbody></table></div>
         </div>
         <datalist id="user-emails"></datalist>
     </section>
@@ -624,6 +664,7 @@
             </form>
         </details>
         <div class="actions" style="justify-content:space-between;margin:0 0 16px"><div class="actions" style="justify-content:flex-start" id="msg-filter"><button class="btn btn-sm" type="button" data-filter="open">Open</button><button class="btn btn-ghost btn-sm" type="button" data-filter="handled">Handled</button><button class="btn btn-ghost btn-sm" type="button" data-filter="all">All</button></div><input class="search" id="msg-search" placeholder="Search name, email or text"></div>
+        <div class="bulk" id="msg-bulk" style="margin-bottom:16px" hidden><strong id="msg-bulk-n"></strong><button class="btn btn-sm" type="button" id="msg-bulk-done">Mark handled</button><button class="btn btn-ghost btn-sm" type="button" id="msg-bulk-open">Reopen</button><button class="btn btn-danger btn-sm" type="button" id="msg-bulk-del">Delete</button><button class="btn btn-ghost btn-sm" type="button" data-sel-clear="msg">Clear</button></div>
         <div id="messages-list"></div>
     </section>
 
@@ -688,6 +729,7 @@
     <div class="actions" style="justify-content:flex-start;margin-bottom:14px"><button class="btn btn-sm" type="button" id="pick-upload">Upload new</button></div>
     <div class="img-grid" id="pick-grid" style="max-height:60vh;overflow:auto"></div></div></div>
 <div class="modal-bg" id="user-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="um-name" style="margin:0"></h3><p class="muted" id="um-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('user-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="sub" style="margin-top:18px">Timeline</div><ul class="timeline" id="um-timeline"></ul>
     <div class="sub" style="margin-top:18px">Licences</div><div class="table-wrap"><table class="table"><tbody id="um-licenses"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Orders</div><div class="table-wrap"><table class="table"><tbody id="um-orders"></tbody></table></div>
     <div class="sub" style="margin-top:18px">Private note <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(only staff see it)</span></div>
@@ -748,7 +790,7 @@ function askGate() {
     return gateWait;
 }
 const state = { products: [], users: [], posts: [], subs: [], orders: [], media: [], gallery: [], role: "", emailReady: false, productSnapshot: "",
-    inbox: { autoreply: {}, replies: [] }, savedReplies: [], system: null };
+    inbox: { autoreply: {}, replies: [] }, savedReplies: [], system: null, linkHits: {}, goals: {}, crew: null };
 const IMAGE_RE = /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/;
 const slugify = v => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 function downloadCsv(name, rows) {
@@ -1041,7 +1083,7 @@ async function loadOverview() {
     for (const k of ["products", "posts", "orders", "subscribers"]) $("c-" + k).textContent = o[k] || "";
     $("c-messages").textContent = o.open_messages ?? o.messages ?? "";
     $("email-setup").style.display = state.emailReady ? "none" : "";
-    renderHello(); renderAchievements(); renderOnline(); renderChecklist();
+    renderHello(); renderAchievements(); renderOnline(); renderChecklist(); renderGoals();
 }
 
 // products
@@ -1351,7 +1393,16 @@ async function loadSubscribers() {
     state.subs = (await api("/api/admin/subscribers")).subscribers || [];
     renderSubscribers();
 }
+function renderSubChart() {
+    const days = [...Array(30)].map((_, i) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 29 + i); return d; });
+    const stamp = v => new Date(String(v || "").replace(" ", "T") + (String(v || "").includes("Z") ? "" : "Z"));
+    const counts = days.map(d => state.subs.filter(x => { const t = stamp(x.created_at); return t >= d && t < new Date(d.getTime() + 864e5); }).length);
+    const max = Math.max(1, ...counts), total = counts.reduce((a, b) => a + b, 0);
+    $("sub-chart").innerHTML = counts.map((n, i) => `<div style="height:${(n / max) * 100}%" title="${days[i].toLocaleDateString()}: ${n} new"></div>`).join("");
+    $("sub-chart-label").textContent = `${total} new in the last 30 days`;
+}
 function renderSubscribers() {
+    renderSubChart();
     const q = val("sub-search").toLowerCase();
     const list = state.subs.filter(s => !q || s.email.includes(q));
     $("subs-list").innerHTML = list.length ? list.map(s => `<tr><td>${esc(s.email)}</td><td class="muted">${esc(s.source || "-")}</td><td>${Number(s.unsubscribed) ? '<span class="badge">Unsubscribed</span>' : '<span class="badge published">Subscribed</span>'}</td><td class="muted">${date(s.created_at)}</td><td><div class="actions"><button class="btn btn-danger btn-sm" data-sub="${s.id}">Remove</button></div></td></tr>`).join("") : empty(5, "No subscribers yet. Visitors can sign up in the website footer.");
@@ -1449,13 +1500,26 @@ function renderChart() {
 function renderOrders() {
     const q = val("order-search").toLowerCase();
     const orders = state.orders.filter(o => !q || [o.id, o.customer_name, o.customer_email, o.product_id, o.payment_status].some(v => String(v || "").toLowerCase().includes(q)));
-    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("")
-        : empty(6, state.orders.length ? "No orders match your search." : "No orders yet.");
+    const canEdit = ["Owner", "Admin"].includes(state.role);
+    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td>` +
+        `<td>${canEdit ? `<select data-pay="${o.id}" style="width:auto;padding:6px 10px" aria-label="Payment">${["Paid", "Pending", "Refunded"].map(v => `<option${v === o.payment_status ? " selected" : ""}>${v}</option>`).join("")}</select>` : esc(o.payment_status)}</td>` +
+        `<td class="muted">${date(o.created_at)}</td><td>${canEdit ? `<div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-order-del="${o.id}">Delete</button></div>` : ""}</td></tr>`).join("")
+        : empty(7, state.orders.length ? "No orders match your search." : "No orders yet.");
 }
 $("order-search").oninput = renderOrders;
+$("orders-list").onchange = async e => {
+    const s = e.target.closest("[data-pay]"); if (!s) return;
+    try { await post("/api/admin/orders/" + s.dataset.pay, { payment_status: s.value }); toast(`Order #${s.dataset.pay} is now ${s.value}`); loadOrders(); loadOverview(); loadAudit(); }
+    catch (err) { toast(err.message, true); loadOrders(); }
+};
+$("orders-list").onclick = async e => {
+    const b = e.target.closest("[data-order-del]"); if (!b) return;
+    if (!await confirmBox(`Delete order #${b.dataset.orderDel}?`, "The order is removed from the list and the revenue. Licence keys made with it are kept.", "Delete order", true)) return;
+    try { await api("/api/admin/orders/" + b.dataset.orderDel, { method: "DELETE" }); toast("Order deleted"); loadOrders(); loadOverview(); loadAudit(); } catch (err) { toast(err.message, true); }
+};
 function exportOrders() { downloadCsv("rotaidem-orders.csv", [["id", "customer", "email", "product", "amount", "payment", "date"], ...state.orders.map(o => [o.id, o.customer_name, o.customer_email, o.product_id, o.amount, o.payment_status, o.created_at])]); }
-function exportUsers() { downloadCsv("rotaidem-users.csv", [["id", "name", "email", "role", "joined"], ...state.users.map(u => [u.id, u.name, u.email, u.role, u.created_at])]); }
-function exportLicenses() { downloadCsv("rotaidem-licences.csv", [["key", "product", "email", "status", "computers_used", "computers_max", "note", "created"], ...(state.licenses || []).map(l => [l.license_key, l.product_id, l.email, l.status, l.activations, l.max_activations, l.note, l.created_at])]); }
+function exportUsers(list) { downloadCsv("rotaidem-users.csv", [["id", "name", "email", "role", "joined"], ...(Array.isArray(list) ? list : state.users).map(u => [u.id, u.name, u.email, u.role, u.created_at])]); }
+function exportLicenses(list) { downloadCsv("rotaidem-licences.csv", [["key", "product", "email", "status", "computers_used", "computers_max", "note", "created"], ...(Array.isArray(list) ? list : state.licenses || []).map(l => [l.license_key, l.product_id, l.email, l.status, l.activations, l.max_activations, l.note, l.created_at])]); }
 
 // users
 async function loadUsers() {
@@ -1476,8 +1540,9 @@ function renderUsers() {
             ? `<select style="width:auto;padding:6px 10px" data-role="${u.id}">${roles.map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>`
             : esc(u.role);
         const unconfirmed = u.email_verified != null && !Number(u.email_verified) ? ' <span class="badge in_development" title="Has not clicked the link in the confirmation email yet">Email not confirmed</span>' : "";
-        return `<tr><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button>${unconfirmed}</td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
-    }).join("") : empty(4, "No users found.");
+        return `<tr><td class="pick"><input type="checkbox" data-sel="user" value="${u.id}"${sel.user.has(u.id) ? " checked" : ""} aria-label="Select"></td><td><button class="linkish" type="button" data-user="${u.id}">${esc(u.name)}</button>${unconfirmed}</td><td>${esc(u.email)}</td><td>${role}</td><td class="muted">${date(u.created_at)}</td></tr>`;
+    }).join("") : empty(5, "No users found.");
+    renderBulk("user");
 }
 $("user-search").oninput = $("user-filter").onchange = renderUsers;
 $("users-list").onclick = e => { const b = e.target.closest("[data-user]"); if (b) openUser(Number(b.dataset.user)); };
@@ -1495,6 +1560,7 @@ async function openUser(id) {
             if (!await confirmBox("Mark " + u.email + " as confirmed?", "Only do this when you know the address belongs to this person, e.g. they emailed you from it. They can then log in straight away.", "Mark as confirmed")) return;
             try { await post(`/api/admin/users/${id}/verify`, {}); toast("Email marked as confirmed"); $("user-modal").classList.remove("show"); loadUsers(); } catch (err) { toast(err.message, true); }
         };
+        renderTimeline(u);
         $("um-licenses").innerHTML = u.licenses.length ? u.licenses.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span></td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td></tr>`).join("") : empty(4, "No licences.");
         $("um-orders").innerHTML = u.orders.length ? u.orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td><td>${esc(o.payment_status)}</td><td class="muted">${date(o.created_at)}</td></tr>`).join("") : empty(5, "No orders.");
         $("um-mail").href = "mailto:" + u.email;
@@ -1548,9 +1614,10 @@ function renderMessages() {
     const f = state.msgFilter;
     document.querySelectorAll("#msg-filter [data-filter]").forEach(b => b.className = "btn btn-sm" + (b.dataset.filter === f ? "" : " btn-ghost"));
     const q = val("msg-search").toLowerCase();
+    renderBulk("msg");
     const msgs = state.messages.filter(m => (f === "all" || (f === "handled") === !!Number(m.handled)) && (!q || [m.name, m.email, m.message, m.reply].join(" ").toLowerCase().includes(q)));
     $("messages-list").innerHTML = msgs.length ? msgs.map(m =>
-        `<div class="panel" style="margin-bottom:16px${Number(m.handled) ? ";opacity:.7" : ""}"><div class="panel-head"><div><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span>${Number(m.handled) ? ' <span class="badge published">Handled</span>' : ""}</div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
+        `<div class="panel" style="margin-bottom:16px${Number(m.handled) ? ";opacity:.7" : ""}"><div class="panel-head"><div><input type="checkbox" data-sel="msg" value="${m.id}"${sel.msg.has(m.id) ? " checked" : ""} aria-label="Select" style="margin-right:10px;vertical-align:-2px"><strong>${esc(m.name || "Anonymous")}</strong> <span class="muted">${esc(m.email)}</span>${Number(m.handled) ? ' <span class="badge published">Handled</span>' : ""}</div><span class="muted" style="font-size:13px">${date(m.created_at)}</span></div>` +
         `<div class="panel-body"><p style="white-space:pre-line">${esc(m.message)}</p>` +
         (m.reply ? `<div class="reply-box"><small>Replied by ${esc(m.replied_by || "staff")} · ${date(m.replied_at)}</small>${esc(m.reply)}</div>` : "") +
         `<div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="button" onclick="openReply(${m.id})">${m.reply ? "Reply again" : "Reply"}</button><a class="btn btn-ghost btn-sm" href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your message to Rotaidem")}">Email</a><button class="btn btn-ghost btn-sm" type="button" onclick="messageToFaq(${m.id})">Add to FAQ</button>` +
@@ -1574,14 +1641,15 @@ async function loadLicenses() {
     renderLicenses();
 }
 function renderLicenses() {
+    setTimeout(() => renderBulk("lic"));
     const q = val("lic-search").toLowerCase();
     const f = $("lic-filter").value;
     const list = (state.licenses || []).filter(l => (!q || [l.license_key, l.email, l.note, l.product_id].join(" ").toLowerCase().includes(q)) &&
         (!f || (f === "active" ? l.status === "active" : f === "revoked" ? l.status !== "active" : f === "unused" ? !Number(l.activations) : Number(l.activations) >= Number(l.max_activations))));
-    $("lic-list").innerHTML = list.length ? list.map(l => `<tr><td><span class="key">${esc(l.license_key)}</span>${l.note ? `<div class="muted" style="font-size:13px">${esc(l.note)}</div>` : ""}</td><td>${esc(l.product_id)}</td><td>${esc(l.email || "-")}</td>` +
+    $("lic-list").innerHTML = list.length ? list.map(l => `<tr><td class="pick"><input type="checkbox" data-sel="lic" value="${l.id}"${sel.lic.has(l.id) ? " checked" : ""} aria-label="Select"></td><td><span class="key">${esc(l.license_key)}</span>${l.note ? `<div class="muted" style="font-size:13px">${esc(l.note)}</div>` : ""}</td><td>${esc(l.product_id)}</td><td>${esc(l.email || "-")}</td>` +
         `<td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td class="muted">${date(l.created_at)}</td>` +
         `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(l.license_key)}">Copy</button><button class="btn btn-ghost btn-sm" data-lic="${l.id}">Manage</button></div></td></tr>`).join("")
-        : empty(7, (state.licenses || []).length ? "No licences match." : "No licences yet. Create some above or with the License Generator.");
+        : empty(8, (state.licenses || []).length ? "No licences match." : "No licences yet. Create some above or with the License Generator.");
 }
 $("lic-search").oninput = $("lic-filter").onchange = renderLicenses;
 $("lic-list").onclick = e => {
@@ -1668,6 +1736,7 @@ async function loadSite() {
     $("b-text").value = a.text || ""; $("b-link").value = a.link || ""; $("b-on").checked = !!a.enabled;
     $("b-from").value = a.from || ""; $("b-until").value = a.until || "";
     state.links = Object.entries(state.site.links || {}).map(([slug, target]) => ({ slug, target }));
+    try { state.linkHits = (await api("/api/admin/link-hits")).hits || {}; } catch (err) { state.linkHits = {}; }
     renderLinks();
     renderConfig();
     renderSlots();
@@ -1781,7 +1850,9 @@ $("faq-reset").onclick = async () => { if (await confirmBox("Use the original FA
 // Short links: rotaidem.com/<slug> forwards to the target.
 function renderLinks() {
     $("links-list").innerHTML = state.links.map((l, i) => `<div class="link-row"><div class="slug"><span>${esc(location.host)}/</span><input data-link="slug" data-i="${i}" maxlength="40" placeholder="discord" value="${esc(l.slug)}"></div>` +
-        `<input data-link="target" data-i="${i}" maxlength="500" placeholder="https://discord.gg/... or /downloads" value="${esc(l.target)}"><button class="btn btn-ghost btn-sm" type="button" data-link-del="${i}" aria-label="Remove">&times;</button></div>`).join("")
+        `<input data-link="target" data-i="${i}" maxlength="500" placeholder="https://discord.gg/... or /downloads" value="${esc(l.target)}">` +
+        `<span class="hits" title="${(state.linkHits[l.slug] || {}).last ? "Last click " + esc(state.linkHits[l.slug].last) + " UTC" : "Counted when someone opens the short link"}">${((state.linkHits[l.slug] || {}).total || 0).toLocaleString()} ${(state.linkHits[l.slug] || {}).total === 1 ? "click" : "clicks"}</span>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-link-del="${i}" aria-label="Remove">&times;</button></div>`).join("")
         || '<p class="muted" style="margin-top:0">No short links yet.</p>';
 }
 $("links-list").oninput = e => { const el = e.target.closest("[data-link]"); if (el) state.links[Number(el.dataset.i)][el.dataset.link] = el.value.trim(); };
@@ -1961,6 +2032,7 @@ $("backup-btn").onclick = async () => {
 };
 async function loadAudit() {
     const logs = state.audit = (await api("/api/admin/audit")).logs || [];
+    if (state.crew) loadCrew().catch(() => {});
     renderAudit();
     $("dash-audit").innerHTML = logs.length ? logs.slice(0, 5).map(l => `<tr><td>${esc(auditLabel(l.action))}</td><td class="muted">${esc(l.target)}</td></tr>`).join("") : empty(2, "No activity yet.");
 }
@@ -1977,10 +2049,122 @@ function auditLabel(a) {
         message_reopened: "Reopened a message", verify_user: "Confirmed a user's email", email_verified: "Confirmed their email",
         verify_email_request: "Asked for a new confirmation link", end_session: "Logged a user out on one device", user_note: "Changed a note on a user",
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
-        reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist" }[a] || a);
+        reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist",
+        update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
+
+// selecting rows for bulk actions: users, licences, messages
+const sel = { user: new Set(), lic: new Set(), msg: new Set() };
+function renderBulk(kind) {
+    const n = sel[kind].size;
+    $(kind + "-bulk").hidden = !n;
+    $(kind + "-bulk-n").textContent = `${n} selected`;
+    const all = document.querySelector(`[data-sel-all="${kind}"]`), boxes = [...document.querySelectorAll(`[data-sel="${kind}"]`)];
+    if (all) all.checked = boxes.length > 0 && boxes.every(b => b.checked);
+}
+document.addEventListener("change", e => {
+    const box = e.target.closest("[data-sel]"), all = e.target.closest("[data-sel-all]");
+    if (box) { const k = box.dataset.sel; box.checked ? sel[k].add(Number(box.value)) : sel[k].delete(Number(box.value)); renderBulk(k); }
+    if (all) {
+        const k = all.dataset.selAll;
+        document.querySelectorAll(`[data-sel="${k}"]`).forEach(b => { b.checked = all.checked; all.checked ? sel[k].add(Number(b.value)) : sel[k].delete(Number(b.value)); });
+        renderBulk(k);
+    }
+});
+document.addEventListener("click", e => {
+    const c = e.target.closest("[data-sel-clear]"); if (!c) return;
+    const k = c.dataset.selClear; sel[k].clear(); document.querySelectorAll(`[data-sel="${k}"]`).forEach(b => b.checked = false); renderBulk(k);
+});
+const picked = (kind, list) => list.filter(x => sel[kind].has(x.id));
+$("user-bulk-mail").onclick = () => {
+    const emails = picked("user", state.users).map(u => u.email);
+    document.querySelectorAll(".checks input").forEach(i => i.checked = false);
+    $("e-extra").value = emails.join("\n"); refreshAudience(); showTab("email"); $("e-subject").focus();
+    toast(`${emails.length === 1 ? "1 person is added as a recipient" : emails.length + " people are added as recipients"}. Write your email.`);
+};
+$("user-bulk-csv").onclick = () => exportUsers(picked("user", state.users));
+async function bulkLicences(action) {
+    const ids = [...sel.lic], revoke = action === "revoke";
+    if (revoke && !await confirmBox(`Revoke ${ids.length} licence${ids.length === 1 ? "" : "s"}?`, "Those keys stop working in the app at its next check. You can make them active again later.", "Revoke", true)) return;
+    try {
+        const r = await post("/api/admin/licenses/bulk", { ids, action });
+        toast(`${r.changed} licence${r.changed === 1 ? "" : "s"} ${revoke ? "revoked" : "active again"}`); sel.lic.clear(); loadLicenses(); loadOverview(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+}
+$("lic-bulk-revoke").onclick = () => bulkLicences("revoke");
+$("lic-bulk-restore").onclick = () => bulkLicences("activate");
+$("lic-bulk-copy").onclick = () => { const keys = picked("lic", state.licenses || []).map(l => l.license_key); navigator.clipboard.writeText(keys.join("\n")).then(() => toast(`${keys.length} keys copied`)); };
+$("lic-bulk-csv").onclick = () => exportLicenses(picked("lic", state.licenses || []));
+async function bulkMessages(handled) {
+    const ids = [...sel.msg];
+    if (handled === null && !await confirmBox(`Delete ${ids.length} message${ids.length === 1 ? "" : "s"}?`, "They are removed from the inbox.", "Delete", true)) return;
+    try {
+        for (const id of ids) await (handled === null ? api("/api/admin/messages/" + id, { method: "DELETE" }) : post("/api/admin/messages/" + id, { handled }));
+        toast(handled === null ? `${ids.length} deleted` : handled ? `${ids.length} marked as handled` : `${ids.length} reopened`);
+    } catch (err) { toast(err.message, true); }
+    sel.msg.clear(); loadMessages(); loadOverview(); loadAudit();
+}
+$("msg-bulk-done").onclick = () => bulkMessages(true);
+$("msg-bulk-open").onclick = () => bulkMessages(false);
+$("msg-bulk-del").onclick = () => bulkMessages(null);
+
+// a customer's story in one list
+function renderTimeline(u) {
+    const ev = [[u.created_at, "👋", "Created the account"]];
+    for (const o of u.orders || []) ev.push([o.created_at, "💰", `Order #${o.id}: ${o.product_id || "product"}, ${money(o.amount)} (${o.payment_status})`]);
+    for (const l of u.licenses || []) ev.push([l.created_at, "🔑", `Licence ${l.license_key} for ${l.product_id}${l.status === "active" ? "" : " (revoked)"}`]);
+    for (const d of u.downloads || []) ev.push([d.created_at, "⬇️", `Downloaded ${productName(d.product_id)}`]);
+    for (const m of u.messages || []) {
+        ev.push([m.created_at, "✉️", `Wrote: "${String(m.message || "").slice(0, 80)}"`]);
+        if (m.reply) ev.push([m.replied_at, "↩️", `${m.replied_by || "Staff"} replied: "${String(m.reply).slice(0, 80)}"`]);
+    }
+    const last = (u.sessions || [])[0];
+    if (last) ev.push([last.last_seen, "🟢", `Last active, ${last.device}`]);
+    ev.sort((a, b) => String(b[0] || "").localeCompare(String(a[0] || "")));
+    $("um-timeline").innerHTML = ev.map(([when, ico, what]) => `<li><span>${ico}</span><span class="what">${esc(what)}</span><small>${date(when)}</small></li>`).join("");
+}
+
+// goals on the dashboard
+const GOALS = [["revenue", "Revenue", o => Number(o.revenue || 0), v => money(v)], ["customers", "Customers", o => o.customers || 0, v => Number(v).toLocaleString()],
+    ["downloads", "Downloads", o => o.downloads || 0, v => Number(v).toLocaleString()], ["subscribers", "Subscribers", o => o.subscribers || 0, v => Number(v).toLocaleString()]];
+async function loadGoals() { state.goals = (await api("/api/admin/goals")).goals || {}; renderGoals(); }
+function renderGoals() {
+    const o = state.overview || {}, g = state.goals || {}, active = GOALS.filter(([k]) => Number(g[k]) > 0), manager = ["Owner", "Admin"].includes(state.role);
+    $("goal-edit").hidden = !manager;
+    $("goals").innerHTML = active.length ? active.map(([k, label, now, fmt]) => {
+        const value = now(o), target = Number(g[k]), pct = Math.min(100, Math.round(value / target * 100));
+        return `<div class="goal${value >= target ? " won" : ""}"><div class="row"><span><strong>${esc(label)}</strong> ${fmt(value)} of ${fmt(target)}</span><span>${value >= target ? "Reached 🎉" : pct + "%"}</span></div><div class="meter"><i style="width:${pct}%"></i></div></div>`;
+    }).join("") : `<p class="muted" style="margin:0;padding:18px 20px;font-size:14px">No goals yet.${manager ? " Set a target for revenue, customers, downloads or subscribers and watch the bars fill up." : ""}</p>`;
+}
+$("goal-edit").onclick = () => { for (const [k] of GOALS) $("g-" + k).value = Number(state.goals[k]) || ""; $("goal-form").hidden = false; $("g-revenue").focus(); };
+$("goal-cancel").onclick = () => { $("goal-form").hidden = true; };
+$("goal-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        state.goals = (await post("/api/admin/goals", Object.fromEntries(GOALS.map(([k]) => [k, $("g-" + k).value || 0])))).goals;
+        $("goal-form").hidden = true; renderGoals(); toast("Goals saved"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+
+// crew of the month: points for work done, from the activity log
+const POINTS = { reply_message: 5, save_post: 5, send_email: 5, save_product: 3, create_order: 3, create_licenses: 3, import_licenses: 3, message_handled: 2, email_licenses: 2,
+    add_subscribers: 2, save_inbox: 2, upload_media: 1, save_settings: 1, user_note: 1, update_license: 1, bulk_licenses: 2, update_order: 1, save_email_template: 1, verify_user: 1 };
+async function loadCrew() {
+    const r = await api("/api/admin/leaderboard");
+    state.crew = r;
+    const people = {};
+    for (const row of r.rows) {
+        const pts = (POINTS[row.action] || 0) * row.n; if (!pts) continue;
+        const p = people[row.name] = people[row.name] || { name: row.name, pts: 0, best: ["", 0] };
+        p.pts += pts; if (pts > p.best[1]) p.best = [row.action, pts];
+    }
+    const ranked = Object.values(people).sort((a, b) => b.pts - a.pts);
+    $("crew-since").textContent = "Since " + new Date(r.since + "T00:00:00").toLocaleDateString([], { month: "long", day: "numeric" });
+    $("crew").innerHTML = ranked.length ? ranked.map((p, i) => `<li><span class="medal">${["🥇", "🥈", "🥉"][i] || i + 1}</span><span><strong>${esc(p.name)}</strong><small>Mostly: ${esc(auditLabel(p.best[0]).toLowerCase())}</small></span><span class="pts">${p.pts} pts</span></li>`).join("")
+        : '<li class="muted" style="border:0">No points yet this month. Replying to messages, writing news and adding products all count.</li>';
+}
 
 // clock in the top bar: Zulu like on a flight plan, and the local time
 function tickClock() {
@@ -2166,7 +2350,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();
