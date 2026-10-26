@@ -261,15 +261,17 @@ RewriteRule ^(.+)$ $1.html [L]
 Header always set X-Content-Type-Options "nosniff"
 Header always set Referrer-Policy "strict-origin-when-cross-origin"
 Header always set X-Frame-Options "SAMEORIGIN"
-<FilesMatch "^(admin|account)\\.html$">
-Header set Cache-Control "private, no-store"
-</FilesMatch>
-# Pictures and fonts may be kept by the browser for a day; site-settings.js is checked every time.
+# Pictures and fonts may be kept by the browser for a day. Pages, scripts and the stylesheet are
+# checked every time (an unchanged file is just "304 not modified"), so a deploy shows at once.
 <FilesMatch "\\.(jpg|jpeg|png|webp|gif|svg|woff2?)$">
 Header set Cache-Control "public, max-age=86400"
 </FilesMatch>
-<FilesMatch "^site-settings\\.js$">
+<FilesMatch "\\.(html|js|css)$">
 Header set Cache-Control "no-cache"
+</FilesMatch>
+# The admin and account pages are never stored (after the rule above, so this one wins for them).
+<FilesMatch "^(admin|account)\\.html$">
+Header set Cache-Control "private, no-store"
 </FilesMatch>
 </IfModule>
 """
