@@ -72,7 +72,7 @@ async function init() {
     ).join("") : '<tr><td colspan="5" class="muted">No licence keys yet. They appear here after you buy a product.</td></tr>';
     const orders = (await (await fetch("/api/account/orders", { headers })).json()).orders || [];
     document.getElementById("orders").innerHTML = orders.length ? orders.map(o =>
-        `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`
+        `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>${o.currency ? Number(o.amount || 0).toFixed(2) + " " + esc(String(o.currency).toUpperCase()) : "$" + Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`
     ).join("") : '<tr><td colspan="5" class="muted">No orders yet.</td></tr>';
 }
 

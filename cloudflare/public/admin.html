@@ -814,6 +814,8 @@
         <div class="field"><label for="p-features">Features</label><textarea id="p-features" rows="4"></textarea><div class="hint">One feature per line.</div></div>
         <div class="sub">Selling</div>
         <div class="form-grid">
+            <div class="field"><label for="p-pay">Price at checkout (Stripe)</label><div style="display:flex;gap:0"><input id="p-pay" inputmode="decimal" placeholder="e.g. 299"><select id="p-cur" style="width:auto" aria-label="Currency"><option value="sek">SEK</option><option value="eur">EUR</option><option value="usd">USD</option><option value="gbp">GBP</option><option value="nok">NOK</option><option value="dkk">DKK</option></select></div>
+                <div class="hint" id="p-pay-hint">With a price, Buy opens Stripe's payment page; the order and licence key are made and emailed by themselves. Empty: the Buy link below is used.</div></div>
             <div class="field"><label for="p-buy">Buy link</label><input id="p-buy" placeholder="https:// or mailto:"></div>
             <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
         </div>
@@ -1241,7 +1243,8 @@ function productDraft() {
     return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
         simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
         description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0,
-        download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()), update_required: $("p-required").checked };
+        download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()), update_required: $("p-required").checked,
+        pay_amount: val("p-pay"), pay_currency: val("p-cur") };
 }
 function refreshProductPreview() {
     const d = productDraft();
@@ -1310,6 +1313,10 @@ function openProduct(id) {
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
     set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
     set("p-gate", p.download_gate || "public"); $("p-required").checked = !!Number(p.update_required);
+    set("p-pay", Number(p.pay_amount) > 0 ? String(Number(p.pay_amount) / 100) : ""); set("p-cur", p.pay_currency || "sek");
+    $("p-pay-hint").textContent = state.overview && !state.overview.payments_ready
+        ? "Payments are not set up yet: run  python3 rotaidem/strato/setup.py stripe  over SSH. Until then the Buy link below is used."
+        : "With a price, Buy opens Stripe's payment page; the order and licence key are made and emailed by themselves. Empty: the Buy link below is used.";
     $("p-publish-box").style.display = p.id ? "flex" : "none";
     state.versions = (p.changelog || []).map(v => ({ ...v })); renderVersions();
     $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
@@ -1621,7 +1628,7 @@ function renderOrders() {
     const q = val("order-search").toLowerCase();
     const orders = state.orders.filter(o => !q || [o.id, o.customer_name, o.customer_email, o.product_id, o.payment_status].some(v => String(v || "").toLowerCase().includes(q)));
     const canEdit = ["Owner", "Admin"].includes(state.role);
-    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}</td><td>${money(o.amount)}</td>` +
+    $("orders-list").innerHTML = orders.length ? orders.map(o => `<tr><td>#${esc(o.id)}</td><td>${esc(o.customer_name || "-")}<div class="muted" style="font-size:13px">${esc(o.customer_email || "")}</div></td><td>${esc(o.product_id || "-")}${o.payment_ref ? ' <span class="badge coming_soon" title="Paid through Stripe Checkout">Stripe</span>' : ""}</td><td>${o.currency ? Number(o.amount || 0).toFixed(2) + " " + esc(String(o.currency).toUpperCase()) : money(o.amount)}</td>` +
         `<td>${canEdit ? `<select data-pay="${o.id}" style="width:auto;padding:6px 10px" aria-label="Payment">${["Paid", "Pending", "Refunded"].map(v => `<option${v === o.payment_status ? " selected" : ""}>${v}</option>`).join("")}</select>` : esc(o.payment_status)}</td>` +
         `<td class="muted">${date(o.created_at)}</td><td>${canEdit ? `<div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-order-del="${o.id}">Delete</button></div>` : ""}</td></tr>`).join("")
         : empty(7, state.orders.length ? "No orders match your search." : "No orders yet.");
@@ -2171,7 +2178,8 @@ function auditLabel(a) {
         save_email_template: "Saved an email template", delete_email_template: "Deleted an email template",
         reply_message: "Replied to a message", save_inbox: "Changed inbox settings", save_blocklist: "Changed the blocklist",
         update_order: "Changed an order", delete_order: "Deleted an order", bulk_licenses: "Changed several licences", save_goals: "Set dashboard goals",
-        save_hub: "Changed RotaHub", license_claimed: "Added a key to their account", upload_file: "Uploaded a file", delete_file: "Deleted a file" }[a] || a);
+        save_hub: "Changed RotaHub", license_claimed: "Added a key to their account", upload_file: "Uploaded a file", delete_file: "Deleted a file",
+        stripe_order: "Bought through Stripe" }[a] || a);
     return label(a);
 }
 $("audit-search").oninput = renderAudit;
@@ -2599,6 +2607,7 @@ function renderChecklist() {
         [(o.licenses || 0) > 0, "Create licence keys", "For your first customers or testers.", "licenses"],
         [Object.keys(cfg.socials || {}).length > 0, "Add your social links", "Discord, YouTube and more in the footer.", "site"],
         [!(cfg.maintenance || {}).enabled, "Maintenance mode is off", "Visitors can see the site.", "site"],
+        sys ? [!!sys.stripe, "Set up payments", "Over SSH:  python3 rotaidem/strato/setup.py stripe, then give products a price at checkout.", null] : null,
         sys ? [!!sys.admin_password, "Turn on the admin page password", "An extra lock in front of this page.", "security"] : null,
         sys ? [backupAge < 30 * 864e5, "Download a backup this month", "Activity log, Download backup.", "activity"] : null,
     ].filter(Boolean);
@@ -2728,7 +2737,7 @@ async function loadSystem() {
     const s = state.system, size = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " KB";
     $("sys-panel").hidden = false;
     $("sys-list").innerHTML = [["Website address", s.site_url], ["Database", s.database], ["Python", s.python], ["Data version", s.schema], ["Server time", s.server_time + " UTC"],
-        ["Email sending", s.email_ready ? "Set up, sent from " + s.mail_from : "Not set up (RESEND_API_KEY is missing)"], ["Admin page password", s.admin_password ? "On" : "Off"],
+        ["Email sending", s.email_ready ? "Set up, sent from " + s.mail_from : "Not set up (RESEND_API_KEY is missing)"], ["Payments (Stripe)", s.stripe ? (s.stripe === "live" ? "Set up, LIVE (real payments)" : "Set up, TEST mode") + (s.stripe_webhook ? ", webhook set up" : ", no webhook yet") : "Not set up (python3 rotaidem/strato/setup.py stripe)"], ["Admin page password", s.admin_password ? "On" : "Off"],
         ["Images stored", `${s.tables.media || 0} (${size(s.media_bytes || 0)})`], ["Blocked addresses", String(s.blocked)], ["Last backup", s.last_backup ? date(s.last_backup) + " UTC" : "Never downloaded"]]
         .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${k === "Last backup" ? v : esc(v)}</dd>`).join("");
     $("sys-tables").innerHTML = Object.entries(s.tables).filter(([t]) => TABLE_NAMES[t]).map(([t, n]) => `<div><strong>${Number(n).toLocaleString()}</strong>${esc(TABLE_NAMES[t])}</div>`).join("");

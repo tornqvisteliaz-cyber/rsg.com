@@ -42,6 +42,10 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 RESEND_API_URL = os.environ.get("RESEND_API_URL", "https://api.resend.com").rstrip("/")  # override only for tests
 MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
+# Payments through Stripe Checkout (setup.py stripe writes these to config.env).
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_API_URL = os.environ.get("STRIPE_API_URL", "https://api.stripe.com").rstrip("/")  # override only for tests
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 LICENSE_API_KEY = os.environ.get("LICENSE_API_KEY", "").strip()
@@ -147,7 +151,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-26-updates"
+SCHEMA_VERSION = "2026-10-26-stripe"
 
 
 def ensure_schema():
@@ -187,6 +191,9 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
         f"user_agent TEXT, created_at {word}, last_seen {word})",
         f"CREATE TABLE IF NOT EXISTS downloads (id {pk}, product_id {ident}, user_id INTEGER, ip_address {word}, created_at {word})",
+        # One row per paid Stripe Checkout session: claimed first, so an order is never made twice.
+        f"CREATE TABLE IF NOT EXISTS stripe_payments (session_id {ident} PRIMARY KEY, product_id {word}, user_id INTEGER, email TEXT, "
+        f"order_id INTEGER, license_key {word}, created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -198,7 +205,10 @@ def ensure_schema():
                           ("users", "admin_note TEXT"), ("posts", f"publish_at {word}"),
                           ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT"),
                           # RotaHub updates: "everyone must update", and when the version or download last changed
-                          ("products", "update_required INTEGER DEFAULT 0"), ("products", f"updated_at {word}")):
+                          ("products", "update_required INTEGER DEFAULT 0"), ("products", f"updated_at {word}"),
+                          # Stripe: the price charged at checkout (smallest unit, e.g. ore/cents), and on orders the payment
+                          ("products", "pay_amount INTEGER DEFAULT 0"), ("products", f"pay_currency {word}"),
+                          ("orders", f"payment_ref {ident}"), ("orders", f"currency {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -873,6 +883,8 @@ def public_product(row, staff=False):
     if not staff:
         p["has_download"] = bool(p.get("download_url"))
         p["download_url"] = ""
+    # Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
+    p["can_buy"] = bool(STRIPE_SECRET_KEY and (p.get("pay_amount") or 0) > 0 and p.get("status") == "published")
     return p
 
 
@@ -1104,23 +1116,30 @@ def save_product():
     if download_url and not (download_url.startswith("https://") or FILE_LINK.match(download_url)):
         return err("The download link must start with https:// or be an uploaded file (/files/...)", 400)
     version = str(b.get("version") or "0.1.0").strip()[:30]
+    try:
+        pay_amount = int(round(float(str(b.get("pay_amount") or 0).replace(",", ".")) * 100))
+    except (TypeError, ValueError):
+        return err("The price at checkout must be a number, like 299 or 29.99", 400)
+    pay_currency = str(b.get("pay_currency") or "sek").lower()
+    if pay_amount < 0 or pay_amount > 10_000_000 or pay_currency not in PAY_CURRENCIES:
+        return err("Check the price at checkout and its currency", 400)
     before = db().first("SELECT version, download_url, updated_at FROM products WHERE id = ?", pid)
     # When the version or the file changes, RotaHub sees a new release from this time on.
     changed = not before or before["version"] != version or (before["download_url"] or "") != download_url
     updated_at = utc_stamp() if changed or not before["updated_at"] else before["updated_at"]
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
         "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, "
-        "update_required=excluded.update_required, updated_at=excluded.updated_at",
+        "update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency",
         pid, name, b.get("simulator") or "MSFS 2024", version, b.get("folder_name") or f"rotaidem-{pid}",
         download_url, b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
         b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
         "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))),
-        1 if b.get("update_required") else 0, updated_at)
+        1 if b.get("update_required") else 0, updated_at, pay_amount, pay_currency)
     audit(user, "save_product", pid + (f" (update {version})" if before and changed else ""))
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
@@ -1280,7 +1299,7 @@ def admin_overview():
                     "emails_sent": n("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns"),
                     "media": n("SELECT COUNT(*) AS n FROM media"),
                     "staff_online": staff_online(),
-                    "email_ready": bool(RESEND_API_KEY),
+                    "email_ready": bool(RESEND_API_KEY), "payments_ready": bool(STRIPE_SECRET_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
 
@@ -1622,7 +1641,8 @@ def admin_system():
                     "site_url": site_url(), "email_ready": bool(RESEND_API_KEY), "mail_from": MAIL_FROM,
                     "admin_password": bool(gate_hash()), "tables": tables,
                     "media_bytes": int(n("SELECT COALESCE(SUM(size), 0) AS n FROM media")),
-                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist())})
+                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist()),
+                    "stripe": stripe_mode(), "stripe_webhook": bool(STRIPE_WEBHOOK_SECRET)})
 
 
 @app.get("/api/admin/audit")
@@ -2274,6 +2294,173 @@ def account_claim_license():
                      "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                      "FROM licenses WHERE id = ?", lic["id"])
     return jsonify({"license": row})
+
+
+# ---------- payments: Stripe Checkout ----------
+# Buy -> /api/checkout/<id> makes a Checkout session -> the customer pays on Stripe's page ->
+# /checkout-done asks /api/checkout/status (and Stripe calls /api/stripe/webhook): one order and
+# one licence key, emailed. The price comes from the product (Admin -> Products -> Price at checkout).
+
+PAY_CURRENCIES = ("sek", "eur", "usd", "gbp", "nok", "dkk")
+CHECKOUT_SESSION = re.compile(r"^cs_[A-Za-z0-9_]{10,250}$")
+
+
+def stripe_mode():
+    return "" if not STRIPE_SECRET_KEY else ("test" if "_test_" in STRIPE_SECRET_KEY else "live")
+
+
+def stripe_call(method, path, fields=None):
+    """Stripe's API with the secret key from config.env. Returns (answer, error text)."""
+    data = urllib.parse.urlencode(fields or {}).encode() if method == "POST" else None
+    req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method,
+                                 headers={"Authorization": f"Bearer {STRIPE_SECRET_KEY}", "Content-Type": "application/x-www-form-urlencoded",
+                                          "User-Agent": "Rotaidem-Website/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), ""
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(raw)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = raw[:200]
+        app.logger.error("Stripe %s %s -> %s: %s", method, path, exc.code, message)
+        return None, f"Stripe said ({exc.code}): {message}"
+    except (OSError, ValueError) as exc:
+        app.logger.error("Stripe %s %s: %s", method, path, exc)
+        return None, "Could not reach Stripe. Try again in a minute."
+
+
+def key_prefix_for(product_id):
+    """The prefix of a product's licence keys: Admin -> RotaHub -> Install settings, HPRO for HeavyPro, else from the id."""
+    settings = next((p for p in hub_config()["products"] if p["id"] == product_id), None)
+    if settings and settings.get("key_prefix"):
+        return settings["key_prefix"]
+    if product_id in ("heavypro", "rotaidem-heavypro"):
+        return "HPRO"
+    return (re.sub(r"[^A-Z0-9]", "", product_id.upper()) or "ROTA")[:4].ljust(2, "X")
+
+
+def fulfil_checkout(session):
+    """A paid Checkout session -> one order and one licence key, emailed. Safe to call twice
+    (from the success page and the webhook): the stripe_payments row is claimed first."""
+    if session.get("payment_status") != "paid" or session.get("mode") != "payment" or not CHECKOUT_SESSION.match(str(session.get("id") or "")):
+        return None
+    sid = session["id"]
+    done = db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+    if done:
+        return done
+    meta = session.get("metadata") or {}
+    product_id = str(meta.get("product_id") or "")
+    try:
+        user_id = int(meta.get("user_id") or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id) if user_id else None
+    email = ((user or {}).get("email") or (session.get("customer_details") or {}).get("email") or session.get("customer_email") or "").lower()
+    try:
+        db().run("INSERT INTO stripe_payments (session_id, product_id, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)",
+                 sid, product_id, user_id or None, email, utc_stamp())
+    except Exception:  # noqa: BLE001 - the other request (page or webhook) claimed it a moment ago
+        return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+    amount = (session.get("amount_total") or 0) / 100
+    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?)",
+             user_id or None, product_id, amount, sid, str(session.get("currency") or "").lower())
+    order = db().first("SELECT id FROM orders WHERE payment_ref = ?", sid)
+    key = ""
+    while not key:
+        candidate = generate_key(key_prefix_for(product_id))
+        if insert_license(candidate, product_id, email, user_id or None, order["id"] if order else None, 2, "Bought on rotaidem.com (Stripe)", "Stripe"):
+            key = candidate
+    db().run("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?", order["id"] if order else None, key, sid)
+    error = email_license_keys(email, [key], product_id)
+    if error:
+        app.logger.error("Licence e-mail after payment %s failed: %s", sid, error)
+    if user:
+        audit(user, "stripe_order", f"{product_id} {amount:.2f} {str(session.get('currency') or '').upper()}")
+    return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+
+
+@app.post("/api/checkout/<pid>")
+def checkout(pid):
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Log in to buy. Your licence key is linked to your account.", "login": True}), 401
+    product = db().first("SELECT * FROM products WHERE id = ?", pid)
+    if not product or not (product.get("pay_amount") or 0) > 0 or product.get("status") != "published":
+        return err("This product cannot be bought on the website yet", 404)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet. Please try again later or contact us.", 503)
+    owned = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)", user["id"], (user["email"] or "").lower())
+    if any(same_product(pid, r["product_id"]) for r in owned):
+        return jsonify({"error": f"You already have a licence for {product['name']}. It is under My account.", "owned": True}), 409
+    base = site_url()
+    fields = {"mode": "payment", "line_items[0][quantity]": "1",
+              "line_items[0][price_data][currency]": product.get("pay_currency") or "sek",
+              "line_items[0][price_data][unit_amount]": str(product["pay_amount"]),
+              "line_items[0][price_data][product_data][name]": product["name"] or pid,
+              "customer_email": user["email"], "client_reference_id": str(user["id"]),
+              "metadata[product_id]": pid, "metadata[user_id]": str(user["id"]),
+              "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": str(user["id"]),
+              "success_url": f"{base}/checkout-done?session_id={{CHECKOUT_SESSION_ID}}",
+              "cancel_url": f"{base}/addons/view?id={urllib.parse.quote(pid)}&cancelled=1"}
+    if product.get("tagline"):
+        fields["line_items[0][price_data][product_data][description]"] = product["tagline"][:300]
+    session, error = stripe_call("POST", "/v1/checkout/sessions", fields)
+    if error or not (session or {}).get("url"):
+        return err(error or "Stripe did not open a checkout page", 502)
+    return jsonify({"url": session["url"]})
+
+
+@app.get("/api/checkout/status")
+def checkout_status():
+    """The page after paying asks this: makes the order and key at once if Stripe says it is paid."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    sid = request.args.get("session_id", "")
+    if not CHECKOUT_SESSION.match(sid):
+        return err("Order not found", 404)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    session, error = stripe_call("GET", f"/v1/checkout/sessions/{urllib.parse.quote(sid)}")
+    if error:
+        return err(error, 502)
+    meta = session.get("metadata") or {}
+    if str(meta.get("user_id")) != str(user["id"]):
+        return err("Order not found", 404)
+    product = db().first("SELECT name FROM products WHERE id = ?", meta.get("product_id") or "")
+    answer = {"paid": session.get("payment_status") == "paid", "status": session.get("status") or "",
+              "product_id": meta.get("product_id") or "", "product": (product or {}).get("name") or meta.get("product_id") or ""}
+    if answer["paid"]:
+        done = fulfil_checkout(session) or {}
+        answer.update({"license_key": done.get("license_key") or "", "email": done.get("email") or ""})
+    return jsonify(answer)
+
+
+@app.post("/api/stripe/webhook")
+def stripe_webhook():
+    """Stripe tells about paid checkouts here, also when the customer closed the page after paying."""
+    if not STRIPE_WEBHOOK_SECRET:
+        return err("The webhook is not set up", 503)
+    payload = request.get_data()
+    parts = [p.split("=", 1) for p in request.headers.get("Stripe-Signature", "").split(",") if "=" in p]
+    stamp = next((v for k, v in parts if k == "t"), "")
+    signatures = [v for k, v in parts if k == "v1"]
+    try:
+        fresh = abs(time.time() - int(stamp)) <= 300
+    except ValueError:
+        fresh = False
+    expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), stamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    if not fresh or not any(hmac.compare_digest(expected, v) for v in signatures):
+        return err("Bad signature", 400)
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        return err("Bad payload", 400)
+    if event.get("type") in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        fulfil_checkout((event.get("data") or {}).get("object") or {})
+    return jsonify({"received": True})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
@@ -2988,7 +3175,7 @@ def site_settings_script():
 # ---------- backup ----------
 
 BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
-                 "licenses", "license_activations", "media", "campaigns", "shared_profiles")
+                 "licenses", "license_activations", "media", "campaigns", "shared_profiles", "stripe_payments")
 
 
 def table_columns(d, table):

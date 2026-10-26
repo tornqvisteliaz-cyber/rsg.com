@@ -40,6 +40,13 @@ function show(p) {
     const buy = document.getElementById("buy");
     if (p.buy_url && /^(https?:|mailto:)/.test(p.buy_url)) buy.href = p.buy_url;
     if (p.status !== "published") buy.textContent = "Notify me";
+    if (p.can_buy) { // paid on Stripe's checkout page
+        let price = (p.pay_amount / 100).toFixed(2) + " " + String(p.pay_currency || "").toUpperCase();
+        try { price = new Intl.NumberFormat(undefined, { style: "currency", currency: String(p.pay_currency).toUpperCase() }).format(p.pay_amount / 100); } catch (err) {}
+        buy.href = "#"; buy.textContent = "Buy now · " + price;
+        buy.onclick = e => { e.preventDefault(); rsgBuy(p.id, buy); };
+        if (new URLSearchParams(location.search).get("cancelled")) buy.insertAdjacentHTML("beforebegin", '<p class="muted" style="margin:0 0 12px;font-size:14px">The payment was cancelled. Nothing was charged.</p>');
+    }
     if (/^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "") || p.has_download) {
         const dl = document.getElementById("download");
         dl.href = "/get-rotahub?product=" + encodeURIComponent(p.name || p.id); dl.dataset.dl = p.id; dl.style.display = ""; // counted; the installer itself only goes to RotaHub

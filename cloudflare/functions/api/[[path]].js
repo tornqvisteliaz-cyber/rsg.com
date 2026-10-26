@@ -51,6 +51,9 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
     if (method === "GET" && path === "/api/hub") return json(await hubConfig(env));
     if (method === "GET" && path === "/api/hub/products") return hubProducts(request, env);
+    if (method === "POST" && /^\/api\/checkout\/[\w.-]+$/.test(path)) return checkout(request, env, decodeURIComponent(path.split("/").pop()));
+    if (method === "GET" && path === "/api/checkout/status") return checkoutStatus(request, env);
+    if (method === "POST" && path === "/api/stripe/webhook") return stripeWebhook(request, env);
     if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
     if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
@@ -147,9 +150,12 @@ async function ensure(env) {
   // One row per logged-in browser; only a hash of the token is stored.
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, user_id INTEGER, ip_address TEXT, created_at TEXT)").run();
+  // One row per paid Stripe Checkout session: claimed first, so an order is never made twice.
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS stripe_payments (session_id TEXT PRIMARY KEY, product_id TEXT, user_id INTEGER, email TEXT, order_id INTEGER, license_key TEXT, created_at TEXT)").run();
   for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"],
                              ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
-                             ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"]]) {
+                             ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"],
+                             ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
@@ -356,18 +362,20 @@ async function customerOrders(request, env) {
 
 // A product for the website. A "licence holders only" download keeps its link hidden from visitors.
 // Products are only downloaded through RotaHub, so the installer link stays hidden from everyone but staff.
-function publicProduct(row, staff) {
+function publicProduct(row, staff, canSell = false) {
   const p = withImages(row);
   try { p.changelog = JSON.parse(p.changelog || "[]"); } catch (err) { p.changelog = []; }
   p.download_gate = p.download_gate || "public";
   if (!staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  // Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
+  p.can_buy = !!(canSell && Number(p.pay_amount) > 0 && p.status === "published");
   return p;
 }
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   const viewer = await currentUser(request, env);
   const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
-  return json({ products: (rows.results || []).map(r => publicProduct(r, staff)) });
+  return json({ products: (rows.results || []).map(r => publicProduct(r, staff, !!stripeKey(env))) });
 }
 // Version history of a product: [{version, date, notes}], newest first, at most 50.
 function cleanChangelog(items) {
@@ -473,13 +481,16 @@ async function saveProduct(request, env) {
   const images = JSON.stringify(listImages(body.images));
   const downloadUrl = String(body.download_url || "").trim(), version = String(body.version || "0.1.0").trim().slice(0, 30);
   if (downloadUrl && !(downloadUrl.startsWith("https://") || FILE_LINK.test(downloadUrl))) return json({ error: "The download link must start with https:// or be an uploaded file (/files/...)" }, 400);
+  const payAmount = Math.round(Number(String(body.pay_amount || 0).replace(",", ".")) * 100), payCurrency = String(body.pay_currency || "sek").toLowerCase();
+  if (!Number.isFinite(payAmount)) return json({ error: "The price at checkout must be a number, like 299 or 29.99" }, 400);
+  if (payAmount < 0 || payAmount > 10000000 || !PAY_CURRENCIES.includes(payCurrency)) return json({ error: "Check the price at checkout and its currency" }, 400);
   const before = await env.DB.prepare("SELECT version, download_url, updated_at FROM products WHERE id = ?").bind(id).first();
   // When the version or the file changes, RotaHub sees a new release from this time on.
   const changed = !before || before.version !== version || (before.download_url || "") !== downloadUrl;
   const updatedAt = changed || !before.updated_at ? utcStamp() : before.updated_at;
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at").bind(
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency").bind(
     id, name, body.simulator || "MSFS 2024", version, body.folder_name || `rotaidem-${id}`, downloadUrl, body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
-    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt
+    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt, payAmount, payCurrency
   ).run();
   await audit(env, user, "save_product", id + (before && changed ? ` (update ${version})` : ""));
   return json({ ok: true, id, page: "/addons/view?id=" + id });
@@ -587,7 +598,7 @@ async function adminOverview(request, env) {
   const dlCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM downloads").first();
   const mailCount = await env.DB.prepare("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns").first();
   const mediaCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM media").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, staff_online: await staffOnline(env), revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, staff_online: await staffOnline(env), revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env), payments_ready: !!stripeKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -869,6 +880,108 @@ async function hubProducts(request, env) {
   return json({ revision, products: items });
 }
 
+// ---------- payments: Stripe Checkout (same as server.py) ----------
+const PAY_CURRENCIES = ["sek", "eur", "usd", "gbp", "nok", "dkk"];
+const CHECKOUT_SESSION = /^cs_[A-Za-z0-9_]{10,250}$/;
+const stripeKey = env => String(env.STRIPE_SECRET_KEY || "").trim();
+const stripeWebhookSecret = env => String(env.STRIPE_WEBHOOK_SECRET || "").trim();
+const stripeMode = env => !stripeKey(env) ? "" : stripeKey(env).includes("_test_") ? "test" : "live";
+// Stripe's API with the secret key. Returns [answer, error text].
+async function stripeCall(env, method, path, fields = null) {
+  try {
+    const res = await fetch((env.STRIPE_API_URL || "https://api.stripe.com").replace(/\/$/, "") + path, {
+      method, headers: { Authorization: `Bearer ${stripeKey(env)}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: method === "POST" ? new URLSearchParams(fields || {}).toString() : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return [null, `Stripe said (${res.status}): ${(data.error || {}).message || ""}`];
+    return [data, ""];
+  } catch (err) { return [null, "Could not reach Stripe. Try again in a minute."]; }
+}
+async function keyPrefixFor(env, productId) {
+  const settings = (await hubConfig(env)).products.find(p => p.id === productId);
+  if (settings && settings.key_prefix) return settings.key_prefix;
+  if (["heavypro", "rotaidem-heavypro"].includes(productId)) return "HPRO";
+  return ((productId.toUpperCase().replace(/[^A-Z0-9]/g, "") || "ROTA").slice(0, 4)).padEnd(2, "X");
+}
+// A paid Checkout session -> one order and one licence key, emailed. Safe to call twice: the row is claimed first.
+async function fulfilCheckout(env, request, session) {
+  if (session.payment_status !== "paid" || session.mode !== "payment" || !CHECKOUT_SESSION.test(String(session.id || ""))) return null;
+  const sid = session.id, get = () => env.DB.prepare("SELECT * FROM stripe_payments WHERE session_id = ?").bind(sid).first();
+  const done = await get();
+  if (done) return done;
+  const meta = session.metadata || {}, productId = String(meta.product_id || ""), userId = Number(meta.user_id) || 0;
+  const user = userId ? await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first() : null;
+  const email = String((user && user.email) || (session.customer_details || {}).email || session.customer_email || "").toLowerCase();
+  try {
+    await env.DB.prepare("INSERT INTO stripe_payments (session_id, product_id, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)").bind(sid, productId, userId || null, email, utcStamp()).run();
+  } catch (err) { return get(); } // the other request (page or webhook) claimed it a moment ago
+  const amount = (Number(session.amount_total) || 0) / 100;
+  await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?)").bind(userId || null, productId, amount, sid, String(session.currency || "").toLowerCase()).run();
+  const order = await env.DB.prepare("SELECT id FROM orders WHERE payment_ref = ?").bind(sid).first();
+  let key = "";
+  while (!key) {
+    const candidate = generateKey(await keyPrefixFor(env, productId));
+    if (await insertLicense(env, candidate, productId, email, userId || null, order ? order.id : null, 2, "Bought on rotaidem.com (Stripe)", "Stripe")) key = candidate;
+  }
+  await env.DB.prepare("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?").bind(order ? order.id : null, key, sid).run();
+  await emailLicenseKeys(env, request, email, [key], productId);
+  if (user) await audit(env, user, "stripe_order", `${productId} ${amount.toFixed(2)} ${String(session.currency || "").toUpperCase()}`);
+  return get();
+}
+async function checkout(request, env, pid) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Log in to buy. Your licence key is linked to your account.", login: true }, 401);
+  const product = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(pid).first();
+  if (!product || !(Number(product.pay_amount) > 0) || product.status !== "published") return json({ error: "This product cannot be bought on the website yet" }, 404);
+  if (!stripeKey(env)) return json({ error: "Payments are not set up yet. Please try again later or contact us." }, 503);
+  const owned = (await env.DB.prepare("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)").bind(user.id, String(user.email || "").toLowerCase()).all()).results || [];
+  if (owned.some(r => sameProduct(pid, r.product_id))) return json({ error: `You already have a licence for ${product.name}. It is under My account.`, owned: true }, 409);
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const fields = { mode: "payment", "line_items[0][quantity]": "1", "line_items[0][price_data][currency]": product.pay_currency || "sek",
+    "line_items[0][price_data][unit_amount]": String(product.pay_amount), "line_items[0][price_data][product_data][name]": product.name || pid,
+    customer_email: user.email, client_reference_id: String(user.id), "metadata[product_id]": pid, "metadata[user_id]": String(user.id),
+    "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": String(user.id),
+    success_url: `${base}/checkout-done?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/addons/view?id=${encodeURIComponent(pid)}&cancelled=1` };
+  if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
+  const [session, error] = await stripeCall(env, "POST", "/v1/checkout/sessions", fields);
+  if (error || !(session || {}).url) return json({ error: error || "Stripe did not open a checkout page" }, 502);
+  return json({ url: session.url });
+}
+// The page after paying asks this: makes the order and key at once if Stripe says it is paid.
+async function checkoutStatus(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const sid = new URL(request.url).searchParams.get("session_id") || "";
+  if (!CHECKOUT_SESSION.test(sid)) return json({ error: "Order not found" }, 404);
+  if (!stripeKey(env)) return json({ error: "Payments are not set up yet" }, 503);
+  const [session, error] = await stripeCall(env, "GET", `/v1/checkout/sessions/${encodeURIComponent(sid)}`);
+  if (error) return json({ error }, 502);
+  const meta = session.metadata || {};
+  if (String(meta.user_id) !== String(user.id)) return json({ error: "Order not found" }, 404);
+  const product = await env.DB.prepare("SELECT name FROM products WHERE id = ?").bind(meta.product_id || "").first();
+  const answer = { paid: session.payment_status === "paid", status: session.status || "", product_id: meta.product_id || "", product: (product || {}).name || meta.product_id || "" };
+  if (answer.paid) {
+    const done = (await fulfilCheckout(env, request, session)) || {};
+    Object.assign(answer, { license_key: done.license_key || "", email: done.email || "" });
+  }
+  return json(answer);
+}
+// Stripe tells about paid checkouts here, also when the customer closed the page after paying.
+async function stripeWebhook(request, env) {
+  if (!stripeWebhookSecret(env)) return json({ error: "The webhook is not set up" }, 503);
+  const payload = await request.text();
+  const parts = (request.headers.get("Stripe-Signature") || "").split(",").map(p => p.split("=")).filter(p => p.length >= 2);
+  const stamp = (parts.find(([k]) => k === "t") || [])[1] || "", signatures = parts.filter(([k]) => k === "v1").map(p => p.slice(1).join("="));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(stripeWebhookSecret(env)), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expected = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${stamp}.${payload}`)))].map(b => b.toString(16).padStart(2, "0")).join("");
+  if (!(Math.abs(Date.now() / 1000 - Number(stamp)) <= 300) || !signatures.includes(expected)) return json({ error: "Bad signature" }, 400);
+  let event;
+  try { event = JSON.parse(payload); } catch (err) { return json({ error: "Bad payload" }, 400); }
+  if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) await fulfilCheckout(env, request, (event.data || {}).object || {});
+  return json({ received: true });
+}
+
 // ---------- blocklist and system (same as server.py) ----------
 const BLOCK_IP = /^[0-9a-f.:]{3,45}$/;
 async function blocklist(env) {
@@ -923,7 +1036,7 @@ async function adminSystem(request, env) {
   const lastBackup = await env.DB.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'download_backup'").first();
   return json({ database: "Cloudflare D1", schema: "d1", python: "Cloudflare Workers", server_time: utcStamp(), site_url: (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, ""),
     email_ready: !!resendKey(env), mail_from: mailFrom(env), admin_password: !!(await gateHash(env)), tables, media_bytes: Number(mediaBytes),
-    last_backup: String((lastBackup || {}).at || ""), blocked: (await blocklist(env)).length });
+    last_backup: String((lastBackup || {}).at || ""), blocked: (await blocklist(env)).length, stripe: stripeMode(env), stripe_webhook: !!stripeWebhookSecret(env) });
 }
 
 
@@ -992,7 +1105,7 @@ function cleanConfig(c) {
 }
 const ROADMAP_STAGES = ["Done", "In progress", "Next", "Later"];
 // Pages and folders of the site: a short link may not take their address.
-const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "get-rotahub", "files", "health", "heavypro", "img", "index",
+const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "get-rotahub", "checkout-done", "files", "health", "heavypro", "img", "index",
   "installation", "login", "media", "newsletter", "privacy", "reset-password", "roadmap", "signup", "support", "terms", "unsubscribe", "work-at-rsg", "files", "fonts"];
 function cleanRoadmap(items) {
   if (!Array.isArray(items) || items.length > 40) throw new Error("The roadmap can have at most 40 steps");

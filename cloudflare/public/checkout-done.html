@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Thank you | Rotaidem</title>
+    <meta name="robots" content="noindex">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/site.css">
+    <script src="/site-settings.js"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / <a href="/account">My account</a> / Order</div><h1 id="title">Finishing your order…</h1><p id="lead">This takes a few seconds.</p></div></section>
+<section class="section"><div class="wrap">
+    <div class="box" id="key-box" hidden>
+        <h3 style="margin-top:0">Your licence key</h3>
+        <p id="key" style="font:600 22px/1.3 ui-monospace,Consolas,monospace;letter-spacing:.04em;color:var(--ink);margin:0 0 10px"></p>
+        <p class="muted" id="key-note" style="margin:0 0 18px"></p>
+        <a class="btn" id="hub-btn" href="/get-rotahub">Install with RotaHub</a>
+        <a class="btn btn-ghost" href="/account" style="margin-left:8px">My account</a>
+    </div>
+    <div class="box" id="wait-box"><p class="muted" id="wait" style="margin:0">Checking the payment with Stripe…</p></div>
+</div></section>
+<script src="/auth.js"></script>
+<script>
+(async function () {
+    const sid = new URLSearchParams(location.search).get("session_id") || "", token = localStorage.getItem("rsg_token");
+    const show = (title, lead, wait) => { document.getElementById("title").textContent = title; document.getElementById("lead").textContent = lead; document.getElementById("wait").textContent = wait || ""; document.getElementById("wait-box").hidden = !wait; };
+    if (!token) { location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search); return; }
+    if (!sid) { show("Order", "No order to show.", "Your orders are under My account."); return; }
+    for (let i = 0; i < 20; i++) {
+        let d = {};
+        try { d = await (await fetch("/api/checkout/status?session_id=" + encodeURIComponent(sid), { headers: { "X-Rotaidem-Token": token } })).json(); } catch (err) {}
+        if (d.paid && d.license_key) {
+            show("Thank you!", `Your payment for ${d.product} went through.`);
+            document.getElementById("key").textContent = d.license_key;
+            document.getElementById("key-note").textContent = (d.email ? `We also emailed it to ${d.email}. ` : "") + "It is under My account too. Install " + d.product + " with RotaHub: it activates the key for you.";
+            document.getElementById("hub-btn").href = "/get-rotahub?product=" + encodeURIComponent(d.product);
+            document.getElementById("key-box").hidden = false;
+            return;
+        }
+        if (d.error && /not found/i.test(d.error)) { show("We could not find this order", d.error, "If you were charged, email Eliaz@rotaidem.com and we sort it out."); return; }
+        if (d.status === "expired") { show("The payment was not completed", "Nothing was charged.", "You can try again from the product page."); return; }
+        await new Promise(r => setTimeout(r, i < 5 ? 1500 : 3000));
+    }
+    show("Payment received?", "Stripe has not confirmed it yet.", "Your licence key arrives by email and under My account as soon as it does. If nothing comes within an hour, email Eliaz@rotaidem.com.");
+})();
+</script>
+</body>
+</html>

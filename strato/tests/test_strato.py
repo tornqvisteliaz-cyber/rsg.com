@@ -12,8 +12,9 @@ are dropped):
     ROTAIDEM_TEST_MYSQL="mysql8=127.0.0.1:3308:user:password:db;mariadb=127.0.0.1:3306:user:password:db"
 """
 import base64
-import http.server
 import hashlib
+import hmac
+import http.server
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 
@@ -59,6 +61,56 @@ class FakeResend:
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self):
+        self.server.shutdown()
+
+
+class FakeStripe:
+    """Stands in for api.stripe.com: Checkout sessions made, read back, and marked paid by the test."""
+
+    def __init__(self):
+        self.created, self.sessions = [], {}
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data):
+                raw = json.dumps(data).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()).items()}
+                if self.path != "/v1/checkout/sessions" or not self.headers.get("Authorization", "").startswith("Bearer sk_test_"):
+                    return self.reply(400, {"error": {"message": "bad request"}})
+                outer.created.append(form)
+                sid = f"cs_test_{len(outer.created)}{os.urandom(6).hex()}"
+                outer.sessions[sid] = {"id": sid, "object": "checkout.session", "mode": form["mode"], "status": "open", "payment_status": "unpaid",
+                                       "amount_total": int(form["line_items[0][price_data][unit_amount]"]), "currency": form["line_items[0][price_data][currency]"],
+                                       "customer_email": form.get("customer_email"), "url": f"https://checkout.stripe.test/c/{sid}",
+                                       "metadata": {k[9:-1]: v for k, v in form.items() if k.startswith("metadata[")}}
+                self.reply(200, outer.sessions[sid])
+
+            def do_GET(self):
+                path = urllib.parse.urlparse(self.path).path
+                if path == "/v1/checkout/sessions":
+                    return self.reply(200, {"object": "list", "data": []})
+                session = outer.sessions.get(path.rsplit("/", 1)[-1])
+                self.reply(200, session) if session else self.reply(404, {"error": {"message": "No such checkout.session"}})
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def pay(self, sid):
+        self.sessions[sid].update(status="complete", payment_status="paid")
+        return self.sessions[sid]
 
     def stop(self):
         self.server.shutdown()
@@ -106,7 +158,7 @@ class Webspace:
     """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
     rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
-    def __init__(self, db_values, resend_url):
+    def __init__(self, db_values, resend_url, stripe_url=""):
         self.root = tempfile.mkdtemp(prefix="strato-")
         self.app = os.path.join(self.root, "rotaidem")
         os.mkdir(self.app)
@@ -119,6 +171,8 @@ class Webspace:
         self.values = {"SECRET_KEY": "s" * 64, "CHECK_KEY": "checkkey123", "SITE_URL": "https://rotaidem.test",
                        "LICENSE_API_KEY": "generator-key-0123456789", "RESEND_API_KEY": "re_test", "RESEND_API_URL": resend_url,
                        "MAIL_FROM": "Rotaidem <no-reply@rotaidem.com>", **db_values}
+        if stripe_url:
+            self.values.update(STRIPE_SECRET_KEY="sk_test_fake0123456789", STRIPE_API_URL=stripe_url, STRIPE_WEBHOOK_SECRET="whsec_testsecret")
         if "MYSQL_HOST" not in self.values:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
@@ -178,12 +232,14 @@ class StratoCGITests:
         if cls.db_values:
             empty_mysql(cls.db_values)
         cls.resend = FakeResend()
-        cls.w = Webspace(cls.db_values, cls.resend.url)
+        cls.stripe = FakeStripe()
+        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url)
 
     @classmethod
     def tearDownClass(cls):
         cls.w.remove()
         cls.resend.stop()
+        cls.stripe.stop()
 
     @classmethod
     def login(cls, who, password):
@@ -1072,6 +1128,62 @@ class StratoCGITests:
         self.ok(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t))
         self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "RotaHub.exe")))
         self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t).status, 404)
+
+    def webhook(self, event, secret="whsec_testsecret", stamp=None):
+        payload = json.dumps(event).encode()
+        stamp = str(int(time.time()) if stamp is None else stamp)
+        sig = hmac.new(secret.encode(), stamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+        return self.w.cgi("POST", "/api/stripe/webhook", payload, headers={"Stripe-Signature": f"t={stamp},v1={sig}", "Content-Type": "application/json"})
+
+    def test_stripe_checkout_order_and_key(self):
+        t = self.owner_token
+        product = {"name": "Pay App", "id": "pay-app", "status": "published", "tagline": "Paid add-on", "pay_amount": "149", "pay_currency": "sek"}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "pay_amount": "lots"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "pay_currency": "xyz"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")
+        self.assertEqual((listed["can_buy"], listed["pay_amount"], listed["pay_currency"]), (True, 14900, "sek"))
+        r = self.w.cgi("POST", "/api/checkout/pay-app")
+        self.assertEqual((r.status, r.json().get("login")), (401, True))
+        buyer, email = self.customer("stripebuyer")
+        url = self.ok(self.w.cgi("POST", "/api/checkout/pay-app", token=buyer))["url"]
+        form = self.stripe.created[-1]
+        sid = url.rsplit("/", 1)[-1]
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], form["line_items[0][price_data][currency]"], form["customer_email"], form["metadata[product_id]"]),
+                         ("14900", "sek", email, "pay-app"))
+        self.assertEqual(form["success_url"], "https://rotaidem.test/checkout-done?session_id={CHECKOUT_SESSION_ID}")
+        self.assertFalse(self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["paid"])
+        # paid: the page after paying gets the key, the order is made once and the key emailed
+        self.stripe.pay(sid)
+        self.resend.requests.clear()
+        done = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        self.assertTrue(done["paid"])
+        self.assertTrue(done["license_key"].startswith("PAYA-"), done)
+        self.assertIn(done["license_key"], self.resend.requests[-1]["body"][0]["html"])
+        again = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        self.assertEqual(again["license_key"], done["license_key"])
+        self.assertEqual(self.ok(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid]}})), {"received": True})
+        orders = [o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o.get("payment_ref") == sid]
+        self.assertEqual(len(orders), 1, "one order however often it is confirmed")
+        self.assertEqual((float(orders[0]["amount"]), orders[0]["currency"], orders[0]["payment_status"]), (149.0, "sek", "Paid"))
+        self.assertIn(done["license_key"], [l["license_key"] for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=buyer))["licenses"]])
+        r = self.w.cgi("POST", "/api/checkout/pay-app", token=buyer)
+        self.assertEqual((r.status, r.json().get("owned")), (409, True), "already owns it")
+        # someone else cannot look at this order
+        other, _ = self.customer("stripepeek")
+        self.assertEqual(self.w.cgi("GET", "/api/checkout/status", token=other, query="session_id=" + sid).status, 404)
+        # the webhook alone makes the order when the buyer closed the page after paying
+        url = self.ok(self.w.cgi("POST", "/api/checkout/pay-app", token=other))["url"]
+        sid2 = url.rsplit("/", 1)[-1]
+        self.assertEqual(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.pay(sid2)}}, secret="whsec_wrong").status, 400)
+        self.assertEqual(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid2]}}, stamp=int(time.time()) - 3600).status, 400)
+        self.ok(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid2]}}))
+        self.assertTrue(any(l["product_id"] == "pay-app" for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=other))["licenses"]))
+        # not for sale: no price, or not available
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "status": "coming_soon"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/checkout/pay-app", token=other).status, 404)
+        self.assertFalse(next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")["can_buy"])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/system", token=t))["stripe"], "test")
 
     def test_update_feed_for_rotahub(self):
         t = self.owner_token

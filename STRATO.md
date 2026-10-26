@@ -148,6 +148,7 @@ python3 rotaidem/strato/setup.py backup          settings + full database into r
 python3 rotaidem/strato/setup.py password        new password for an account
 python3 rotaidem/strato/setup.py permissions     make settings and logs private (700/600) again
 python3 rotaidem/strato/setup.py admin-password  set, change or remove the extra admin page password (also when forgotten)
+python3 rotaidem/strato/setup.py stripe          set up payments: Stripe key and webhook secret (typed, not shown)
 python3 rotaidem/strato/setup.py fetch-installer  copy the newest HeavyPro installer from GitHub to rotaidem.com/files/ (Download buttons follow)
 python3 rotaidem/strato/setup.py import FILE     restore a backup (replaces the database; asks first)
 python3 rotaidem/strato/setup.py reset-catalog   remove all products (asks first, keeps a copy)
@@ -157,6 +158,21 @@ python3 rotaidem/strato/setup.py install         first installation on a new web
 There is also a check page in the browser:
 `https://rotaidem.com/cgi-bin/rotaidem-check.py?key=<CHECK_KEY>`. The key is the `CHECK_KEY` line
 in `rotaidem-data/config.env`; don't share screenshots that show it.
+
+## Payments (Stripe)
+
+1. In Stripe (dashboard.stripe.com): Developers → API keys → **Create restricted key** with
+   *Checkout Sessions: Write* only. Use a `rk_test_`/`sk_test_` key first to try it with test cards.
+2. Developers → Webhooks → **Add endpoint**: `https://rotaidem.com/api/stripe/webhook`, events
+   `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Reveal its signing secret.
+3. Over SSH: `python3 rotaidem/strato/setup.py stripe`, paste both (nothing is shown), and it tests the key.
+4. Admin → Products → a product → **Price at checkout** (amount and currency) → Save.
+
+The product's Buy button then opens Stripe's payment page (the customer logs in first, so the key
+is on their account). After paying they come back to `/checkout-done`, which shows the licence key;
+the order (marked *Stripe* in Admin → Orders) and the key are made once, and the key is emailed.
+The webhook does the same when someone closes the page right after paying. The keys are only in
+`rotaidem-data/config.env`; never paste them anywhere else.
 
 ## Security
 

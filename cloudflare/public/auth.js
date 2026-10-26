@@ -86,6 +86,22 @@ document.addEventListener("click", e => {
     rsgDownload(b.dataset.dl, b.getAttribute("href") && b.getAttribute("href") !== "#" ? b.getAttribute("href") : "");
 });
 
+// Buy with Stripe Checkout (products with a price at checkout): logged in -> Stripe's payment page.
+async function rsgBuy(productId, button) {
+    const token = localStorage.getItem("rsg_token");
+    if (!token) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
+    if (button) { button.dataset.label = button.dataset.label || button.textContent; button.textContent = "Opening checkout…"; button.style.pointerEvents = "none"; }
+    try {
+        const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token } });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.url) { location.href = data.url; return; }
+        if (data.login) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
+        alert(data.error || "The checkout could not be opened. Please try again.");
+        if (data.owned) location.href = withBase("/account");
+    } catch (err) { alert("The checkout could not be opened. Check your connection and try again."); }
+    if (button) { button.textContent = button.dataset.label; button.style.pointerEvents = ""; }
+}
+
 function rsgLogout() {
     const token = localStorage.getItem("rsg_token");
     if (token) fetch("/api/logout", { method: "POST", headers: { "X-Rotaidem-Token": token } }).catch(() => {});
