@@ -859,16 +859,16 @@ def account_orders():
 
 # ---------- catalog ----------
 
-def public_product(row, staff=False, hub_only=False):
-    """A product for the website. A "licence holders only" download keeps its link hidden from visitors,
-    and so does every download while downloads go through RotaHub (Admin -> RotaHub)."""
+def public_product(row, staff=False):
+    """A product for the website. Products are only downloaded through RotaHub, so the installer link
+    stays hidden from everyone but staff; has_download says there is one."""
     p = with_images(row)
     try:
         p["changelog"] = json.loads(p.get("changelog") or "[]")
     except ValueError:
         p["changelog"] = []
     p["download_gate"] = p.get("download_gate") or "public"
-    if (p["download_gate"] == "licence" or hub_only) and not staff:
+    if not staff:
         p["has_download"] = bool(p.get("download_url"))
         p["download_url"] = ""
     return p
@@ -879,8 +879,7 @@ def products():
     rows = db().all("SELECT * FROM products ORDER BY sort_order, name")
     viewer = current_user()
     staff = bool(viewer and viewer["role"] in STAFF)
-    hub_only = hub_config()["downloads"]["hub_only"]
-    return jsonify({"products": [public_product(r, staff, hub_only) for r in rows]})
+    return jsonify({"products": [public_product(r, staff) for r in rows]})
 
 
 def clean_changelog(items):
@@ -907,8 +906,8 @@ def download(pid):
     if not product or not (url.startswith("https://") or url.startswith("/files/")):
         return err("This product has no download yet", 404)
     user = current_user()
-    downloads = hub_config()["downloads"]
-    via_hub = downloads["hub_only"] and not request.headers.get("User-Agent", "").startswith("RotaHub")
+    # The website only hands out RotaHub; RotaHub itself (User-Agent RotaHub/...) gets the installer.
+    via_hub = not request.headers.get("User-Agent", "").startswith("RotaHub")
     if (product.get("download_gate") or "public") == "licence" and not via_hub:
         if not user:
             return jsonify({"error": "Log in to download. The download is for licence holders.", "login": True}), 401
@@ -923,8 +922,7 @@ def download(pid):
         db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
                  pid, user["id"] if user else None, ip, utc_stamp())
     if via_hub:
-        # Downloads go through RotaHub: the website hands out RotaHub, RotaHub gets the installer (and checks the licence).
-        return jsonify({"hub": True, "url": downloads["rotahub_url"], "product": product["name"] or pid})
+        return jsonify({"hub": True, "url": hub_config()["downloads"]["rotahub_url"], "product": product["name"] or pid})
     return jsonify({"url": url})
 
 
@@ -2341,11 +2339,11 @@ def clean_hub(b):
     rotahub_url = str(d.get("rotahub_url") or "").strip()
     if rotahub_url and (len(rotahub_url) > 400 or not (rotahub_url.startswith("https://") or re.match(r"^/files/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$", rotahub_url))):
         raise ValueError("The RotaHub download link must start with https:// or be an uploaded file (/files/...)")
-    if d.get("hub_only") and not rotahub_url:
-        raise ValueError("Add the RotaHub download link before sending downloads through RotaHub")
     return {"message": {"enabled": bool(m.get("enabled")), "text": text, "level": level, "link": hub_link(m.get("link"), "message link")},
             "min_version": min_version, "help_url": hub_link(b.get("help_url"), "help link"), "products": products, "look": look,
-            "downloads": {"rotahub_url": rotahub_url, "hub_only": bool(d.get("hub_only"))}}
+            "downloads": {"rotahub_url": rotahub_url},
+            # RotaHub's own version history: shown in the app when it updates, and on the Downloads page
+            "changelog": clean_changelog(b.get("changelog"))}
 
 
 def hub_config():

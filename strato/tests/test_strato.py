@@ -850,24 +850,27 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
         listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
         self.assertEqual(listed["changelog"], [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "1.0", "date": "", "notes": ""}])
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["url"], product["download_url"])
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["hub"], "the website only hands out RotaHub")
         self.ok(self.w.cgi("POST", "/api/download/gated-app"))  # same address again soon: counted once
         self.ok(self.w.cgi("POST", "/api/download/gated-app", remote_addr="198.51.100.20"))
         stats = self.ok(self.w.cgi("GET", "/api/admin/downloads", token=t))
         row = next(p for p in stats["products"] if p["product_id"] == "gated-app")
         self.assertEqual((row["total"], row["last_7"], row["last_30"]), (2, 2, 2))
-        # licence holders only: the link is hidden and the download needs an account with a licence
-        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
         listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
-        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True))
+        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True), "the installer link stays off the website")
         staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "gated-app")
         self.assertEqual(staff_view["download_url"], product["download_url"], "the admin still sees the link")
-        r = self.w.cgi("POST", "/api/download/gated-app")
+        # RotaHub gets the installer; licence holders only: RotaHub needs an account with a licence
+        hub = {"User-Agent": "RotaHub/0.2.0 (Windows NT 10.0)"}
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", headers=hub))["url"], product["download_url"])
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
+        r = self.w.cgi("POST", "/api/download/gated-app", headers=hub)
         self.assertEqual((r.status, r.json().get("login")), (401, True))
         customer, email = self.customer("downloader")
-        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer, headers=hub).status, 403)
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["hub"], "the website still offers RotaHub")
         self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": email, "product_id": "gated-app", "send_email": False}, token=t))
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["url"], product["download_url"])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer, headers=hub))["url"], product["download_url"])
         self.assertEqual(self.w.cgi("POST", "/api/download/no-such-product").status, 404)
 
     def test_dashboard_recap_and_team_board(self):
@@ -1073,15 +1076,16 @@ class StratoCGITests:
         t = self.owner_token
         self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Hub Product", "id": "hub-product", "status": "published",
                                                          "download_url": "https://rotaidem.test/files/HubProductSetup.exe"}, token=t))
-        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"downloads": {"hub_only": True}}, token=t).status, 400, "needs RotaHub's link")
         self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"downloads": {"rotahub_url": "ftp://x/RotaHub.exe"}}, token=t).status, 400)
         self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_image": "javascript:alert(1)"}}, token=t).status, 400)
         self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_title": "x" * 61}}, token=t).status, 400)
         saved = self.ok(self.w.cgi("POST", "/api/admin/hub", {
-            "downloads": {"rotahub_url": "/files/RotaHub.exe?v=abc123", "hub_only": True},
+            "downloads": {"rotahub_url": "/files/RotaHub.exe?v=abc123"},
             "look": {"accent": "mint", "login_image": "/media/3.jpg", "library_image": "https://cdn.example.com/banner.jpg", "login_title": "Hello pilot"},
-            "products": [{"id": "hub-product", "image": "/img/hero.jpg"}]}, token=t))
+            "products": [{"id": "hub-product", "image": "/img/hero.jpg"}],
+            "changelog": [{"version": "0.2.0", "date": "2026-10-26", "notes": "Messages from the website"}, {"version": "", "notes": "dropped"}]}, token=t))
         try:
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub"))["changelog"], [{"version": "0.2.0", "date": "2026-10-26", "notes": "Messages from the website"}])
             self.assertEqual((saved["look"]["accent"], saved["look"]["accent_color"], saved["look"]["login_title"]), ("mint", "#4cc38a", "Hello pilot"))
             self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub"))["products"][0]["image"], "/img/hero.jpg")
             # visitors get RotaHub, RotaHub gets the installer
@@ -1094,10 +1098,11 @@ class StratoCGITests:
             staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "hub-product")
             self.assertEqual(staff_view["download_url"], "https://rotaidem.test/files/HubProductSetup.exe")
             with open(os.path.join(self.w.public, "site-settings.js")) as fh:
-                self.assertIn('"hub_only": true', fh.read(), "the website's buttons learn about it at once")
+                self.assertIn('"rotahub_url": "/files/RotaHub.exe?v=abc123"', fh.read(), "the RotaHub page learns the link at once")
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/hub", {}, token=t))
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/hub-product"))["url"], "https://rotaidem.test/files/HubProductSetup.exe")
+        r = self.ok(self.w.cgi("POST", "/api/download/hub-product"))
+        self.assertEqual((r["hub"], r["url"]), (True, ""), "no RotaHub link yet: the RotaHub page says it is not ready")
 
     def test_rotahub_settings_and_stats(self):
         t = self.owner_token
@@ -1273,7 +1278,7 @@ class StratoCGITests:
         for name in os.listdir(folder):
             self.assertEqual(os.stat(os.path.join(folder, name)).st_mode & 0o777, 0o644, name)
         self.assertEqual(os.listdir(self.w.data).count("HeavyProSetup.exe.download"), 0)
-        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]}
+        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products", token=self.owner_token))["products"]}
         self.assertEqual(products["heavypro"]["download_url"], f"https://rotaidem.test/files/HeavyProSetup.exe?v={sha[:10]}")
         self.assertIn("now point to", out)
 

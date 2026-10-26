@@ -353,19 +353,19 @@ async function customerOrders(request, env) {
 }
 
 // A product for the website. A "licence holders only" download keeps its link hidden from visitors.
-function publicProduct(row, staff, hubOnly = false) {
+// Products are only downloaded through RotaHub, so the installer link stays hidden from everyone but staff.
+function publicProduct(row, staff) {
   const p = withImages(row);
   try { p.changelog = JSON.parse(p.changelog || "[]"); } catch (err) { p.changelog = []; }
   p.download_gate = p.download_gate || "public";
-  if ((p.download_gate === "licence" || hubOnly) && !staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  if (!staff) { p.has_download = !!p.download_url; p.download_url = ""; }
   return p;
 }
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   const viewer = await currentUser(request, env);
   const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
-  const hubOnly = (await hubConfig(env)).downloads.hub_only;
-  return json({ products: (rows.results || []).map(r => publicProduct(r, staff, hubOnly)) });
+  return json({ products: (rows.results || []).map(r => publicProduct(r, staff)) });
 }
 // Version history of a product: [{version, date, notes}], newest first, at most 50.
 function cleanChangelog(items) {
@@ -378,8 +378,8 @@ async function download(request, env, pid) {
   const url = String((product || {}).download_url || "");
   if (!product || !(url.startsWith("https://") || url.startsWith("/files/"))) return json({ error: "This product has no download yet" }, 404);
   const user = await currentUser(request, env, { ignoreGate: true });
-  const downloads = (await hubConfig(env)).downloads;
-  const viaHub = downloads.hub_only && !(request.headers.get("User-Agent") || "").startsWith("RotaHub");
+  // The website only hands out RotaHub; RotaHub itself (User-Agent RotaHub/...) gets the installer.
+  const viaHub = !(request.headers.get("User-Agent") || "").startsWith("RotaHub");
   if ((product.download_gate || "public") === "licence" && !viaHub) {
     if (!user) return json({ error: "Log in to download. The download is for licence holders.", login: true }, 401);
     if (!STAFF_ROLES.includes(user.role)) {
@@ -391,8 +391,7 @@ async function download(request, env, pid) {
   if (!(await env.DB.prepare("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?").bind(pid, ip, utcStamp(600)).first())) {
     await env.DB.prepare("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)").bind(pid, user ? user.id : null, ip, utcStamp()).run();
   }
-  // Downloads go through RotaHub: the website hands out RotaHub, RotaHub gets the installer (and checks the licence).
-  if (viaHub) return json({ hub: true, url: downloads.rotahub_url, product: product.name || pid });
+  if (viaHub) return json({ hub: true, url: (await hubConfig(env)).downloads.rotahub_url, product: product.name || pid });
   return json({ url });
 }
 // ---------- the fun part of the dashboard ----------
@@ -1557,9 +1556,8 @@ function cleanHub(b) {
   }
   const d = b.downloads || {}, rotahubUrl = String(d.rotahub_url || "").trim();
   if (rotahubUrl && (rotahubUrl.length > 400 || !(rotahubUrl.startsWith("https://") || /^\/files\/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$/.test(rotahubUrl)))) throw new Error("The RotaHub download link must start with https:// or be an uploaded file (/files/...)");
-  if (d.hub_only && !rotahubUrl) throw new Error("Add the RotaHub download link before sending downloads through RotaHub");
   return { message: { enabled: !!m.enabled, text, level: HUB_LEVELS.includes(m.level) ? m.level : "info", link: hubLink(m.link, "message link") },
-    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products, look, downloads: { rotahub_url: rotahubUrl, hub_only: !!d.hub_only } };
+    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products, look, downloads: { rotahub_url: rotahubUrl }, changelog: cleanChangelog(b.changelog) };
 }
 async function hubConfig(env) {
   try { return cleanHub((await getSetting(env, "hub.config", {})) || {}); } catch (err) { return cleanHub({}); }

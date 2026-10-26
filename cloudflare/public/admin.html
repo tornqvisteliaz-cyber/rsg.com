@@ -698,7 +698,13 @@
                     <div class="field"><label for="hd-url">RotaHub download link</label>
                         <div style="display:flex;gap:0"><input id="hd-url" maxlength="400" placeholder="/files/RotaHub.exe or https://..."><select id="hd-pick" style="width:auto;max-width:240px" aria-label="Uploaded files"><option value="">Uploaded files…</option></select></div>
                         <div class="hint">Upload RotaHub.exe under Files below and pick it here, or paste a link.</div></div>
-                    <label style="font-weight:400;display:flex;gap:8px;align-items:flex-start;margin:0"><input type="checkbox" id="hd-only" style="margin-top:3px"> <span>The website's Download buttons give people RotaHub. Product installers are then only handed to RotaHub, which also checks the licence.<span class="hint" style="display:block">The buttons say "Get it in RotaHub" and lead to a page that downloads RotaHub and explains the next steps.</span></span></label>
+                    <p class="muted" style="margin:0;font-size:14px">RotaHub is the only download on the website. Every Download button says "Get it in RotaHub" and leads to a page that downloads RotaHub and explains the next steps. Product installers are only handed to RotaHub, which also checks the licence.</p>
+                </div></div>
+            <div class="panel" style="margin-bottom:24px"><div class="panel-head"><h2>RotaHub versions</h2><span class="muted" style="font-size:13px">What's new, shown in the app when it updates</span></div>
+                <div class="panel-body">
+                    <p class="muted" style="margin-top:0;font-size:14px">Add a version when you release a new RotaHub (the tag, like 0.2.0). RotaHub shows its notes in the update bar and once after updating, and the Downloads page shows the newest. Newest at the top; one point per line.</p>
+                    <div class="list-edit" id="hv-list"></div>
+                    <button class="btn btn-ghost btn-sm" type="button" id="hv-add">Add version</button>
                 </div></div>
             <div class="panel" style="margin-bottom:24px" id="files-panel"><div class="panel-head"><h2>Files</h2><button class="btn btn-sm" type="button" id="hf-up">Upload a file</button></div>
                 <div class="panel-body" style="padding-bottom:6px">
@@ -774,9 +780,9 @@
             <div class="field"><label for="p-version">Version</label><input id="p-version" placeholder="1.0.0"></div>
         </div>
         <div class="sub">Download</div>
-        <div class="field"><label for="p-download">Installer download link</label><input id="p-download" list="file-links" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Shown as a Download button on the Downloads page and the product page. Customers still need a licence key to activate.</div></div>
-        <div class="field"><label for="p-gate">Who can download</label><select id="p-gate"><option value="public">Everyone</option><option value="licence">Only logged-in customers with a licence for this product</option></select>
-            <div class="hint">With licence holders only, visitors see "For licence holders" and must log in. The file itself stays at its address, so do not share that link publicly.</div></div>
+        <div class="field"><label for="p-download">Installer download link</label><input id="p-download" list="file-links" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Only RotaHub gets this link, to install the product. The website never shows it; its buttons say "Get it in RotaHub".</div></div>
+        <div class="field"><label for="p-gate">Who can install it in RotaHub</label><select id="p-gate"><option value="public">Everyone with an account</option><option value="licence">Only accounts with a licence for this product</option></select>
+            <div class="hint">The file itself stays at its address, so do not share that link publicly.</div></div>
         <div class="sub">Version history</div>
         <p class="muted" style="font-size:13px;margin:-4px 0 10px">Shown on the Downloads page as "What's new". Newest at the top.</p>
         <div class="list-edit" id="p-versions"></div>
@@ -2253,7 +2259,7 @@ async function loadCrew() {
 
 // RotaHub: the desktop app's message, lowest version, help link and products
 const HUB_BUILTIN = { heavypro: { manifest_url: "https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/rotahub.jws", licence_ids: "rotaidem-heavypro, heavypro", licence_store: "heavypro", key_prefix: "HPRO" } };
-async function loadHub() { state.hub = await api("/api/admin/hub"); renderHub(); }
+async function loadHub() { state.hub = await api("/api/admin/hub"); renderHub(); renderChecklist(); }
 function renderHub() {
     const h = state.hub, st = h.stats || {}, m = h.message || {}, manager = ["Owner", "Admin"].includes(state.role);
     $("hub-stats").innerHTML = [["People using RotaHub", st.people], ["Active in the last 7 days", st.active_7d], ["Logged-in copies", st.logins],
@@ -2278,6 +2284,7 @@ function renderHub() {
             `</div><div class="hint">Leave a field empty to use what RotaHub has built in. Without a release file, RotaHub installs the product with its normal download. Releases must be signed with the Rotaidem release key, so a wrong link cannot install anything.</div></details></div>`;
     }).join("") : '<p class="muted">No products yet. Add one in the Products tab.</p>';
     renderHubLook(); renderHubDownloads();
+    state.hubVersions = ((state.hub || {}).changelog || []).map(v => ({ ...v })); renderHubVersions();
     $("hub-readonly").hidden = manager;
     [...$("hub-form").querySelectorAll("input, textarea, select, button")].forEach(el => el.disabled = !manager);
     renderHubPreview();
@@ -2300,8 +2307,8 @@ $("hub-form").onsubmit = async e => {
     });
     try {
         state.hub = await post("/api/admin/hub", { message: { enabled: $("hb-on").checked, text: val("hb-text"), level: $("hb-level").value, link: val("hb-link") },
-            min_version: val("hb-min"), help_url: val("hb-help"), products, look: hubLookDraft(), downloads: { rotahub_url: val("hd-url"), hub_only: $("hd-only").checked } });
-        renderHub(); toast("RotaHub settings saved"); loadAudit();
+            min_version: val("hb-min"), help_url: val("hb-help"), products, look: hubLookDraft(), downloads: { rotahub_url: val("hd-url") }, changelog: state.hubVersions });
+        renderHub(); renderChecklist(); toast("RotaHub settings saved"); loadAudit();
     } catch (err) { toast(err.message, true); }
 };
 
@@ -2345,10 +2352,25 @@ $("hub-products").addEventListener("click", async e => {
     box.querySelector("input").value = url; box.querySelector("img").src = safeImage(url);
 });
 
-// downloads: RotaHub's own link and whether the website's buttons give RotaHub
+// RotaHub's own version history (same editor as a product's)
+function renderHubVersions() {
+    const list = state.hubVersions || [], last = list.length - 1, manager = ["Owner", "Admin"].includes(state.role);
+    $("hv-list").innerHTML = list.map((v, i) => `<div class="list-row"><div class="fields"><div class="fields two-col">` +
+        `<input data-hv="version" data-i="${i}" maxlength="30" placeholder="0.2.0" value="${esc(v.version)}"${manager ? "" : " disabled"}><input data-hv="date" data-i="${i}" type="date" value="${esc(v.date)}"${manager ? "" : " disabled"}></div>` +
+        `<textarea data-hv="notes" data-i="${i}" rows="3" maxlength="3000" placeholder="What changed (one point per line)"${manager ? "" : " disabled"}>${esc(v.notes)}</textarea></div>${rowTools("hv", i, last)}</div>`).join("")
+        || '<p class="muted" style="font-size:14px;margin:0 0 12px">No versions yet.</p>';
+}
+listEditor("hv-list", "hv", "hubVersions", renderHubVersions);
+$("hv-add").onclick = () => {
+    const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    (state.hubVersions = state.hubVersions || []).unshift({ version: "", date: today, notes: "" });
+    renderHubVersions(); $("hv-list").querySelector('[data-i="0"][data-hv="version"]').focus();
+};
+
+// downloads: RotaHub's own link
 function renderHubDownloads() {
     const d = (state.hub || {}).downloads || {};
-    $("hd-url").value = d.rotahub_url || ""; $("hd-only").checked = !!d.hub_only;
+    $("hd-url").value = d.rotahub_url || "";
 }
 $("hd-pick").onchange = () => { if ($("hd-pick").value) $("hd-url").value = $("hd-pick").value; $("hd-pick").value = ""; };
 
@@ -2443,7 +2465,8 @@ function renderChecklist() {
     const items = [
         [prods.length > 0, "Add your product", "Name, price, pictures and a description.", "products"],
         [prods.some(p => p.status === "published"), "Mark a product as Available", "Then its Buy and Download buttons show on the site.", "products"],
-        [prods.some(p => p.download_url || p.has_download), "Add the installer download link", "In the product, under Download.", "products"],
+        [prods.some(p => p.download_url || p.has_download), "Add the installer download link", "In the product, under Download. RotaHub installs from it.", "products"],
+        [!!(state.hub && state.hub.downloads && state.hub.downloads.rotahub_url), "Set the RotaHub download link", "It is the only download on the website: Admin, RotaHub, Downloads.", "hub"],
         [prods.some(p => (p.changelog || []).length), "Write the first version notes", "Version history in the product shows as What's new on Downloads.", "products"],
         [!!o.email_ready, "Set up email sending", "RESEND_API_KEY on the server, so confirmations, keys and replies are emailed.", null],
         [(o.posts || 0) > 0, "Publish a news post", "Tell people what is coming.", "news"],
