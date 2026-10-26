@@ -1234,7 +1234,10 @@ def cmd_fetch_installer(args):
     d = server.DB()
     row = d.first("SELECT id, download_url FROM products WHERE id = ?", product_id)
     if row:
-        d.run("UPDATE products SET download_url = ? WHERE id = ?", link, product_id)
+        try:  # updated_at tells RotaHub there is a new release
+            d.run("UPDATE products SET download_url = ?, updated_at = ? WHERE id = ?", link, server.utc_stamp(), product_id)
+        except Exception:  # noqa: BLE001 - a database from before that column: the link alone
+            d.run("UPDATE products SET download_url = ? WHERE id = ?", link, product_id)
         say(f"The Download buttons for '{product_id}' now point to:  {link}")
         if row.get("download_url") and not str(row["download_url"]).startswith(link.split("?")[0]):
             say(f"  (Before: {row['download_url']})")

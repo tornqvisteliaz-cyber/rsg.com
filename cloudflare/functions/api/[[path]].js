@@ -50,6 +50,7 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/admin/goals") return adminSaveGoals(request, env);
     if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
     if (method === "GET" && path === "/api/hub") return json(await hubConfig(env));
+    if (method === "GET" && path === "/api/hub/products") return hubProducts(request, env);
     if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
     if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
@@ -147,7 +148,8 @@ async function ensure(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, user_id INTEGER, ip_address TEXT, created_at TEXT)").run();
   for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"],
-                             ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"]]) {
+                             ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
+                             ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
@@ -469,11 +471,17 @@ async function saveProduct(request, env) {
   if (!name) return json({ error: "Name is required" }, 400);
   const id = slug(body.id || name);
   const images = JSON.stringify(listImages(body.images));
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog").bind(
-    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
-    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog))
+  const downloadUrl = String(body.download_url || "").trim(), version = String(body.version || "0.1.0").trim().slice(0, 30);
+  if (downloadUrl && !(downloadUrl.startsWith("https://") || FILE_LINK.test(downloadUrl))) return json({ error: "The download link must start with https:// or be an uploaded file (/files/...)" }, 400);
+  const before = await env.DB.prepare("SELECT version, download_url, updated_at FROM products WHERE id = ?").bind(id).first();
+  // When the version or the file changes, RotaHub sees a new release from this time on.
+  const changed = !before || before.version !== version || (before.download_url || "") !== downloadUrl;
+  const updatedAt = changed || !before.updated_at ? utcStamp() : before.updated_at;
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at").bind(
+    id, name, body.simulator || "MSFS 2024", version, body.folder_name || `rotaidem-${id}`, downloadUrl, body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
+    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt
   ).run();
-  await audit(env, user, "save_product", id);
+  await audit(env, user, "save_product", id + (before && changed ? ` (update ${version})` : ""));
   return json({ ok: true, id, page: "/addons/view?id=" + id });
 }
 
@@ -830,6 +838,35 @@ async function adminLeaderboard(request, env) {
   const since = new Date().toISOString().slice(0, 8) + "01 00:00:00";
   const rows = (await env.DB.prepare("SELECT u.name AS name, a.action AS action, COUNT(*) AS n FROM audit_logs a JOIN users u ON u.id = a.admin_id WHERE a.created_at >= ? AND u.role IN ('Owner', 'Admin', 'Support') GROUP BY u.name, a.action").bind(since).all()).results || [];
   return json({ since: since.slice(0, 10), rows: rows.map(r => ({ name: r.name, action: r.action, n: Number(r.n || 0) })) });
+}
+
+// ---------- RotaHub's update feed (same as server.py; no files here, so no SHA-256 or size) ----------
+const FILE_LINK = /^\/files\/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$/;
+function versionNumber(text) {
+  const m = /^v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?/.exec(String(text || "").trim());
+  return m ? `${Number(m[1])}.${Number(m[2])}.${Number(m[3] || 0)}` : "";
+}
+async function sha256Hex(text) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+// Every product's current version and installer, as set in Admin -> Products. ?since=<revision> answers
+// {"revision", "unchanged": true} when nothing changed. The link itself comes from POST /api/download/<id> (RotaHub only).
+async function hubProducts(request, env) {
+  const rows = (await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all()).results || [];
+  const items = [];
+  for (const r of rows) {
+    const p = publicProduct(r, false), url = String(r.download_url || "");
+    const available = url.startsWith("https://") || FILE_LINK.test(url);
+    let ext = "";
+    try { ext = (new URL(url, "https://x.invalid").pathname.match(/\.([a-z0-9]+)$/i) || ["", ""])[1].toLowerCase(); } catch (err) {}
+    const latest = (p.changelog || [])[0] || {};
+    items.push({ id: r.id, name: r.name || r.id, status: r.status || "", version: r.version || "", version_number: versionNumber(r.version), updated_at: String(r.updated_at || ""),
+      required: !!Number(r.update_required), licence_only: p.download_gate === "licence", notes: latest.version === r.version ? latest.notes || "" : "", changelog: p.changelog,
+      download: { available, kind: ["exe", "msi", "zip", "7z"].includes(ext) ? ext : "other", id: available ? (await sha256Hex(url)).slice(0, 12) : "", sha256: "", size: 0 } });
+  }
+  const revision = (await sha256Hex(JSON.stringify(items))).slice(0, 16);
+  if (new URL(request.url).searchParams.get("since") === revision) return json({ revision, unchanged: true });
+  return json({ revision, products: items });
 }
 
 // ---------- blocklist and system (same as server.py) ----------

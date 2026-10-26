@@ -780,9 +780,11 @@
             <div class="field"><label for="p-version">Version</label><input id="p-version" placeholder="1.0.0"></div>
         </div>
         <div class="sub">Download</div>
+        <div class="notice" id="p-publish-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><span>New version ready? Publish it and RotaHub offers the update.</span><button class="btn btn-sm" type="button" id="p-publish">Publish an update</button></div>
         <div class="field"><label for="p-download">Installer download link</label><input id="p-download" list="file-links" placeholder="https://github.com/tornqvisteliaz-cyber/heavypro/releases/latest/download/HeavyProSetup.exe"><div class="hint">Only RotaHub gets this link, to install the product. The website never shows it; its buttons say "Get it in RotaHub".</div></div>
         <div class="field"><label for="p-gate">Who can install it in RotaHub</label><select id="p-gate"><option value="public">Everyone with an account</option><option value="licence">Only accounts with a licence for this product</option></select>
             <div class="hint">The file itself stays at its address, so do not share that link publicly.</div></div>
+        <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0 0 18px"><input type="checkbox" id="p-required"> Everyone must update to this version (RotaHub asks before an older version starts)</label>
         <div class="sub">Version history</div>
         <p class="muted" style="font-size:13px;margin:-4px 0 10px">Shown on the Downloads page as "What's new". Newest at the top.</p>
         <div class="list-edit" id="p-versions"></div>
@@ -830,6 +832,18 @@
     <div class="keys"><kbd>g</kbd><span>then a letter to go: <b>d</b>ashboard, <b>p</b>roducts, <b>n</b>ews, <b>e</b>mail, <b>u</b>sers, <b>l</b>icences, <b>m</b>essages, <b>s</b>ite settings, <b>a</b>ctivity, Rota<b>h</b>ub</span>
     <kbd>/</kbd><span>Search on the current page</span><kbd>c</kbd><span>New product</span><kbd>w</kbd><span>Write a note on the team board</span><kbd>Ctrl K</kbd><span>Search everything</span><kbd>?</kbd><span>This list</span><kbd>Esc</kbd><span>Close a window</span></div>
     <p class="muted" style="font-size:13px;margin:16px 0 0">Pilots may find one more hidden somewhere.</p></div></div>
+<div class="modal-bg" id="upd-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 style="margin:0">Publish an update</h3><p class="muted" id="upd-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('upd-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="form-grid" style="margin-top:16px">
+        <div class="field"><label for="upd-version">New version</label><input id="upd-version" maxlength="30" placeholder="0.6.1"></div>
+        <div class="field"><label for="upd-date">Date</label><input id="upd-date" type="date"></div>
+        <div class="field full"><label for="upd-link">Installer</label><div style="display:flex;gap:0"><input id="upd-link" list="file-links" maxlength="400" placeholder="/files/MyProductSetup.exe or https://..."><button class="btn btn-ghost" type="button" id="upd-upload">Upload</button></div>
+            <div class="hint">Upload the new installer, pick an uploaded file, or paste a link. Keep the old file's name to replace it.</div></div>
+        <div class="field full"><label for="upd-notes">What's new</label><textarea id="upd-notes" rows="5" maxlength="3000" placeholder="One point per line"></textarea></div>
+        <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="upd-required"> Everyone must update (RotaHub asks before an older version starts)</label>
+    </div>
+    <input type="file" id="upd-file" accept=".exe,.msi,.zip,.7z" hidden>
+    <p class="msg" id="upd-msg"></p>
+    <div class="actions"><button class="btn btn-ghost" type="button" onclick="$('upd-modal').classList.remove('show')">Cancel</button><button class="btn" type="button" id="upd-go">Publish update</button></div></div></div>
 <canvas id="confetti" hidden></canvas>
 <div class="modal-bg" id="reply-modal"><div class="modal wide"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 style="margin:0">Reply by email</h3><p class="muted" style="font-size:14px;margin:4px 0 0">To <span id="rp-to"></span></p></div><button class="x" type="button" onclick="$('reply-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="quote" id="rp-orig" style="margin-top:14px"></div>
@@ -1152,7 +1166,7 @@ document.addEventListener("keydown", e => {
     if (k === "c" && ["Owner", "Admin", "Support"].includes(state.role)) { e.preventDefault(); openProduct(); return; }
     if (k === "w") { e.preventDefault(); showTab("dashboard"); $("note-text").focus(); }
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") ["keys-modal", "reply-modal", "palette"].forEach(id => $(id).classList.remove("show")); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") ["keys-modal", "reply-modal", "palette", "upd-modal"].forEach(id => $(id).classList.remove("show")); });
 // easter egg: type "butter" anywhere in the admin
 function flyby() {
     const plane = document.createElement("div");
@@ -1214,7 +1228,7 @@ function productDraft() {
     return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
         simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
         description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0,
-        download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()) };
+        download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()), update_required: $("p-required").checked };
 }
 function refreshProductPreview() {
     const d = productDraft();
@@ -1282,7 +1296,8 @@ function openProduct(id) {
     set("p-status", p.status || "in_development"); set("p-sim", p.simulator || "MSFS 2024"); set("p-version", p.version);
     set("p-image", p.image_url); set("p-images", (p.images || []).join("\n")); set("p-desc", p.description);
     set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
-    set("p-gate", p.download_gate || "public");
+    set("p-gate", p.download_gate || "public"); $("p-required").checked = !!Number(p.update_required);
+    $("p-publish-box").style.display = p.id ? "flex" : "none";
     state.versions = (p.changelog || []).map(v => ({ ...v })); renderVersions();
     $("pf-title").textContent = p.id ? "Edit " + p.name : "New product";
     $("p-open").style.display = p.id ? "" : "none";
@@ -1312,7 +1327,7 @@ function previewImage() { const u = val("p-image"); $("preview").style.display =
 $("p-image").oninput = previewImage;
 $("drawer").onsubmit = async e => {
     e.preventDefault();
-    if (val("p-download") && !/^https:\/\//.test(val("p-download"))) return toast("The download link must start with https://", true);
+    if (val("p-download") && !/^(https:\/\/|\/files\/[\w.-]+(\?v=\w+)?$)/.test(val("p-download"))) return toast("The download link must start with https:// or be an uploaded file (/files/...)", true);
     if ((state.versions || []).some(v => !String(v.version || "").trim() && String(v.notes || "").trim())) return toast("Give every version in the version history a number, like 0.5.0", true);
     const draft = productDraft();
     if ([draft.image_url, ...draft.images].filter(Boolean).some(u => !IMAGE_RE.test(u))) return toast("Image links must start with https:// or be uploaded images", true);
@@ -1320,9 +1335,10 @@ $("drawer").onsubmit = async e => {
         if (!await confirmBox("Replace " + draft.name + "?", "A product with this name already exists. Saving will overwrite it.", "Overwrite", true)) return;
     try {
         const r = await post("/api/save-product", draft);
-        toast("Saved " + draft.name);
+        toast(state.publishing ? `${draft.name} ${state.publishing} is published. RotaHub offers the update at its next check.` : "Saved " + draft.name);
+        state.publishing = "";
         await loadProducts(); loadOverview(); openProduct(r.id);
-    } catch (err) { toast(err.message, true); }
+    } catch (err) { state.publishing = ""; toast(err.message, true); }
 };
 async function deleteProduct(id) {
     const p = state.products.find(x => x.id === id);
@@ -2391,7 +2407,7 @@ async function loadFiles() {
     $("hd-pick").innerHTML = '<option value="">Uploaded files…</option>' + opts;
     $("file-links").innerHTML = opts;
 }
-async function uploadFile(file) {
+async function uploadFile(file, progress = $("hf-progress")) {
     if (!FILE_NAME_RE.test(file.name)) throw new Error("Rename the file first: no spaces, ending in .exe, .msi, .zip, .7z or .pdf (like MyProductSetup.exe).");
     const CHUNK = 512 * 1024, total = Math.max(1, Math.ceil(file.size / CHUNK));
     const id = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -2401,7 +2417,7 @@ async function uploadFile(file) {
         let bin = "";
         for (let j = 0; j < buf.length; j += 0x8000) bin += String.fromCharCode(...buf.subarray(j, j + 0x8000));
         last = await post("/api/admin/files", { name: file.name, upload_id: id, index: i, total, data: btoa(bin) });
-        $("hf-progress").className = "msg"; $("hf-progress").textContent = `Uploading ${file.name}: ${Math.round((i + 1) / total * 100)}% of ${fileSize(file.size)}`;
+        progress.className = "msg"; progress.textContent = `Uploading ${file.name}: ${Math.round((i + 1) / total * 100)}% of ${fileSize(file.size)}`;
     }
     return last.file;
 }
@@ -2426,6 +2442,46 @@ $("hf-list").onclick = async e => {
         if (!await confirmBox(`Delete ${b.dataset.fileDel}?`, "Download buttons and links that point to it stop working.", "Delete", true)) return;
         try { await api("/api/admin/files/" + encodeURIComponent(b.dataset.fileDel), { method: "DELETE" }); toast("File deleted"); loadFiles(); loadAudit(); } catch (err) { toast(err.message, true); }
     }
+};
+
+// publishing a new version of a product: version, installer and notes in one go; RotaHub offers it
+function nextVersion(v) {
+    const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(v || "").trim());
+    return m ? `${m[1]}.${m[2]}.${Number(m[3] || 0) + 1}` : "";
+}
+$("p-publish").onclick = () => {
+    const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    $("upd-meta").textContent = `${val("p-name")} · now ${val("p-version") || "no version"}`;
+    $("upd-version").value = nextVersion(val("p-version")); $("upd-date").value = iso; $("upd-link").value = val("p-download");
+    $("upd-notes").value = ""; $("upd-required").checked = false; $("upd-msg").textContent = "";
+    $("upd-modal").classList.add("show"); $("upd-version").focus();
+};
+$("upd-upload").onclick = () => $("upd-file").click();
+$("upd-file").onchange = async () => {
+    const file = $("upd-file").files[0]; $("upd-file").value = "";
+    if (!file) return;
+    $("upd-upload").disabled = $("upd-go").disabled = true;
+    try {
+        const f = await uploadFile(file, $("upd-msg"));
+        $("upd-link").value = f.url; $("upd-msg").className = "msg ok"; $("upd-msg").textContent = `${f.name} uploaded.`;
+        loadFiles();
+    } catch (err) { $("upd-msg").className = "msg error"; $("upd-msg").textContent = err.message; }
+    finally { $("upd-upload").disabled = $("upd-go").disabled = false; }
+};
+$("upd-go").onclick = () => {
+    const version = val("upd-version"), link = val("upd-link"), msg = $("upd-msg");
+    msg.className = "msg error";
+    if (!version) return msg.textContent = "Give the new version a number, like 0.6.1.";
+    if (!/^\d{1,4}\.\d{1,4}(\.\d{1,4})?/.test(version)) return msg.textContent = "Use a version number like 0.6.1, so RotaHub can tell which is newer.";
+    if (!/^(https:\/\/|\/files\/[\w.-]+(\?v=\w+)?$)/.test(link)) return msg.textContent = "Upload the installer, pick an uploaded file or paste an https:// link.";
+    if (version === val("p-version") && link === val("p-download")) return msg.textContent = "That is the version and file the product already has.";
+    $("p-version").value = version; $("p-download").value = link; $("p-required").checked = $("upd-required").checked;
+    state.versions = (state.versions || []).filter(v => v.version !== version);
+    state.versions.unshift({ version, date: val("upd-date"), notes: $("upd-notes").value.trim() });
+    renderVersions();
+    $("upd-modal").classList.remove("show");
+    state.publishing = version;
+    $("drawer").requestSubmit();
 };
 
 // clock in the top bar: Zulu like on a flight plan, and the local time

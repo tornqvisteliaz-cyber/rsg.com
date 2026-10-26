@@ -13,6 +13,7 @@ are dropped):
 """
 import base64
 import http.server
+import hashlib
 import json
 import os
 import shutil
@@ -1071,6 +1072,36 @@ class StratoCGITests:
         self.ok(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t))
         self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "RotaHub.exe")))
         self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t).status, 404)
+
+    def test_update_feed_for_rotahub(self):
+        t = self.owner_token
+        setup = b"MZ" + os.urandom(2000)
+        f = self.upload("FeedAppSetup.exe", setup, t).json()["file"]
+        product = {"name": "Feed App", "id": "feed-app", "status": "published", "version": "v1.2", "download_url": f["url"],
+                   "changelog": [{"version": "v1.2", "date": "2026-10-26", "notes": "Smoother"}]}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "download_url": "javascript:alert(1)"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        feed = self.ok(self.w.cgi("GET", "/api/hub/products"))
+        item = next(p for p in feed["products"] if p["id"] == "feed-app")
+        self.assertEqual((item["version"], item["version_number"], item["notes"], item["required"], item["licence_only"]), ("v1.2", "1.2.0", "Smoother", False, False))
+        self.assertTrue(item["updated_at"])
+        self.assertEqual((item["download"]["available"], item["download"]["kind"], item["download"]["size"]), (True, "exe", len(setup)))
+        self.assertEqual(item["download"]["sha256"], hashlib.sha256(setup).hexdigest(), "RotaHub can check the file it downloads")
+        self.assertNotIn("FeedAppSetup", json.dumps(item), "the installer's address stays out of the feed")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"])), {"revision": feed["revision"], "unchanged": True})
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))  # saved again, nothing new
+        self.assertTrue(self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"])).get("unchanged"))
+        # a new version: RotaHub sees a new revision with the new number, notes and "required"
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "version": "1.3.0", "update_required": True,
+                                                          "changelog": [{"version": "1.3.0", "notes": "Required fix"}] + product["changelog"]}, token=t))
+        feed2 = self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"]))
+        item = next(p for p in feed2["products"] if p["id"] == "feed-app")
+        self.assertEqual((item["version_number"], item["notes"], item["required"]), ("1.3.0", "Required fix", True))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/feed-app", headers={"User-Agent": "RotaHub/0.2.0"}))["url"], f["url"])
+        self.ok(self.w.cgi("DELETE", "/api/admin/files/FeedAppSetup.exe", token=t))
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "FeedAppSetup.exe.sha256")))
+        self.assertEqual(next(p for p in self.ok(self.w.cgi("GET", "/api/hub/products"))["products"] if p["id"] == "feed-app")["download"]["sha256"], "")
+        self.ok(self.w.cgi("DELETE", "/api/products/feed-app", token=t))
 
     def test_downloads_through_rotahub_and_the_apps_look(self):
         t = self.owner_token

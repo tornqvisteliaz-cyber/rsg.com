@@ -147,7 +147,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-26-replies"
+SCHEMA_VERSION = "2026-10-26-updates"
 
 
 def ensure_schema():
@@ -196,7 +196,9 @@ def ensure_schema():
                           ("users", "email_verified INTEGER DEFAULT 1"),
                           ("products", f"download_gate {word} DEFAULT 'public'"), ("products", "changelog TEXT"),
                           ("users", "admin_note TEXT"), ("posts", f"publish_at {word}"),
-                          ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT")):
+                          ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT"),
+                          # RotaHub updates: "everyone must update", and when the version or download last changed
+                          ("products", "update_required INTEGER DEFAULT 0"), ("products", f"updated_at {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -1098,18 +1100,28 @@ def save_product():
         sort_order = int(b.get("sort_order") or 0)
     except (TypeError, ValueError):
         sort_order = 0
+    download_url = str(b.get("download_url") or "").strip()
+    if download_url and not (download_url.startswith("https://") or FILE_LINK.match(download_url)):
+        return err("The download link must start with https:// or be an uploaded file (/files/...)", 400)
+    version = str(b.get("version") or "0.1.0").strip()[:30]
+    before = db().first("SELECT version, download_url, updated_at FROM products WHERE id = ?", pid)
+    # When the version or the file changes, RotaHub sees a new release from this time on.
+    changed = not before or before["version"] != version or (before["download_url"] or "") != download_url
+    updated_at = utc_stamp() if changed or not before["updated_at"] else before["updated_at"]
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
-        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog",
-        pid, name, b.get("simulator") or "MSFS 2024", b.get("version") or "0.1.0", b.get("folder_name") or f"rotaidem-{pid}",
-        b.get("download_url") or "", b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
+        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, "
+        "update_required=excluded.update_required, updated_at=excluded.updated_at",
+        pid, name, b.get("simulator") or "MSFS 2024", version, b.get("folder_name") or f"rotaidem-{pid}",
+        download_url, b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
         b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
-        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))))
-    audit(user, "save_product", pid)
+        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))),
+        1 if b.get("update_required") else 0, updated_at)
+    audit(user, "save_product", pid + (f" (update {version})" if before and changed else ""))
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
 
@@ -2446,8 +2458,13 @@ def admin_upload_file():
         os.remove(part)
         return err(f"That does not look like a real {os.path.splitext(name)[1]} file. Nothing was saved.", 400)
     target = os.path.join(files_dir(), name)
+    digest = hashlib.sha256()
+    with open(part, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
     os.chmod(part, 0o644)
     shutil.move(part, target)
+    write_sha256(target, digest.hexdigest())  # RotaHub checks downloads against it
     audit(user, "upload_file", name)
     return jsonify({"ok": True, "file": file_row(name)})
 
@@ -2461,6 +2478,8 @@ def admin_delete_file(name):
     if not FILE_NAME.match(name) or not os.path.isfile(path):
         return err("File not found", 404)
     os.remove(path)
+    if os.path.exists(path + ".sha256"):
+        os.remove(path + ".sha256")
     audit(user, "delete_file", name)
     return jsonify({"ok": True})
 
@@ -2471,6 +2490,73 @@ def download_file(name):
     if not FILE_NAME.match(name) or not os.path.isfile(os.path.join(files_dir(), name)):
         abort(404)
     return send_from_directory(files_dir(), name, as_attachment=True)
+
+
+FILE_LINK = re.compile(r"^/files/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$")
+
+
+def write_sha256(path, sha):
+    """NAME.sha256 next to a download, in the format of sha256sum (as setup.py fetch-installer writes it)."""
+    temp = f"{path}.sha256.{os.getpid()}.tmp"
+    with open(temp, "w") as fh:
+        fh.write(f"{sha}  {os.path.basename(path)}\n")
+    os.chmod(temp, 0o644)
+    os.replace(temp, path + ".sha256")
+
+
+def download_facts(url):
+    """SHA-256 and size of a product's installer when it is a file on this site (/files/...); else empty."""
+    path = urllib.parse.urlparse(str(url or "")).path
+    base = urllib.parse.urlparse(site_url()).netloc
+    host = urllib.parse.urlparse(str(url or "")).netloc
+    name = path[len("/files/"):] if path.startswith("/files/") and (not host or host == base) else ""
+    if not FILE_NAME.match(name):
+        return "", 0
+    file = os.path.join(files_dir(), name)
+    if not os.path.isfile(file):
+        return "", 0
+    sha = ""
+    try:
+        with open(file + ".sha256") as fh:
+            m = re.search(r"\b[0-9a-f]{64}\b", fh.read(200))
+            sha = m.group(0) if m else ""
+    except OSError:
+        pass
+    return sha, os.path.getsize(file)
+
+
+VERSION_NUMBER = re.compile(r"^v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?")
+
+
+def version_number(text):
+    """"1.2" -> "1.2.0", "v0.6.1-beta" -> "0.6.1"; "" when the version is not a number."""
+    m = VERSION_NUMBER.match(str(text or "").strip())
+    return f"{int(m.group(1))}.{int(m.group(2))}.{int(m.group(3) or 0)}" if m else ""
+
+
+@app.get("/api/hub/products")
+def hub_products():
+    """RotaHub's update feed: every product's current version and installer, as set in Admin -> Products.
+    Ask with ?since=<revision> to get just {"revision", "unchanged": true} when nothing changed.
+    The installer link itself comes from POST /api/download/<id> (RotaHub only)."""
+    items = []
+    for r in db().all("SELECT * FROM products ORDER BY sort_order, name"):
+        p = public_product(r)
+        url = str(r["download_url"] or "")
+        available = url.startswith("https://") or bool(FILE_LINK.match(url))
+        sha, size = download_facts(url) if available else ("", 0)
+        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower().lstrip(".")
+        latest = (p["changelog"] or [{}])[0]
+        items.append({"id": r["id"], "name": r["name"] or r["id"], "status": r["status"] or "", "version": r["version"] or "",
+                      "version_number": version_number(r["version"]), "updated_at": str(r["updated_at"] or ""),
+                      "required": bool(r["update_required"]), "licence_only": p["download_gate"] == "licence",
+                      "notes": latest.get("notes", "") if latest.get("version") == r["version"] else "", "changelog": p["changelog"],
+                      "download": {"available": available, "kind": ext if ext in ("exe", "msi", "zip", "7z") else "other",
+                                   "id": hashlib.sha256(url.encode()).hexdigest()[:12] if available else "", "sha256": sha, "size": size}})
+    revision = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()[:16]
+    if request.args.get("since") == revision:
+        return jsonify({"revision": revision, "unchanged": True})
+    return jsonify({"revision": revision, "products": items})
 
 
 @app.get("/api/hub")
