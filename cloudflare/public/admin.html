@@ -149,6 +149,8 @@
         .hub-pic { display: flex; gap: 10px; align-items: center; }
         .hub-pic img { width: 64px; height: 40px; object-fit: cover; background: var(--bg); border: 1px solid var(--line); flex: none; }
         .hub-pic input { flex: 1; }
+        #upd-list tr.drop td { background: rgba(var(--accent-rgb), .16); }
+        .drop-hint { border: 1px dashed var(--field-line); padding: 14px 18px; color: var(--muted); font-size: 14px; margin-bottom: 20px; }
         details.panel > summary { cursor: pointer; list-style: none; }
         details.panel > summary::-webkit-details-marker { display: none; }
         @media (max-width: 700px) { .sys { grid-template-columns: 1fr; gap: 2px; } .sys dd { margin-bottom: 10px; } .clock { display: none; } }
@@ -285,6 +287,7 @@
     <button class="tab active" data-tab="dashboard">Dashboard</button>
     <div class="group">Catalogue</div>
     <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
+    <button class="tab" data-tab="updates">Updates</button>
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
     <div class="group">Website</div>
     <button class="tab" data-tab="texts">Page texts</button>
@@ -359,6 +362,14 @@
         <div class="panel">
             <div class="panel-head"><h2>All products</h2><input class="search" id="product-search" placeholder="Search products"></div>
             <div class="table-wrap"><table class="table"><thead><tr><th style="width:84px"></th><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody id="products-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-updates" data-title="Updates">
+        <div class="drop-hint"><strong style="color:var(--ink)">New version ready?</strong> Drag the new installer onto its product below, or press <strong>Publish update</strong>. Give the version number and what's new, and RotaHub offers the update to everyone at its next check.</div>
+        <div class="panel">
+            <div class="panel-head"><h2>Products in RotaHub</h2><a class="more" href="#hub" data-go="hub">RotaHub settings</a></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Product</th><th>Version now</th><th>Installer</th><th>Released</th><th></th></tr></thead><tbody id="upd-list"></tbody></table></div>
         </div>
     </section>
 
@@ -1194,6 +1205,7 @@ async function loadProducts() {
     state.products = (await api("/api/products")).products || [];
     renderProducts();
     renderChecklist();
+    if (state.feed) renderUpdates();
     if (state.hub) renderHub();
     const opts = state.products.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     $("o-product").innerHTML = '<option value="">None</option>' + opts;
@@ -1214,7 +1226,7 @@ function renderProducts() {
         `<tr><td><img class="thumb" src="${esc(safeImage(p.image_url))}" alt=""></td><td><strong>${esc(p.name)}</strong><div class="muted" style="font-size:13px">${esc(p.tagline || "")}</div>` +
         `<div class="muted" style="font-size:12px">${((state.downloads || {})[p.id] || {}).total || 0} downloads${p.download_gate === "licence" ? " · licence holders only" : ""}</div></td><td>${esc(p.price || "")}</td>` +
         `<td><span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
-        `<td><div class="actions"><button class="btn btn-ghost btn-sm" data-email="${esc(p.id)}">Email</button><button class="btn btn-ghost btn-sm" data-edit="${esc(p.id)}">Edit</button><button class="btn btn-danger btn-sm" data-del="${esc(p.id)}">Delete</button></div></td></tr>`
+        `<td><div class="actions"><button class="btn btn-sm" data-pub="${esc(p.id)}">Publish update</button><button class="btn btn-ghost btn-sm" data-email="${esc(p.id)}">Email</button><button class="btn btn-ghost btn-sm" data-edit="${esc(p.id)}">Edit</button><button class="btn btn-danger btn-sm" data-del="${esc(p.id)}">Delete</button></div></td></tr>`
     ).join("") : empty(5, state.products.length ? "No products match your search." : "No products yet. Click New product to add HeavyPro.");
 }
 $("product-search").oninput = renderProducts;
@@ -1223,6 +1235,7 @@ $("products-list").onclick = e => {
     if (b.dataset.edit) openProduct(b.dataset.edit);
     if (b.dataset.del) deleteProduct(b.dataset.del);
     if (b.dataset.email) emailProduct(b.dataset.email);
+    if (b.dataset.pub) openPublish(b.dataset.pub, false);
 };
 function productDraft() {
     return { id: val("p-id"), name: val("p-name"), tagline: val("p-tagline"), price: val("p-price"), status: val("p-status"),
@@ -1337,6 +1350,7 @@ $("drawer").onsubmit = async e => {
         const r = await post("/api/save-product", draft);
         toast(state.publishing ? `${draft.name} ${state.publishing} is published. RotaHub offers the update at its next check.` : "Saved " + draft.name);
         state.publishing = "";
+        loadUpdates();
         await loadProducts(); loadOverview(); openProduct(r.id);
     } catch (err) { state.publishing = ""; toast(err.message, true); }
 };
@@ -2449,40 +2463,96 @@ function nextVersion(v) {
     const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(v || "").trim());
     return m ? `${m[1]}.${m[2]}.${Number(m[3] || 0) + 1}` : "";
 }
-$("p-publish").onclick = () => {
+// The publish window: from the Updates page and the products list it saves straight away;
+// from an open product form it fills the form and saves that.
+function openPublish(id, fromDrawer, file) {
+    const p = fromDrawer ? { name: val("p-name"), version: val("p-version"), download_url: val("p-download") } : state.products.find(x => x.id === id);
+    if (!p) return;
+    state.pub = { id, fromDrawer, version: p.version || "", link: p.download_url || "" };
     const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    $("upd-meta").textContent = `${val("p-name")} · now ${val("p-version") || "no version"}`;
-    $("upd-version").value = nextVersion(val("p-version")); $("upd-date").value = iso; $("upd-link").value = val("p-download");
+    $("upd-meta").textContent = `${p.name} · now ${p.version || "no version"}`;
+    $("upd-version").value = nextVersion(p.version); $("upd-date").value = iso; $("upd-link").value = p.download_url || "";
     $("upd-notes").value = ""; $("upd-required").checked = false; $("upd-msg").textContent = "";
     $("upd-modal").classList.add("show"); $("upd-version").focus();
-};
-$("upd-upload").onclick = () => $("upd-file").click();
-$("upd-file").onchange = async () => {
-    const file = $("upd-file").files[0]; $("upd-file").value = "";
-    if (!file) return;
+    if (file) uploadForPublish(file);
+}
+async function uploadForPublish(file) {
     $("upd-upload").disabled = $("upd-go").disabled = true;
     try {
         const f = await uploadFile(file, $("upd-msg"));
-        $("upd-link").value = f.url; $("upd-msg").className = "msg ok"; $("upd-msg").textContent = `${f.name} uploaded.`;
+        $("upd-link").value = f.url; $("upd-msg").className = "msg ok"; $("upd-msg").textContent = `${f.name} uploaded. Now give the version number and what's new.`;
         loadFiles();
     } catch (err) { $("upd-msg").className = "msg error"; $("upd-msg").textContent = err.message; }
     finally { $("upd-upload").disabled = $("upd-go").disabled = false; }
-};
-$("upd-go").onclick = () => {
-    const version = val("upd-version"), link = val("upd-link"), msg = $("upd-msg");
+}
+$("p-publish").onclick = () => openPublish(val("p-id"), true);
+$("upd-upload").onclick = () => $("upd-file").click();
+$("upd-file").onchange = () => { const file = $("upd-file").files[0]; $("upd-file").value = ""; if (file) uploadForPublish(file); };
+$("upd-go").onclick = async () => {
+    const version = val("upd-version"), link = val("upd-link"), msg = $("upd-msg"), pub = state.pub || {};
+    const notes = $("upd-notes").value.trim(), required = $("upd-required").checked, entry = { version, date: val("upd-date"), notes };
     msg.className = "msg error";
     if (!version) return msg.textContent = "Give the new version a number, like 0.6.1.";
     if (!/^\d{1,4}\.\d{1,4}(\.\d{1,4})?/.test(version)) return msg.textContent = "Use a version number like 0.6.1, so RotaHub can tell which is newer.";
     if (!/^(https:\/\/|\/files\/[\w.-]+(\?v=\w+)?$)/.test(link)) return msg.textContent = "Upload the installer, pick an uploaded file or paste an https:// link.";
-    if (version === val("p-version") && link === val("p-download")) return msg.textContent = "That is the version and file the product already has.";
-    $("p-version").value = version; $("p-download").value = link; $("p-required").checked = $("upd-required").checked;
-    state.versions = (state.versions || []).filter(v => v.version !== version);
-    state.versions.unshift({ version, date: val("upd-date"), notes: $("upd-notes").value.trim() });
-    renderVersions();
-    $("upd-modal").classList.remove("show");
-    state.publishing = version;
-    $("drawer").requestSubmit();
+    if (version === pub.version && link === pub.link) return msg.textContent = "That is the version and file the product already has.";
+    if (pub.fromDrawer) {
+        $("p-version").value = version; $("p-download").value = link; $("p-required").checked = required;
+        state.versions = [entry, ...(state.versions || []).filter(v => v.version !== version)];
+        renderVersions();
+        $("upd-modal").classList.remove("show");
+        state.publishing = version;
+        $("drawer").requestSubmit();
+        return;
+    }
+    const p = state.products.find(x => x.id === pub.id);
+    if (!p) return msg.textContent = "That product is gone. Reload the page.";
+    const draft = { id: p.id, name: p.name, tagline: p.tagline || "", price: p.price || "", status: p.status, simulator: p.simulator || "", version,
+        image_url: p.image_url || "", images: p.images || [], description: p.description || "", features: p.features || [], buy_url: p.buy_url || "",
+        download_url: link, sort_order: p.sort_order || 0, download_gate: p.download_gate || "public", update_required: required,
+        changelog: [entry, ...(p.changelog || []).filter(v => v.version !== version)] };
+    $("upd-go").disabled = true;
+    try {
+        await post("/api/save-product", draft);
+        $("upd-modal").classList.remove("show");
+        toast(`${p.name} ${version} is published. RotaHub offers the update at its next check.`);
+        await loadProducts(); loadUpdates(); loadAudit();
+    } catch (err) { msg.textContent = err.message; }
+    finally { $("upd-go").disabled = false; }
 };
+
+// the Updates page: every product, its version and installer; drop a new installer on a row
+async function loadUpdates() {
+    try { state.feed = await api("/api/hub/products"); } catch (err) { state.feed = { products: [] }; }
+    renderUpdates();
+}
+function renderUpdates() {
+    const feed = Object.fromEntries(((state.feed || {}).products || []).map(f => [f.id, f]));
+    $("upd-list").innerHTML = state.products.length ? state.products.map(p => {
+        const f = feed[p.id] || {}, d = f.download || {}, url = p.download_url || "";
+        const file = url ? decodeURIComponent(url.split("?")[0].split("/").pop() || url) : "";
+        const check = d.sha256 ? "Fingerprint saved: RotaHub checks the download" : /^\/files\//.test(url) ? "No fingerprint: publish it again here to add one" : url ? "Hosted elsewhere: no fingerprint" : "";
+        return `<tr data-upd="${esc(p.id)}"><td><strong>${esc(p.name)}</strong> <span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></td>` +
+            `<td><strong>${esc(p.version || "-")}</strong>${f.required ? ' <span class="badge in_development">Everyone must update</span>' : ""}</td>` +
+            `<td>${file ? esc(file) : '<span class="muted">No installer yet</span>'}${check ? `<div class="muted" style="font-size:12px">${esc(check)}</div>` : ""}</td>` +
+            `<td class="muted">${f.updated_at ? date(f.updated_at) + " UTC" : "-"}</td>` +
+            `<td><div class="actions"><button class="btn btn-sm" type="button" data-pub="${esc(p.id)}">Publish update</button></div></td></tr>`;
+    }).join("") : empty(5, "No products yet. Add one under Products.");
+}
+$("upd-list").onclick = e => { const b = e.target.closest("[data-pub]"); if (b) openPublish(b.dataset.pub, false); };
+$("upd-list").addEventListener("dragover", e => {
+    const row = e.target.closest("tr[data-upd]"); if (!row) return;
+    e.preventDefault();
+    document.querySelectorAll("#upd-list tr.drop").forEach(r => r !== row && r.classList.remove("drop"));
+    row.classList.add("drop");
+});
+$("upd-list").addEventListener("dragleave", e => { const row = e.target.closest("tr[data-upd]"); if (row && !row.contains(e.relatedTarget)) row.classList.remove("drop"); });
+$("upd-list").addEventListener("drop", e => {
+    const row = e.target.closest("tr[data-upd]"); if (!row) return;
+    e.preventDefault(); row.classList.remove("drop");
+    const file = e.dataTransfer.files[0];
+    if (file) openPublish(row.dataset.upd, false, file);
+});
 
 // clock in the top bar: Zulu like on a flight plan, and the local time
 function tickClock() {
@@ -2669,7 +2739,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();
