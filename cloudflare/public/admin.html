@@ -185,6 +185,13 @@
         .list-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; border: 1px solid var(--line); background: var(--bg-2); padding: 12px; }
         .list-row .fields { display: grid; gap: 8px; }
         .list-row .fields.two-col { grid-template-columns: 150px 1fr; }
+        .list-row .fields.three-col { grid-template-columns: 1fr 1fr 1.4fr; }
+        .list-row .home-pick { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
+        .list-row .home-pick label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; color: var(--text); white-space: nowrap; }
+        .shop-facts { display: grid; grid-template-columns: 180px 1fr; gap: 0; margin: 0; }
+        .shop-facts dt, .shop-facts dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .shop-facts dt { color: var(--muted); }
+        .shop-facts dd code { font-size: 13px; color: var(--ink); word-break: break-all; }
         .list-row .tools { display: flex; flex-direction: column; gap: 4px; }
         .list-row .tools button { background: none; border: 1px solid var(--line); color: var(--text); width: 32px; height: 28px; cursor: pointer; font: inherit; }
         .list-row .tools button:hover:not([disabled]) { background: var(--navy-hover); color: var(--ink); }
@@ -288,10 +295,12 @@
     <div class="group">Catalogue</div>
     <button class="tab" data-tab="products">Products <span class="count" id="c-products"></span></button>
     <button class="tab" data-tab="updates">Updates</button>
+    <button class="tab" data-tab="shop">Shop</button>
     <button class="tab" data-tab="news">News posts <span class="count" id="c-posts"></span></button>
     <div class="group">Website</div>
     <button class="tab" data-tab="texts">Page texts</button>
     <button class="tab" data-tab="pages">Roadmap &amp; FAQ</button>
+    <button class="tab" data-tab="aircraft">Aircraft</button>
     <button class="tab" data-tab="site">Site settings</button>
     <button class="tab" data-tab="look">Look &amp; media</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
@@ -525,6 +534,38 @@
                 <div class="list-edit" id="faq-list"></div>
                 <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="faq-add">Add question</button><button class="btn" type="button" id="faq-save">Save FAQ</button><button class="btn btn-ghost btn-sm" type="button" id="faq-reset">Back to the original</button></div>
             </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-aircraft" data-title="Aircraft">
+        <div class="panel">
+            <div class="panel-head"><h2>Supported aircraft</h2><div class="actions"><a class="btn btn-ghost btn-sm" href="/compatibility" target="_blank" rel="noopener">Compatibility page</a><a class="btn btn-ghost btn-sm" href="/" target="_blank" rel="noopener">Home page</a></div></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">The aircraft HeavyPro has a profile for, top to bottom. They show in the table on the Compatibility page and under Requirements on the HeavyPro page. Tick <strong>Home page</strong> to also show one in the aircraft list on the home page.</p>
+                <p class="hint" id="ac-state" style="margin:0 0 14px"></p>
+                <div class="list-edit" id="ac-list"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="ac-add">Add aircraft</button><button class="btn" type="button" id="ac-save">Save aircraft</button><button class="btn btn-ghost btn-sm" type="button" id="ac-reset">Use the pages' own list</button></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-shop" data-title="Shop">
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Payments</h2><a class="btn btn-ghost btn-sm" href="https://dashboard.stripe.com/payments" target="_blank" rel="noopener">Open Stripe</a></div>
+            <div class="panel-body"><dl class="shop-facts" id="shop-stripe"></dl></div>
+        </div>
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Discount codes</h2></div>
+            <div class="panel-body">
+                <label style="display:flex;gap:10px;align-items:center;font-weight:500"><input type="checkbox" id="shop-promo"> Let buyers enter a discount code on Stripe's payment page</label>
+                <p class="hint" style="margin:10px 0 16px">Make the codes in Stripe: Product catalogue, Coupons, New coupon (for example 20% off), then add a customer-facing code such as LAUNCH20. Stripe checks the code and takes the lower amount; the order shows what was paid.</p>
+                <button class="btn" type="button" id="shop-save">Save</button>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-head"><h2>Prices and sales</h2><span class="muted" style="font-size:13px">Paid orders, all time</span></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Product</th><th>Price</th><th>Sale</th><th>Buyers pay now</th><th>Orders</th><th>Last 30 days</th><th>Revenue</th><th></th></tr></thead><tbody id="shop-products"></tbody></table></div>
+            <p class="hint" id="shop-other" style="margin:0;padding:12px 20px" hidden></p>
         </div>
     </section>
 
@@ -816,6 +857,8 @@
         <div class="form-grid">
             <div class="field"><label for="p-pay">Price at checkout (Stripe)</label><div style="display:flex;gap:0"><input id="p-pay" inputmode="decimal" placeholder="e.g. 299"><select id="p-cur" style="width:auto" aria-label="Currency"><option value="sek">SEK</option><option value="eur">EUR</option><option value="usd">USD</option><option value="gbp">GBP</option><option value="nok">NOK</option><option value="dkk">DKK</option></select></div>
                 <div class="hint" id="p-pay-hint">With a price, Buy opens Stripe's payment page; the order and licence key are made and emailed by themselves. Empty: the Buy link below is used.</div></div>
+            <div class="field"><label for="p-sale">Sale price</label><div style="display:flex;gap:8px"><input id="p-sale" inputmode="decimal" placeholder="e.g. 5.99"><input id="p-sale-until" type="date" style="width:auto" aria-label="Last day of the sale"></div>
+                <div class="hint">Lower than the price at checkout, same currency. Buyers pay it up to and including the last day; leave the day empty to keep it running. The product page shows the normal price crossed out. Empty the sale price to end it.</div></div>
             <div class="field"><label for="p-buy">Buy link</label><input id="p-buy" placeholder="https:// or mailto:"></div>
             <div class="field"><label for="p-sort">Sort order</label><input id="p-sort" type="number" value="0"><div class="hint">Lower numbers are shown first.</div></div>
         </div>
@@ -1039,6 +1082,7 @@ function showTab(name) {
     $("bar-actions").innerHTML = pane.dataset.action === "product" || name === "dashboard" ? '<button class="btn btn-sm" onclick="openProduct()">New product</button>' : "";
     $("side").classList.remove("open");
     history.replaceState(null, "", "#" + name);
+    if (name === "shop") loadShop().catch(err => toast(err.message, true)); // prices and orders change elsewhere
 }
 
 // Downloads through the website's Download buttons (the same address within 10 minutes counts once).
@@ -1244,7 +1288,7 @@ function productDraft() {
         simulator: val("p-sim"), version: val("p-version"), image_url: val("p-image"), images: state.gallery.slice(),
         description: $("p-desc").value, features: lines("p-features"), buy_url: val("p-buy"), download_url: val("p-download"), sort_order: Number(val("p-sort")) || 0,
         download_gate: val("p-gate") || "public", changelog: (state.versions || []).filter(v => String(v.version || "").trim()), update_required: $("p-required").checked,
-        pay_amount: val("p-pay"), pay_currency: val("p-cur") };
+        pay_amount: val("p-pay"), pay_currency: val("p-cur"), sale_amount: val("p-sale"), sale_until: val("p-sale-until") };
 }
 function refreshProductPreview() {
     const d = productDraft();
@@ -1314,6 +1358,7 @@ function openProduct(id) {
     set("p-features", (p.features || []).join("\n")); set("p-buy", p.buy_url); set("p-download", p.download_url); set("p-sort", p.sort_order || 0);
     set("p-gate", p.download_gate || "public"); $("p-required").checked = !!Number(p.update_required);
     set("p-pay", Number(p.pay_amount) > 0 ? String(Number(p.pay_amount) / 100) : ""); set("p-cur", p.pay_currency || "sek");
+    set("p-sale", Number(p.sale_amount) > 0 ? String(Number(p.sale_amount) / 100) : ""); set("p-sale-until", p.sale_until || "");
     $("p-pay-hint").textContent = state.overview && !state.overview.payments_ready
         ? "Payments are not set up yet: run  python3 rotaidem/strato/setup.py stripe  over SSH. Until then the Buy link below is used."
         : "With a price, Buy opens Stripe's payment page; the order and licence key are made and emailed by themselves. Empty: the Buy link below is used.";
@@ -1868,6 +1913,7 @@ async function loadSite() {
     renderConfig();
     renderSlots();
     loadPagesEditor();
+    loadAircraft();
     renderLook();
 }
 
@@ -1955,7 +2001,7 @@ function renderFaq() {
         `<textarea data-fq="a" data-i="${i}" rows="3" maxlength="2000" placeholder="Answer">${esc(f.a)}</textarea></div>${rowTools("fq", i, last)}</div>`).join("") || '<p class="muted">No questions. Add one.</p>';
 }
 function listEditor(listId, kind, key, render) {
-    $(listId).oninput = $(listId).onchange = e => { const el = e.target.closest(`[data-${kind}]`); if (el) state[key][Number(el.dataset.i)][el.dataset[kind]] = el.value; };
+    $(listId).oninput = $(listId).onchange = e => { const el = e.target.closest(`[data-${kind}]`); if (el) state[key][Number(el.dataset.i)][el.dataset[kind]] = el.type === "checkbox" ? el.checked : el.value; };
     $(listId).onclick = e => {
         const list = state[key], move = e.target.closest(`[data-${kind}-move]`), del = e.target.closest(`[data-${kind}-del]`);
         if (move && !move.disabled) { const i = Number(move.dataset[kind + "Move"]), j = i + Number(move.dataset.dir); [list[i], list[j]] = [list[j], list[i]]; render(); }
@@ -1973,6 +2019,90 @@ $("rm-save").onclick = () => savePageList("roadmap", state.roadmap, "Roadmap sav
 $("faq-save").onclick = () => savePageList("faq", state.faq, "FAQ saved");
 $("rm-reset").onclick = async () => { if (await confirmBox("Use the original roadmap?", "Your saved steps are removed and the page shows its built-in steps again.", "Use original")) savePageList("roadmap", [], "Roadmap is back to the original"); };
 $("faq-reset").onclick = async () => { if (await confirmBox("Use the original FAQ?", "Your saved questions are removed and the page shows its built-in questions again.", "Use original")) savePageList("faq", [], "FAQ is back to the original"); };
+
+// Aircraft: the supported aircraft on the home, Compatibility and HeavyPro pages. Nothing saved: the pages show their own list,
+// which is what the editor starts from.
+const AIRCRAFT_DEFAULT = [
+    { name: "PMDG 737", profile: "Boeing 737", note: "Full support", home: true, home_text: "Boeing narrow-body profile" },
+    { name: "PMDG 777", profile: "Boeing 777", note: "Full support", home: true, home_text: "Boeing wide-body profile" },
+    { name: "Asobo 787", profile: "Boeing 787", note: "Full support", home: true, home_text: "Default airliner profile" },
+    { name: "Other airliners", profile: "Generic airliner", note: "Tune to taste", home: false, home_text: "" },
+    { name: "General aviation", profile: "Generic GA", note: "Lighter response for small aircraft", home: false, home_text: "" },
+];
+function loadAircraft() {
+    const saved = state.site.aircraft || [];
+    state.aircraft = (saved.length ? saved : AIRCRAFT_DEFAULT).map(a => ({ ...a }));
+    $("ac-state").textContent = saved.length ? `${saved.length} aircraft saved. The pages show this list.` : "Not saved yet: the pages show their own list, which is the one below. Change it and save.";
+    renderAircraft();
+}
+function renderAircraft() {
+    const last = state.aircraft.length - 1;
+    $("ac-list").innerHTML = state.aircraft.map((a, i) => `<div class="list-row"><div class="fields"><div class="fields three-col">` +
+        `<input data-ac="name" data-i="${i}" maxlength="80" placeholder="Aircraft, e.g. PMDG 737" value="${esc(a.name)}">` +
+        `<input data-ac="profile" data-i="${i}" maxlength="80" placeholder="Profile, e.g. Boeing 737" value="${esc(a.profile)}">` +
+        `<input data-ac="note" data-i="${i}" maxlength="200" placeholder="Note, e.g. Full support" value="${esc(a.note)}"></div>` +
+        `<div class="home-pick"><label><input type="checkbox" data-ac="home" data-i="${i}"${a.home ? " checked" : ""}> Home page</label>` +
+        `<input data-ac="home_text" data-i="${i}" maxlength="120" placeholder="Line under it on the home page (empty: the profile)" value="${esc(a.home_text)}"></div></div>${rowTools("ac", i, last)}</div>`).join("")
+        || '<p class="muted">No aircraft. Add one.</p>';
+}
+listEditor("ac-list", "ac", "aircraft", renderAircraft);
+$("ac-add").onclick = () => { state.aircraft.push({ name: "", profile: "", note: "", home: false, home_text: "" }); renderAircraft(); $("ac-list").querySelector(`[data-i="${state.aircraft.length - 1}"][data-ac="name"]`).focus(); };
+async function saveAircraft(list, done) {
+    try { state.site = await post("/api/admin/settings", { aircraft: list }); toast(done); loadAudit(); loadAircraft(); } catch (err) { toast(err.message, true); }
+}
+$("ac-save").onclick = () => {
+    const list = state.aircraft.filter(a => String(a.name || "").trim());
+    if (!list.length) return toast("Add at least one aircraft, or use the pages' own list", true);
+    if (!list.some(a => a.home)) return toast("Tick Home page on at least one aircraft, or the home page list is empty", true);
+    saveAircraft(list, "Aircraft saved");
+};
+$("ac-reset").onclick = async () => { if (await confirmBox("Use the pages' own list?", "Your saved aircraft are removed and the pages show the list built into them again.", "Use the pages' list")) saveAircraft([], "The pages show their own list again"); };
+
+// Shop: Stripe set-up, discount codes, prices, sales and revenue per product
+function shopMoney(cents, currency) {
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: String(currency || "sek").toUpperCase() }).format(cents / 100); }
+    catch (err) { return (cents / 100).toFixed(2) + " " + String(currency || "").toUpperCase(); }
+}
+async function loadShop() {
+    state.shop = await api("/api/admin/shop");
+    renderShop();
+}
+function renderShop() {
+    const sh = state.shop || {}, st = sh.stripe || {};
+    const okBadge = (ok, yes, no) => `<span class="badge ${ok ? "published" : "in_development"}">${esc(ok ? yes : no)}</span>`;
+    $("shop-stripe").innerHTML =
+        `<dt>Stripe</dt><dd>${okBadge(st.connected, st.mode === "test" ? "Test mode" : "Live", "Not connected")} ` +
+        `${st.connected ? (st.mode === "test" ? "Test cards only, no real money is taken." : "Real payments.") : "Run <code>python3 rotaidem/strato/setup.py stripe</code> over SSH to connect."}</dd>` +
+        `<dt>Webhook</dt><dd>${okBadge(st.webhook, "Set", "Not set")} ${st.webhook ? "Stripe tells the site about payments even when a buyer closes the page." : "Optional but safer: in Stripe, Developers, Webhooks, add the address below with the events checkout.session.completed and checkout.session.async_payment_succeeded, then run setup.py stripe again with its signing secret."}</dd>` +
+        `<dt>Webhook address</dt><dd><code>${esc(st.webhook_url || "")}</code> <button class="btn btn-ghost btn-sm" type="button" data-copy="${esc(st.webhook_url || "")}">Copy</button></dd>` +
+        `<dt>Discount codes</dt><dd>${(sh.settings || {}).promo_codes ? "Buyers can enter a code." : "Off."}</dd>`;
+    $("shop-promo").checked = !!(sh.settings || {}).promo_codes;
+    const fmtDay = d => d ? new Date(d + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
+    $("shop-products").innerHTML = (sh.products || []).map(p => {
+        const sales = p.sales || [], orders = sales.reduce((n, x) => n + x.orders, 0), recent = sales.reduce((n, x) => n + x.last_30_days, 0);
+        const revenue = sales.filter(x => x.total).map(x => shopMoney(Math.round(x.total * 100), x.currency || p.pay_currency)).join(", ") || "–";
+        const sale = !p.sale_amount ? '<span class="muted">–</span>'
+            : `${esc(shopMoney(p.sale_amount, p.pay_currency))} ${p.sale_until ? `<span class="muted">to ${esc(fmtDay(p.sale_until))}</span>` : ""} ${p.sale_active ? '<span class="badge published">On</span>' : '<span class="badge">Ended</span>'}`;
+        const now = p.can_buy ? `<strong>${esc(shopMoney(p.price_now, p.pay_currency))}</strong>`
+            : `<span class="muted">${!p.pay_amount ? "No price set" : p.status !== "published" ? "Not available yet" : "Stripe not connected"}</span>`;
+        return `<tr><td>${esc(p.name)}</td><td>${p.pay_amount ? esc(shopMoney(p.pay_amount, p.pay_currency)) : '<span class="muted">–</span>'}</td><td>${sale}</td><td>${now}</td>` +
+            `<td>${orders}</td><td>${recent}</td><td>${esc(revenue)}</td><td><button class="btn btn-ghost btn-sm" type="button" data-shop-edit="${esc(p.id)}">${p.sale_active ? "Change sale" : "Set price or sale"}</button></td></tr>`;
+    }).join("") || empty(8, "No products yet.");
+    const other = sh.other_sales || [];
+    $("shop-other").hidden = !other.length;
+    $("shop-other").textContent = other.length ? "Also paid orders for products that no longer exist: " + other.map(o => `${o.product_id || "no product"} (${o.orders})`).join(", ") : "";
+}
+$("shop-stripe").onclick = e => { const b = e.target.closest("[data-copy]"); if (b) navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Webhook address copied")); };
+$("shop-products").onclick = e => {
+    const b = e.target.closest("[data-shop-edit]");
+    if (!b) return;
+    openProduct(b.dataset.shopEdit);
+    setTimeout(() => { const f = $("p-sale"); if (f) { f.scrollIntoView({ block: "center" }); f.focus(); } }, 80);
+};
+$("shop-save").onclick = async () => {
+    try { const d = await post("/api/admin/shop", { promo_codes: $("shop-promo").checked }); state.shop.settings = d.settings; renderShop(); toast(d.settings.promo_codes ? "Discount codes are on" : "Discount codes are off"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
 
 // Short links: rotaidem.com/<slug> forwards to the target.
 function renderLinks() {
@@ -2748,7 +2878,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

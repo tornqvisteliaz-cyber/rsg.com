@@ -235,6 +235,14 @@ function applyLists(site) {
     const roadmap = document.querySelector("[data-roadmap]");
     if (roadmap && (site.roadmap || []).length) roadmap.innerHTML = site.roadmap.map(i =>
         `<div><span class="when">${esc(i.stage)}</span><div><h3>${esc(i.title)}</h3>${i.text ? `<p class="muted" style="white-space:pre-line">${esc(i.text)}</p>` : ""}</div></div>`).join("");
+    // Admin -> Aircraft: the supported aircraft on the home, Compatibility and HeavyPro pages
+    const aircraft = site.aircraft || [];
+    if (aircraft.length) {
+        const home = document.querySelector('[data-aircraft="home"]'), table = document.querySelector('[data-aircraft="table"]'), names = document.querySelector('[data-aircraft="names"]');
+        if (home) home.innerHTML = aircraft.filter(a => a.home).map(a => `<div><strong>${esc(a.name)}</strong><span>${esc(a.home_text || a.profile)}</span></div>`).join("");
+        if (table) table.innerHTML = aircraft.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.profile)}</td><td class="muted">${esc(a.note)}</td></tr>`).join("");
+        if (names) names.textContent = aircraft.map(a => a.name).join(", ");
+    }
     const faq = document.querySelector("[data-faq]");
     if (faq && (site.faq || []).length) faq.innerHTML = site.faq.map(i =>
         `<details><summary>${esc(i.q)}</summary><p style="white-space:pre-line">${esc(i.a)}</p></details>`).join("");

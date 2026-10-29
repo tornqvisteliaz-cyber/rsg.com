@@ -151,7 +151,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-26-stripe"
+SCHEMA_VERSION = "2026-10-29-shop"
 
 
 def ensure_schema():
@@ -208,7 +208,9 @@ def ensure_schema():
                           ("products", "update_required INTEGER DEFAULT 0"), ("products", f"updated_at {word}"),
                           # Stripe: the price charged at checkout (smallest unit, e.g. ore/cents), and on orders the payment
                           ("products", "pay_amount INTEGER DEFAULT 0"), ("products", f"pay_currency {word}"),
-                          ("orders", f"payment_ref {ident}"), ("orders", f"currency {word}")):
+                          ("orders", f"payment_ref {ident}"), ("orders", f"currency {word}"),
+                          # a sale: a lower price at checkout until a date (Admin -> Products)
+                          ("products", "sale_amount INTEGER DEFAULT 0"), ("products", f"sale_until {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -885,7 +887,21 @@ def public_product(row, staff=False):
         p["download_url"] = ""
     # Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
     p["can_buy"] = bool(STRIPE_SECRET_KEY and (p.get("pay_amount") or 0) > 0 and p.get("status") == "published")
+    p["sale_active"] = sale_active(p)
+    p["price_now"] = price_now(p)
     return p
+
+
+def sale_active(product):
+    """A sale runs while its price is below the normal one, up to and including its last day (UTC)."""
+    sale, full = int(product.get("sale_amount") or 0), int(product.get("pay_amount") or 0)
+    until = str(product.get("sale_until") or "")
+    return bool(0 < sale < full and (not until or until >= datetime.now(timezone.utc).strftime("%Y-%m-%d")))
+
+
+def price_now(product):
+    """What Stripe Checkout charges right now, in the smallest unit (ore, cents)."""
+    return int(product.get("sale_amount") or 0) if sale_active(product) else int(product.get("pay_amount") or 0)
 
 
 @app.get("/api/products")
@@ -1123,23 +1139,32 @@ def save_product():
     pay_currency = str(b.get("pay_currency") or "sek").lower()
     if pay_amount < 0 or pay_amount > 10_000_000 or pay_currency not in PAY_CURRENCIES:
         return err("Check the price at checkout and its currency", 400)
+    try:
+        sale_amount = int(round(float(str(b.get("sale_amount") or 0).replace(",", ".")) * 100))
+    except (TypeError, ValueError):
+        return err("The sale price must be a number, like 5.99", 400)
+    sale_until = str(b.get("sale_until") or "").strip()
+    if sale_amount and not 0 < sale_amount < pay_amount:
+        return err("The sale price must be lower than the price at checkout", 400)
+    if sale_until and not DATE_RE.match(sale_until):
+        return err("The sale's last day must look like 2026-12-24", 400)
     before = db().first("SELECT version, download_url, updated_at FROM products WHERE id = ?", pid)
     # When the version or the file changes, RotaHub sees a new release from this time on.
     changed = not before or before["version"] != version or (before["download_url"] or "") != download_url
     updated_at = utc_stamp() if changed or not before["updated_at"] else before["updated_at"]
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency, sale_amount, sale_until) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
         "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, "
-        "update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency",
+        "update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency, sale_amount=excluded.sale_amount, sale_until=excluded.sale_until",
         pid, name, b.get("simulator") or "MSFS 2024", version, b.get("folder_name") or f"rotaidem-{pid}",
         download_url, b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
         b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
         "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))),
-        1 if b.get("update_required") else 0, updated_at, pay_amount, pay_currency)
+        1 if b.get("update_required") else 0, updated_at, pay_amount, pay_currency, sale_amount, sale_until)
     audit(user, "save_product", pid + (f" (update {version})" if before and changed else ""))
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
@@ -2397,7 +2422,7 @@ def checkout(pid):
     base = site_url()
     fields = {"mode": "payment", "line_items[0][quantity]": "1",
               "line_items[0][price_data][currency]": product.get("pay_currency") or "sek",
-              "line_items[0][price_data][unit_amount]": str(product["pay_amount"]),
+              "line_items[0][price_data][unit_amount]": str(price_now(product)),
               "line_items[0][price_data][product_data][name]": product["name"] or pid,
               "customer_email": user["email"], "client_reference_id": str(user["id"]),
               "metadata[product_id]": pid, "metadata[user_id]": str(user["id"]),
@@ -2406,6 +2431,8 @@ def checkout(pid):
               "cancel_url": f"{base}/addons/view?id={urllib.parse.quote(pid)}&cancelled=1"}
     if product.get("tagline"):
         fields["line_items[0][price_data][product_data][description]"] = product["tagline"][:300]
+    if shop_settings()["promo_codes"]:
+        fields["allow_promotion_codes"] = "true"  # codes made in the Stripe dashboard
     session, error = stripe_call("POST", "/v1/checkout/sessions", fields)
     if error or not (session or {}).get("url"):
         return err(error or "Stripe did not open a checkout page", 502)
@@ -2461,6 +2488,52 @@ def stripe_webhook():
     if event.get("type") in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         fulfil_checkout((event.get("data") or {}).get("object") or {})
     return jsonify({"received": True})
+
+
+# ---------- Admin -> Shop: payments set-up, discount codes, sales per product ----------
+
+SHOP_DEFAULT = {"promo_codes": False}
+
+
+def shop_settings():
+    saved = get_setting("shop.settings", {}) or {}
+    return {**SHOP_DEFAULT, **{k: saved[k] for k in SHOP_DEFAULT if k in saved}}
+
+
+@app.get("/api/admin/shop")
+def admin_shop():
+    if not staff_user():
+        return err("Admin only", 403)
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    sales = {}
+    for row in db().all("SELECT product_id, currency, COUNT(*) AS n, SUM(amount) AS total, "
+                        "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS recent FROM orders "
+                        "WHERE payment_status = 'Paid' GROUP BY product_id, currency", since):
+        sales.setdefault(row["product_id"] or "", []).append({"currency": (row["currency"] or "").lower(), "orders": int(row["n"] or 0),
+                                                              "total": round(float(row["total"] or 0), 2), "last_30_days": int(row["recent"] or 0)})
+    items = []
+    for p in db().all("SELECT * FROM products ORDER BY sort_order, name"):
+        items.append({"id": p["id"], "name": p["name"], "status": p["status"], "pay_amount": int(p.get("pay_amount") or 0),
+                      "pay_currency": p.get("pay_currency") or "sek", "sale_amount": int(p.get("sale_amount") or 0),
+                      "sale_until": p.get("sale_until") or "", "sale_active": sale_active(p), "price_now": price_now(p),
+                      "can_buy": bool(STRIPE_SECRET_KEY and (p.get("pay_amount") or 0) > 0 and p.get("status") == "published"),
+                      "sales": sales.pop(p["id"], [])})
+    return jsonify({"stripe": {"connected": bool(STRIPE_SECRET_KEY), "mode": stripe_mode(), "webhook": bool(STRIPE_WEBHOOK_SECRET),
+                               "webhook_url": site_url() + "/api/stripe/webhook"},
+                    "settings": shop_settings(), "products": items,
+                    "other_sales": [{"product_id": k, **v} for k, rows in sales.items() for v in rows]})
+
+
+@app.post("/api/admin/shop")
+def admin_save_shop():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change the shop", 403)
+    b = body()
+    settings = {**shop_settings(), "promo_codes": bool(b.get("promo_codes"))}
+    set_setting("shop.settings", settings)
+    audit(user, "save_shop", "discount codes " + ("on" if settings["promo_codes"] else "off"))
+    return jsonify({"ok": True, "settings": settings})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
@@ -2861,6 +2934,21 @@ def clean_roadmap(items):
     return out
 
 
+def clean_aircraft(items):
+    """Supported aircraft (Admin -> Aircraft): the home page, Compatibility and HeavyPro pages.
+    [{name, profile, note, home, home_text}], at most 30. Empty: the pages keep their own list."""
+    if not isinstance(items, list) or len(items) > 30:
+        raise ValueError("At most 30 aircraft")
+    out = []
+    for i in items:
+        i = i if isinstance(i, dict) else {}
+        name = str(i.get("name") or "").strip()[:80]
+        if name:
+            out.append({"name": name, "profile": str(i.get("profile") or "").strip()[:80], "note": str(i.get("note") or "").strip()[:200],
+                        "home": bool(i.get("home")), "home_text": str(i.get("home_text") or "").strip()[:120]})
+    return out
+
+
 def clean_faq(items):
     """The questions on the Support page: [{q, a}], at most 60."""
     if not isinstance(items, list) or len(items) > 60:
@@ -2950,6 +3038,7 @@ def site_settings():
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
+            "aircraft": get_setting("site.aircraft", []) or [],
             "links": get_setting("site.links", {}) or {}, "extras": site_extras(), "hub": hub_config()["downloads"]}
 
 
@@ -3008,6 +3097,8 @@ def admin_save_settings():
             set_setting("site.roadmap", clean_roadmap(b.get("roadmap")))
         if "faq" in b:
             set_setting("site.faq", clean_faq(b.get("faq")))
+        if "aircraft" in b:
+            set_setting("site.aircraft", clean_aircraft(b.get("aircraft")))
         if "links" in b:
             set_setting("site.links", clean_links(b.get("links")))
         if "extras" in b:
@@ -3034,7 +3125,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "links", "extras", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 

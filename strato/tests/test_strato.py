@@ -1185,6 +1185,57 @@ class StratoCGITests:
         self.assertFalse(next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")["can_buy"])
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/system", token=t))["stripe"], "test")
 
+    def test_sale_price_and_the_shop(self):
+        t = self.owner_token
+        product = {"name": "Sale App", "id": "sale-app", "status": "published", "pay_amount": "7.99", "pay_currency": "usd"}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "9.99"}, token=t).status, 400, "a sale is cheaper")
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "cheap"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "soon"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "2999-12-31"}, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "sale-app")
+        self.assertEqual((listed["sale_active"], listed["price_now"], listed["pay_amount"], listed["sale_until"]), (True, 599, 799, "2999-12-31"))
+        # the shop: discount codes are off until switched on; customers see none of it
+        buyer, _ = self.customer("salebuyer")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/shop", token=buyer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": True}, token=buyer).status, 403)
+        shop = self.ok(self.w.cgi("GET", "/api/admin/shop", token=t))
+        self.assertEqual((shop["stripe"]["connected"], shop["stripe"]["mode"], shop["settings"]["promo_codes"]), (True, "test", False))
+        self.assertTrue(shop["stripe"]["webhook_url"].endswith("/api/stripe/webhook"))
+        self.ok(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": True}, token=t))
+        # buyers pay the sale price, and may enter a code
+        sid = self.ok(self.w.cgi("POST", "/api/checkout/sale-app", token=buyer))["url"].rsplit("/", 1)[-1]
+        form = self.stripe.created[-1]
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], form["line_items[0][price_data][currency]"], form.get("allow_promotion_codes")), ("599", "usd", "true"))
+        self.stripe.pay(sid)
+        self.assertTrue(self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["paid"])
+        item = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/shop", token=t))["products"] if p["id"] == "sale-app")
+        self.assertEqual((item["sale_active"], item["price_now"], item["can_buy"]), (True, 599, True))
+        self.assertEqual(item["sales"], [{"currency": "usd", "orders": 1, "total": 5.99, "last_30_days": 1}])
+        # a sale past its last day is over: the normal price again, and codes switched off
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "2020-01-01"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": False}, token=t))
+        other, _ = self.customer("salelate")
+        self.ok(self.w.cgi("POST", "/api/checkout/sale-app", token=other))
+        form = self.stripe.created[-1]
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], "allow_promotion_codes" in form), ("799", False))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "sale-app")
+        self.assertEqual((listed["sale_active"], listed["price_now"]), (False, 799))
+        self.assertIn("save_shop", [a["action"] for a in self.ok(self.w.cgi("GET", "/api/admin/audit", token=t))["logs"]])
+
+    def test_aircraft_list_from_the_admin(self):
+        t = self.owner_token
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["aircraft"], [], "nothing saved: the pages keep their own list")
+        aircraft = [{"name": "PMDG 737", "profile": "Boeing 737", "note": "Full support", "home": True, "home_text": "Boeing narrow-body profile"},
+                    {"name": "  ", "profile": "dropped: no name"}, {"name": "<b>GA</b>", "profile": "Generic GA", "home": "yes", "extra": "ignored"}]
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"aircraft": aircraft}, token=t))["aircraft"]
+        self.assertEqual(saved, [aircraft[0], {"name": "<b>GA</b>", "profile": "Generic GA", "note": "", "home": True, "home_text": ""}])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["aircraft"][0]["name"], "PMDG 737")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": [{"name": "x"}] * 31}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": "PMDG"}, token=t).status, 400)
+        buyer, _ = self.customer("aircraftfan")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=buyer).status, 403)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=t))["aircraft"], [])
+
     def test_update_feed_for_rotahub(self):
         t = self.owner_token
         setup = b"MZ" + os.urandom(2000)

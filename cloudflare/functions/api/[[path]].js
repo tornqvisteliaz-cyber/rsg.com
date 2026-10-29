@@ -57,6 +57,8 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
     if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
+    if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
+    if (method === "POST" && path === "/api/admin/shop") return adminSaveShop(request, env);
     if (method === "POST" && path === "/api/admin/hub") return adminSaveHub(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
@@ -155,7 +157,8 @@ async function ensure(env) {
   for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"],
                              ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
                              ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"],
-                             ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"]]) {
+                             ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"],
+                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
@@ -369,8 +372,17 @@ function publicProduct(row, staff, canSell = false) {
   if (!staff) { p.has_download = !!p.download_url; p.download_url = ""; }
   // Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
   p.can_buy = !!(canSell && Number(p.pay_amount) > 0 && p.status === "published");
+  p.sale_active = saleActive(p);
+  p.price_now = priceNow(p);
   return p;
 }
+// A sale runs while its price is below the normal one, up to and including its last day (UTC).
+function saleActive(p) {
+  const sale = Number(p.sale_amount) || 0, full = Number(p.pay_amount) || 0, until = String(p.sale_until || "");
+  return 0 < sale && sale < full && (!until || until >= new Date().toISOString().slice(0, 10));
+}
+// What Stripe Checkout charges right now, in the smallest unit (ore, cents).
+const priceNow = p => saleActive(p) ? Number(p.sale_amount) || 0 : Number(p.pay_amount) || 0;
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   const viewer = await currentUser(request, env);
@@ -484,13 +496,17 @@ async function saveProduct(request, env) {
   const payAmount = Math.round(Number(String(body.pay_amount || 0).replace(",", ".")) * 100), payCurrency = String(body.pay_currency || "sek").toLowerCase();
   if (!Number.isFinite(payAmount)) return json({ error: "The price at checkout must be a number, like 299 or 29.99" }, 400);
   if (payAmount < 0 || payAmount > 10000000 || !PAY_CURRENCIES.includes(payCurrency)) return json({ error: "Check the price at checkout and its currency" }, 400);
+  const saleAmount = Math.round(Number(String(body.sale_amount || 0).replace(",", ".")) * 100), saleUntil = String(body.sale_until || "").trim();
+  if (!Number.isFinite(saleAmount)) return json({ error: "The sale price must be a number, like 5.99" }, 400);
+  if (saleAmount && !(saleAmount > 0 && saleAmount < payAmount)) return json({ error: "The sale price must be lower than the price at checkout" }, 400);
+  if (saleUntil && !/^\d{4}-\d{2}-\d{2}$/.test(saleUntil)) return json({ error: "The sale's last day must look like 2026-12-24" }, 400);
   const before = await env.DB.prepare("SELECT version, download_url, updated_at FROM products WHERE id = ?").bind(id).first();
   // When the version or the file changes, RotaHub sees a new release from this time on.
   const changed = !before || before.version !== version || (before.download_url || "") !== downloadUrl;
   const updatedAt = changed || !before.updated_at ? utcStamp() : before.updated_at;
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency").bind(
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency, sale_amount, sale_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency, sale_amount=excluded.sale_amount, sale_until=excluded.sale_until").bind(
     id, name, body.simulator || "MSFS 2024", version, body.folder_name || `rotaidem-${id}`, downloadUrl, body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
-    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt, payAmount, payCurrency
+    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt, payAmount, payCurrency, saleAmount, saleUntil
   ).run();
   await audit(env, user, "save_product", id + (before && changed ? ` (update ${version})` : ""));
   return json({ ok: true, id, page: "/addons/view?id=" + id });
@@ -939,11 +955,12 @@ async function checkout(request, env, pid) {
   if (owned.some(r => sameProduct(pid, r.product_id))) return json({ error: `You already have a licence for ${product.name}. It is under My account.`, owned: true }, 409);
   const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
   const fields = { mode: "payment", "line_items[0][quantity]": "1", "line_items[0][price_data][currency]": product.pay_currency || "sek",
-    "line_items[0][price_data][unit_amount]": String(product.pay_amount), "line_items[0][price_data][product_data][name]": product.name || pid,
+    "line_items[0][price_data][unit_amount]": String(priceNow(product)), "line_items[0][price_data][product_data][name]": product.name || pid,
     customer_email: user.email, client_reference_id: String(user.id), "metadata[product_id]": pid, "metadata[user_id]": String(user.id),
     "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": String(user.id),
     success_url: `${base}/checkout-done?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/addons/view?id=${encodeURIComponent(pid)}&cancelled=1` };
   if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
+  if ((await shopSettings(env)).promo_codes) fields.allow_promotion_codes = "true"; // codes made in the Stripe dashboard
   const [session, error] = await stripeCall(env, "POST", "/v1/checkout/sessions", fields);
   if (error || !(session || {}).url) return json({ error: error || "Stripe did not open a checkout page" }, 502);
   return json({ url: session.url });
@@ -1112,6 +1129,12 @@ function cleanRoadmap(items) {
   return items.map(i => ({ stage: ROADMAP_STAGES.includes((i || {}).stage) ? i.stage : "Next", title: String((i || {}).title || "").trim().slice(0, 120), text: String((i || {}).text || "").trim().slice(0, 600) }))
     .filter(i => i.title);
 }
+// Supported aircraft (Admin -> Aircraft): home page, Compatibility and HeavyPro pages. Empty: the pages keep their own list.
+function cleanAircraft(items) {
+  if (!Array.isArray(items) || items.length > 30) throw new Error("At most 30 aircraft");
+  return items.map(i => (i && typeof i === "object" ? i : {})).map(i => ({ name: String(i.name || "").trim().slice(0, 80), profile: String(i.profile || "").trim().slice(0, 80),
+    note: String(i.note || "").trim().slice(0, 200), home: !!i.home, home_text: String(i.home_text || "").trim().slice(0, 120) })).filter(i => i.name);
+}
 function cleanFaq(items) {
   if (!Array.isArray(items) || items.length > 60) throw new Error("The FAQ can have at most 60 questions");
   return items.map(i => ({ q: String((i || {}).q || "").trim().slice(0, 200), a: String((i || {}).a || "").trim().slice(0, 2000) })).filter(i => i.q && i.a);
@@ -1160,7 +1183,7 @@ async function siteSettings(env) {
   const texts = (await getSetting(env, "site.texts", {})) || {};
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
-    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
+    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], aircraft: (await getSetting(env, "site.aircraft", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
     extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) }, hub: (await hubConfig(env)).downloads };
 }
 function validImageUrl(url) {
@@ -1200,6 +1223,7 @@ async function adminSaveSettings(request, env) {
     if ("config" in body) await setSetting(env, "site.config", cleanConfig(body.config || {}));
     if ("roadmap" in body) await setSetting(env, "site.roadmap", cleanRoadmap(body.roadmap));
     if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
+    if ("aircraft" in body) await setSetting(env, "site.aircraft", cleanAircraft(body.aircraft));
     if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
     if ("extras" in body) await setSetting(env, "site.extras", cleanExtras(body.extras || {}));
   } catch (err) { return json({ error: err.message }, 400); }
@@ -1217,7 +1241,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "links", "extras", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
@@ -1728,6 +1752,37 @@ async function hubStats(env, minVersion = "") {
   if (minVersion) for (const [v, users] of listed) if (v === "older" || versionLess(v, minVersion)) users.forEach(u => outdated.add(u));
   return { people: new Set(rows.map(r => r.user_id)).size, logins: rows.length, active_7d: new Set(rows.filter(r => String(r.last_seen || "") >= week).map(r => r.user_id)).size,
     versions: listed.map(([version, users]) => ({ version, people: users.size })), outdated: outdated.size };
+}
+// Admin -> Shop: payments set-up, discount codes, sales per product (same as server.py)
+const SHOP_DEFAULT = { promo_codes: false };
+async function shopSettings(env) {
+  const saved = (await getSetting(env, "shop.settings", {})) || {};
+  return { ...SHOP_DEFAULT, ...Object.fromEntries(Object.keys(SHOP_DEFAULT).filter(k => k in saved).map(k => [k, saved[k]])) };
+}
+async function adminShop(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const since = utcStamp(30 * 86400), sales = {};
+  const rows = (await env.DB.prepare("SELECT product_id, currency, COUNT(*) AS n, SUM(amount) AS total, SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS recent FROM orders WHERE payment_status = 'Paid' GROUP BY product_id, currency").bind(since).all()).results || [];
+  for (const r of rows) (sales[r.product_id || ""] = sales[r.product_id || ""] || []).push({ currency: String(r.currency || "").toLowerCase(), orders: Number(r.n) || 0, total: Math.round((Number(r.total) || 0) * 100) / 100, last_30_days: Number(r.recent) || 0 });
+  const products = ((await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all()).results || []).map(p => {
+    const item = { id: p.id, name: p.name, status: p.status, pay_amount: Number(p.pay_amount) || 0, pay_currency: p.pay_currency || "sek", sale_amount: Number(p.sale_amount) || 0,
+      sale_until: p.sale_until || "", sale_active: saleActive(p), price_now: priceNow(p), can_buy: !!(stripeKey(env) && Number(p.pay_amount) > 0 && p.status === "published"), sales: sales[p.id] || [] };
+    delete sales[p.id];
+    return item;
+  });
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  return json({ stripe: { connected: !!stripeKey(env), mode: stripeMode(env), webhook: !!stripeWebhookSecret(env), webhook_url: base + "/api/stripe/webhook" },
+    settings: await shopSettings(env), products, other_sales: Object.entries(sales).flatMap(([k, list]) => list.map(v => ({ product_id: k, ...v }))) });
+}
+async function adminSaveShop(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change the shop" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const settings = { ...(await shopSettings(env)), promo_codes: !!body.promo_codes };
+  await setSetting(env, "shop.settings", settings);
+  await audit(env, user, "save_shop", "discount codes " + (settings.promo_codes ? "on" : "off"));
+  return json({ ok: true, settings });
 }
 async function adminHub(request, env) {
   const user = await currentUser(request, env);
