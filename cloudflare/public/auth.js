@@ -125,7 +125,7 @@ const STATUS_LABEL = { published: "Available", coming_soon: "Coming soon", in_de
 function productCard(p) {
     return `<a class="product" href="/addons/view?id=${encodeURIComponent(p.id)}"><div class="img"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div>` +
         `<div class="meta"><h3>${esc(p.name)}</h3><span class="price">${esc(p.price || "")}</span></div>` +
-        `<div class="sub">${esc(p.tagline || p.simulator || "")} · ${esc(STATUS_LABEL[p.status] || p.status || "")}</div></a>`;
+        `<div class="sub">${esc(p.tagline || p.simulator || "")}</div><span class="badge status ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status || "")}</span></a>`;
 }
 
 // Any <form data-subscribe> with an email field signs the visitor up for product emails.
