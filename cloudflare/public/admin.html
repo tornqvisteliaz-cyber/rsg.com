@@ -2023,6 +2023,7 @@ $("faq-reset").onclick = async () => { if (await confirmBox("Use the original FA
 // Aircraft: the supported aircraft on the home, Compatibility and HeavyPro pages. Nothing saved: the pages show their own list,
 // which is what the editor starts from.
 const AIRCRAFT_DEFAULT = [
+    { name: "iFly 737 MAX", profile: "Boeing 737 MAX", note: "Full support", home: true, home_text: "Boeing 737 MAX profile" },
     { name: "PMDG 737", profile: "Boeing 737", note: "Full support", home: true, home_text: "Boeing narrow-body profile" },
     { name: "PMDG 777", profile: "Boeing 777", note: "Full support", home: true, home_text: "Boeing wide-body profile" },
     { name: "Asobo 787", profile: "Boeing 787", note: "Full support", home: true, home_text: "Default airliner profile" },
