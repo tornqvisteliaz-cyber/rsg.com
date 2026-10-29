@@ -961,6 +961,8 @@ async function checkout(request, env, pid) {
     success_url: `${base}/checkout-done?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/addons/view?id=${encodeURIComponent(pid)}&cancelled=1` };
   if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
   if ((await shopSettings(env)).promo_codes) fields.allow_promotion_codes = "true"; // codes made in the Stripe dashboard
+  const referral = String((await request.json().catch(() => ({}))).referral || "").trim(); // window.endorsely_referral from the buyer's browser
+  if (/^[A-Za-z0-9_-]{1,100}$/.test(referral)) fields["metadata[endorsely_referral]"] = referral; // Endorsely (affiliates) credits the sale from this
   const [session, error] = await stripeCall(env, "POST", "/v1/checkout/sessions", fields);
   if (error || !(session || {}).url) return json({ error: error || "Stripe did not open a checkout page" }, 502);
   return json({ url: session.url });

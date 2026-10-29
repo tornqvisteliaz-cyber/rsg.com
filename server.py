@@ -2328,6 +2328,7 @@ def account_claim_license():
 
 PAY_CURRENCIES = ("sek", "eur", "usd", "gbp", "nok", "dkk")
 CHECKOUT_SESSION = re.compile(r"^cs_[A-Za-z0-9_]{10,250}$")
+REFERRAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")  # window.endorsely_referral from the buyer's browser
 
 
 def stripe_mode():
@@ -2433,6 +2434,9 @@ def checkout(pid):
         fields["line_items[0][price_data][product_data][description]"] = product["tagline"][:300]
     if shop_settings()["promo_codes"]:
         fields["allow_promotion_codes"] = "true"  # codes made in the Stripe dashboard
+    referral = str(body().get("referral") or "").strip()
+    if REFERRAL_ID.match(referral):
+        fields["metadata[endorsely_referral]"] = referral  # Endorsely (affiliates) credits the sale from this
     session, error = stripe_call("POST", "/v1/checkout/sessions", fields)
     if error or not (session or {}).get("url"):
         return err(error or "Stripe did not open a checkout page", 502)

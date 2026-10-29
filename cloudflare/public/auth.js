@@ -92,7 +92,9 @@ async function rsgBuy(productId, button) {
     if (!token) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
     if (button) { button.dataset.label = button.dataset.label || button.textContent; button.textContent = "Opening checkout…"; button.style.pointerEvents = "none"; }
     try {
-        const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token } });
+        // Endorsely (affiliates): the referral this visitor came with goes to Stripe, so the sale is credited
+        const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token, "Content-Type": "application/json" },
+            body: JSON.stringify({ referral: window.endorsely_referral || "" }) });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.url) { location.href = data.url; return; }
         if (data.login) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }

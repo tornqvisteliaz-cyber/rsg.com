@@ -1206,6 +1206,7 @@ class StratoCGITests:
         sid = self.ok(self.w.cgi("POST", "/api/checkout/sale-app", token=buyer))["url"].rsplit("/", 1)[-1]
         form = self.stripe.created[-1]
         self.assertEqual((form["line_items[0][price_data][unit_amount]"], form["line_items[0][price_data][currency]"], form.get("allow_promotion_codes")), ("599", "usd", "true"))
+        self.assertNotIn("metadata[endorsely_referral]", form, "no referral, none sent")
         self.stripe.pay(sid)
         self.assertTrue(self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["paid"])
         item = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/shop", token=t))["products"] if p["id"] == "sale-app")
@@ -1215,8 +1216,11 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "2020-01-01"}, token=t))
         self.ok(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": False}, token=t))
         other, _ = self.customer("salelate")
-        self.ok(self.w.cgi("POST", "/api/checkout/sale-app", token=other))
+        self.assertEqual(self.w.cgi("POST", "/api/checkout/sale-app", {"referral": "bad referral <x>"}, token=other).status, 200)
+        self.assertNotIn("metadata[endorsely_referral]", self.stripe.created[-1], "an odd referral is left out")
+        self.ok(self.w.cgi("POST", "/api/checkout/sale-app", {"referral": "ref_8Kd2-x"}, token=other))
         form = self.stripe.created[-1]
+        self.assertEqual(form["metadata[endorsely_referral]"], "ref_8Kd2-x", "Endorsely credits the affiliate")
         self.assertEqual((form["line_items[0][price_data][unit_amount]"], "allow_promotion_codes" in form), ("799", False))
         listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "sale-app")
         self.assertEqual((listed["sale_active"], listed["price_now"]), (False, 799))
