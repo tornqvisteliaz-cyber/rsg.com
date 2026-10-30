@@ -149,6 +149,7 @@ python3 rotaidem/strato/setup.py password        new password for an account
 python3 rotaidem/strato/setup.py permissions     make settings and logs private (700/600) again
 python3 rotaidem/strato/setup.py admin-password  set, change or remove the extra admin page password (also when forgotten)
 python3 rotaidem/strato/setup.py stripe          set up payments: Stripe key and webhook secret (typed, not shown)
+python3 rotaidem/strato/setup.py discord         connect the Discord bot for the verified buyer role (secrets typed, not shown)
 python3 rotaidem/strato/setup.py fetch-installer  copy the newest HeavyPro installer from GitHub to rotaidem.com/files/ (Download buttons follow)
 python3 rotaidem/strato/setup.py import FILE     restore a backup (replaces the database; asks first)
 python3 rotaidem/strato/setup.py reset-catalog   remove all products (asks first, keeps a copy)
@@ -173,6 +174,30 @@ is on their account). After paying they come back to `/checkout-done`, which sho
 the order (marked *Stripe* in Admin → Orders) and the key are made once, and the key is emailed.
 The webhook does the same when someone closes the page right after paying. The keys are only in
 `rotaidem-data/config.env`; never paste them anywhere else.
+
+## Discord: verified buyers get the buyer channels
+
+No bot program has to run: the website does everything through Discord's API when it is needed.
+Customers press **Link Discord** under My account; the website adds them to your server and gives
+licence holders a *Verified buyer* role. The role is taken away when a licence is revoked and given
+back when it is restored. `/verify` in Discord lets members check themselves.
+
+1. discord.com/developers/applications → **New Application** (e.g. Rotaidem).
+2. **OAuth2 → Redirects → Add**: `https://rotaidem.com/api/discord/callback`.
+3. Over SSH: `python3 rotaidem/strato/setup.py discord`. It asks for the Application ID and Public
+   Key (General Information), the Client Secret (OAuth2 → Reset Secret) and the bot token (Bot → Reset
+   Token). Secrets are not shown while typing. It tests the token and prints the invite link.
+4. Open the invite link and add the bot to your server.
+5. In Discord: Server Settings → Roles → make a role such as **Verified buyer**. Drag the bot's own
+   role **above** it, or it cannot give it.
+6. Lock the buyer channels: edit each channel → Permissions → `@everyone`: View Channel **off**,
+   Verified buyer: View Channel **on**.
+7. User Settings → Advanced → **Developer Mode** on. Right-click the server → Copy Server ID, and the
+   role → Copy Role ID. Paste both in **Admin → Discord** on the website and save.
+8. In the Developer Portal → General Information → **Interactions Endpoint URL**:
+   `https://rotaidem.com/api/discord/interactions` → Save (Discord tests it then). Then press
+   **Add the /verify command** in Admin → Discord.
+9. Optional: in Admin → Discord, **Post a Verify button** in a channel such as #welcome.
 
 ## Security
 

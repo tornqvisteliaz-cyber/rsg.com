@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape, unescape as html_unescape
 from pathlib import Path
 
-from flask import Flask, abort, g, has_request_context, jsonify, request, send_from_directory
+from flask import Flask, abort, g, has_request_context, jsonify, redirect, request, send_from_directory
 
 PUBLIC = Path(__file__).resolve().parent / "cloudflare" / "public"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -46,6 +46,12 @@ MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotai
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_API_URL = os.environ.get("STRIPE_API_URL", "https://api.stripe.com").rstrip("/")  # override only for tests
+# Discord (Admin -> Discord): the application and its bot, from setup.py discord
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "").strip()
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "").strip()
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "").strip()
+DISCORD_API_URL = os.environ.get("DISCORD_API_URL", "https://discord.com/api/v10").rstrip("/")  # override only for tests
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 LICENSE_API_KEY = os.environ.get("LICENSE_API_KEY", "").strip()
@@ -151,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-29-shop"
+SCHEMA_VERSION = "2026-10-30-discord"
 
 
 def ensure_schema():
@@ -210,7 +216,9 @@ def ensure_schema():
                           ("products", "pay_amount INTEGER DEFAULT 0"), ("products", f"pay_currency {word}"),
                           ("orders", f"payment_ref {ident}"), ("orders", f"currency {word}"),
                           # a sale: a lower price at checkout until a date (Admin -> Products)
-                          ("products", "sale_amount INTEGER DEFAULT 0"), ("products", f"sale_until {word}")):
+                          ("products", "sale_amount INTEGER DEFAULT 0"), ("products", f"sale_until {word}"),
+                          # the Discord account linked on My account (for the verified buyer role)
+                          ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -585,7 +593,9 @@ def me():
         return err("Unauthorized", 401)
     count = db().first("SELECT COUNT(*) AS n FROM orders WHERE customer_id = ?", user["id"])
     return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"],
-                             "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0}})
+                             "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0,
+                             "discord": {"available": discord_ready(), "linked": bool(user.get("discord_id")), "name": user.get("discord_name") or "",
+                                         "buyer": bool(user.get("discord_id")) and has_buyer_licence(user)}}})
 
 
 # ---------- admin password ----------
@@ -1838,6 +1848,8 @@ def admin_generate_licenses():
                           clamp_int(b.get("max_activations"), 2, 1, 100), str(b.get("note") or "")[:200], user["name"]):
             keys.append(key)
     audit(user, "create_licenses", f"{count} x {prefix}" + (f" for {email}" if email else ""))
+    if email:
+        discord_sync_owners([(customer["id"] if customer else None, email)])
     error = email_license_keys(email, keys, str(b.get("product_id") or "heavypro")[:60]) if email and b.get("send_email", True) else ""
     if email and b.get("send_email", True) and not error:
         audit(user, "email_licenses", email)
@@ -1883,6 +1895,7 @@ def admin_update_license(license_id):
              status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
              str(b.get("note", lic["note"]) or "")[:200], product_id, license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
+    discord_sync_owners([(lic["customer_id"], lic["email"]), (customer["id"] if customer else None, email)])
     return jsonify({"ok": True})
 
 
@@ -1899,13 +1912,15 @@ def admin_bulk_licenses():
     ids = sorted({int(i) for i in (b.get("ids") or []) if str(i).isdigit()})[:1000]
     if not ids:
         return err("Select at least one licence", 400)
-    changed = 0
+    changed, owners = 0, []
     for license_id in ids:
-        lic = db().first("SELECT id, status FROM licenses WHERE id = ?", license_id)
+        lic = db().first("SELECT id, status, customer_id, email FROM licenses WHERE id = ?", license_id)
         if lic and lic["status"] != status:
             db().run("UPDATE licenses SET status = ? WHERE id = ?", status, license_id)
             changed += 1
+            owners.append((lic["customer_id"], lic["email"]))
     audit(user, "bulk_licenses", f"{changed} {status}")
+    discord_sync_owners(owners)
     return jsonify({"ok": True, "changed": changed})
 
 
@@ -2315,6 +2330,7 @@ def account_claim_license():
         db().run("UPDATE licenses SET customer_id = ? WHERE id = ?", user["id"], lic["id"])
         db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)",
                  user["id"], key, request.remote_addr or "", utc_stamp())
+        discord_sync_owners([(user["id"], user["email"])])
     row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
                      "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                      "FROM licenses WHERE id = ?", lic["id"])
@@ -2399,6 +2415,7 @@ def fulfil_checkout(session):
         if insert_license(candidate, product_id, email, user_id or None, order["id"] if order else None, 2, "Bought on rotaidem.com (Stripe)", "Stripe"):
             key = candidate
     db().run("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?", order["id"] if order else None, key, sid)
+    discord_sync_owners([(user_id or None, email)])
     error = email_license_keys(email, [key], product_id)
     if error:
         app.logger.error("Licence e-mail after payment %s failed: %s", sid, error)
@@ -2538,6 +2555,351 @@ def admin_save_shop():
     set_setting("shop.settings", settings)
     audit(user, "save_shop", "discount codes " + ("on" if settings["promo_codes"] else "off"))
     return jsonify({"ok": True, "settings": settings})
+
+
+# ---------- Discord: a "Verified buyer" role for licence holders ----------
+# No bot runs all the time (STRATO cannot keep one running): everything is a call to Discord's API.
+# On My account a customer links Discord (OAuth2, scopes identify + guilds.join): the website adds
+# them to the server and gives the buyer role when they have an active licence. The role follows
+# the licence (bought, revoked, restored, claimed). Channels are locked to the role in Discord.
+# /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
+
+DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": []}
+SNOWFLAKE = re.compile(r"^\d{15,22}$")
+DISCORD_STATE_MINUTES = 15
+
+
+def discord_settings():
+    saved = get_setting("discord.settings", {}) or {}
+    return {**DISCORD_DEFAULT, **{k: saved[k] for k in DISCORD_DEFAULT if k in saved}}
+
+
+def discord_ready():
+    cfg = discord_settings()
+    return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
+
+
+def discord_call(method, path, payload=None, form=None, bearer=None):
+    """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
+    if form is not None:
+        data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
+    elif payload is not None:
+        data, kind = json.dumps(payload).encode(), "application/json"
+    else:
+        data, kind = (b"" if method in ("PUT", "POST") else None), "application/json"
+    auth = f"Bearer {bearer}" if bearer else f"Bot {DISCORD_BOT_TOKEN}"
+    req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method,
+                                 headers={"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            return (json.loads(raw) if raw else {}), "", resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(raw).get("message") or raw[:200]
+        except ValueError:
+            message = raw[:200]
+        app.logger.warning("Discord %s %s -> %s: %s", method, path.split("?")[0], exc.code, message)
+        return None, f"Discord said ({exc.code}): {message}", exc.code
+    except (OSError, ValueError) as exc:
+        app.logger.warning("Discord %s %s: %s", method, path.split("?")[0], exc)
+        return None, "Could not reach Discord. Try again in a minute.", 0
+
+
+def has_buyer_licence(user):
+    """An active licence on this account (by account or email) for one of the products that count (none chosen: any)."""
+    rows = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)",
+                    user["id"], (user.get("email") or "").lower())
+    products = discord_settings()["products"]
+    return any(not products or any(same_product(p, r["product_id"]) for p in products) for r in rows)
+
+
+def discord_sync_user(user):
+    """Gives or takes the buyer role to match the licences: 'given', 'removed', 'not in server', 'off' or an error."""
+    if not discord_ready() or not user.get("discord_id"):
+        return "off"
+    cfg = discord_settings()
+    wanted = has_buyer_licence(user)
+    _, error, status = discord_call("PUT" if wanted else "DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+    if status == 404:
+        return "not in server"
+    return error or ("given" if wanted else "removed")
+
+
+def discord_sync_owners(owners):
+    """After a licence changed: (customer_id, email) pairs -> the linked accounts get the right role. Never fails the caller."""
+    if not discord_ready():
+        return
+    seen = set()
+    for customer_id, email in owners:
+        try:
+            for user in db().all("SELECT * FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' AND (id = ? OR LOWER(email) = ?)",
+                                 customer_id or 0, (email or "").lower() or "-"):
+                if user["id"] not in seen:
+                    seen.add(user["id"])
+                    discord_sync_user(user)
+        except Exception:  # noqa: BLE001 - a licence change must never fail because of Discord
+            app.logger.exception("Discord role update failed")
+
+
+def discord_state(user_id, expires=None, nonce=None):
+    expires = expires or int(time.time()) + DISCORD_STATE_MINUTES * 60
+    nonce = nonce or secrets.token_hex(8)
+    sig = hmac.new(SECRET_KEY.encode(), f"discord:{user_id}:{expires}:{nonce}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{user_id}.{expires}.{nonce}.{sig}"
+
+
+def discord_state_user(state):
+    try:
+        user_id, expires, nonce, _sig = str(state).split(".")
+        if int(expires) < time.time() or not hmac.compare_digest(discord_state(int(user_id), int(expires), nonce), str(state)):
+            return None
+        return db().first("SELECT * FROM users WHERE id = ?", int(user_id))
+    except ValueError:
+        return None
+
+
+def discord_redirect_uri():
+    return site_url() + "/api/discord/callback"
+
+
+@app.post("/api/discord/start")
+def discord_start():
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    query = urllib.parse.urlencode({"client_id": DISCORD_CLIENT_ID, "response_type": "code", "scope": "identify guilds.join",
+                                    "redirect_uri": discord_redirect_uri(), "state": discord_state(user["id"]), "prompt": "consent"})
+    return jsonify({"url": "https://discord.com/oauth2/authorize?" + query})
+
+
+@app.get("/api/discord/callback")
+def discord_callback():
+    """Discord sends the customer back here after they agreed: link the account, join the server, the role."""
+    back = lambda result: redirect(site_url() + "/account?discord=" + result + "#discord")  # noqa: E731
+    if request.args.get("error"):
+        return back("cancelled")
+    user = discord_state_user(request.args.get("state", ""))
+    if not user or not discord_ready():
+        return back("expired")
+    token, error, _ = discord_call("POST", "/oauth2/token", form={
+        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET, "grant_type": "authorization_code",
+        "code": request.args.get("code", ""), "redirect_uri": discord_redirect_uri()})
+    access = (token or {}).get("access_token")
+    me, error2, _ = discord_call("GET", "/users/@me", bearer=access) if access else (None, error, 0)
+    if not access or not me or not SNOWFLAKE.match(str(me.get("id") or "")):
+        app.logger.warning("Discord link failed: %s", error or error2)
+        return back("error")
+    discord_id, name = str(me["id"]), str(me.get("global_name") or me.get("username") or "")[:100]
+    db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE discord_id = ? AND id <> ?", discord_id, user["id"])
+    db().run("UPDATE users SET discord_id = ?, discord_name = ?, discord_linked_at = ? WHERE id = ?", discord_id, name, utc_stamp(), user["id"])
+    user = db().first("SELECT * FROM users WHERE id = ?", user["id"])
+    cfg, buyer = discord_settings(), has_buyer_licence(user)
+    # into the server (already in: nothing changes), then the role to match the licence
+    discord_call("PUT", f"/guilds/{cfg['guild_id']}/members/{discord_id}", payload={"access_token": access, "roles": [cfg["role_id"]] if buyer else []})
+    result = discord_sync_user(user)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'discord_linked', ?, ?, ?)",
+             user["id"], f"{name} ({result})", request.remote_addr or "", utc_stamp())
+    return back("linked" if buyer else "linked-no-licence")
+
+
+@app.post("/api/discord/unlink")
+def discord_unlink():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if user.get("discord_id") and discord_ready():
+        cfg = discord_settings()
+        discord_call("DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+    db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE id = ?", user["id"])
+    return jsonify({"ok": True})
+
+
+_P = 2 ** 255 - 19
+_L = 2 ** 252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+_I = pow(2, (_P - 1) // 4, _P)
+
+
+def _recover_x(y, sign):
+    if y >= _P:
+        return None
+    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P) % _P
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P:
+        x = x * _I % _P
+    if (x * x - x2) % _P:
+        return None
+    return _P - x if (x & 1) != sign else x
+
+
+def _add(a, b):
+    A = (a[1] - a[0]) * (b[1] - b[0]) % _P
+    B = (a[1] + a[0]) * (b[1] + b[0]) % _P
+    C = 2 * a[3] * b[3] * _D % _P
+    D = 2 * a[2] * b[2] % _P
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % _P, G * H % _P, F * G % _P, E * H % _P)
+
+
+def _mul(s, point):
+    q = (0, 1, 1, 0)
+    while s:
+        if s & 1:
+            q = _add(q, point)
+        point, s = _add(point, point), s >> 1
+    return q
+
+
+def _point(raw):
+    y = int.from_bytes(raw, "little")
+    sign, y = y >> 255, y & ((1 << 255) - 1)
+    x = _recover_x(y, sign)
+    return None if x is None else (x, y, 1, x * y % _P)
+
+
+_GY = 4 * pow(5, _P - 2, _P) % _P
+_G = (_recover_x(_GY, 0), _GY, 1, _recover_x(_GY, 0) * _GY % _P)
+
+
+def ed25519_verify(public_key, message, signature):
+    """RFC 8032 Ed25519 signature check."""
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a, r = _point(public_key), _point(signature[:32])
+    s = int.from_bytes(signature[32:], "little")
+    if a is None or r is None or s >= _L:
+        return False
+    h = int.from_bytes(hashlib.sha512(signature[:32] + public_key + message).digest(), "little") % _L
+    left, right = _mul(s, _G), _add(r, _mul(h, a))
+    return (left[0] * right[2] - right[0] * left[2]) % _P == 0 and (left[1] * right[2] - right[1] * left[2]) % _P == 0
+
+
+@app.post("/api/discord/interactions")
+def discord_interactions():
+    """Discord's calls for slash commands. Only /verify: link button, or the role at once when already linked."""
+    try:
+        key, sig = bytes.fromhex(DISCORD_PUBLIC_KEY), bytes.fromhex(request.headers.get("X-Signature-Ed25519", ""))
+    except ValueError:
+        key, sig = b"", b""
+    raw = request.get_data()
+    if not ed25519_verify(key, request.headers.get("X-Signature-Timestamp", "").encode() + raw, sig):
+        return err("invalid request signature", 401)
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        return err("Bad request", 400)
+    if event.get("type") == 1:  # Discord checking the address
+        return jsonify({"type": 1})
+    if event.get("type") != 2 or (event.get("data") or {}).get("name") != "verify":
+        return jsonify({"type": 4, "data": {"content": "I only know /verify.", "flags": 64}})
+    discord_id = str(((event.get("member") or {}).get("user") or event.get("user") or {}).get("id") or "")
+    user = db().first("SELECT * FROM users WHERE discord_id = ?", discord_id) if SNOWFLAKE.match(discord_id) else None
+    link = {"type": 1, "components": [{"type": 2, "style": 5, "label": "Verify on rotaidem.com", "url": site_url() + "/account#discord"}]}
+    if not user:
+        text = "Link your Discord on your Rotaidem account (My account, Discord) to get the buyer channels."
+        return jsonify({"type": 4, "data": {"content": text, "flags": 64, "components": [link]}})
+    result = discord_sync_user(user)
+    if result == "given":
+        text = "You are verified: the buyer channels are open. Welcome aboard!"
+    elif result == "removed":
+        text = f"Your Discord is linked to {user['email']}, but that account has no active licence. Bought with another email? Add the key under My account."
+    else:
+        text = "Something went wrong giving you the role. Please try again in a minute or ask the team."
+    return jsonify({"type": 4, "data": {"content": text, "flags": 64, "components": [] if result == "given" else [link]}})
+
+
+@app.get("/api/admin/discord")
+def admin_discord():
+    if not staff_user():
+        return err("Admin only", 403)
+    members = []
+    for u in db().all("SELECT id, name, email, discord_id, discord_name, discord_linked_at FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' ORDER BY discord_linked_at DESC"):
+        members.append({**u, "buyer": has_buyer_licence(u)})
+    invite = ("https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
+        {"client_id": DISCORD_CLIENT_ID, "scope": "bot applications.commands", "permissions": "268435457"})) if DISCORD_CLIENT_ID else ""
+    return jsonify({"setup": {"client_id": bool(DISCORD_CLIENT_ID), "client_secret": bool(DISCORD_CLIENT_SECRET),
+                              "bot_token": bool(DISCORD_BOT_TOKEN), "public_key": bool(DISCORD_PUBLIC_KEY)},
+                    "ready": discord_ready(), "settings": discord_settings(), "invite_url": invite,
+                    "redirect_url": discord_redirect_uri(), "interactions_url": site_url() + "/api/discord/interactions", "members": members})
+
+
+@app.post("/api/admin/discord")
+def admin_save_discord():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change Discord settings", 403)
+    b = body()
+    guild, role = str(b.get("guild_id") or "").strip(), str(b.get("role_id") or "").strip()
+    if (guild and not SNOWFLAKE.match(guild)) or (role and not SNOWFLAKE.match(role)):
+        return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
+    products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
+    set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products})
+    audit(user, "save_discord", f"server {guild or '-'}, role {role or '-'}")
+    return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready()})
+
+
+@app.post("/api/admin/discord/sync")
+def admin_discord_sync():
+    """Check every linked member again: role on for licence holders, off for the rest."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    counts, problems = {}, []
+    for member in db().all("SELECT * FROM users WHERE discord_id IS NOT NULL AND discord_id <> ''"):
+        result = discord_sync_user(member)
+        key = result if result in ("given", "removed", "not in server") else "failed"
+        counts[key] = counts.get(key, 0) + 1
+        if key == "failed" and len(problems) < 5:
+            problems.append(f"{member['discord_name'] or member['discord_id']}: {result}")
+    audit(user, "discord_sync", ", ".join(f"{n} {k}" for k, n in counts.items()) or "nobody linked")
+    return jsonify({"ok": True, "counts": counts, "problems": problems})
+
+
+@app.post("/api/admin/discord/command")
+def admin_discord_command():
+    """Adds /verify to the server (Discord then sends it to /api/discord/interactions)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    commands = [{"name": "verify", "type": 1, "description": "Get the buyer channels: checks your Rotaidem licence"}]
+    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=commands)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_command", "/verify")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/discord/post")
+def admin_discord_post():
+    """The bot posts a message with a Verify button (to rotaidem.com/account) in a channel."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel, text = str(b.get("channel_id") or "").strip(), str(b.get("text") or "").strip()[:1800]
+    if not SNOWFLAKE.match(channel):
+        return err("Paste the channel's ID: right-click the channel in Discord, Copy Channel ID", 400)
+    if not text:
+        return err("Write the message", 400)
+    message = {"content": text, "components": [{"type": 1, "components": [
+        {"type": 2, "style": 5, "label": "Verify on rotaidem.com", "url": site_url() + "/account#discord"}]}]}
+    _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_post", channel)
+    return jsonify({"ok": True})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------

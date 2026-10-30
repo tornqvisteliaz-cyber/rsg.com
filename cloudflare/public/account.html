@@ -40,6 +40,13 @@
                     <div class="table-wrap"><table class="table"><thead><tr><th>Device</th><th>IP address</th><th style="white-space:nowrap">Last active</th><th></th></tr></thead><tbody id="sessions"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
                 </div>
             </div>
+            <div>
+            <div class="box" id="discord" hidden style="margin-bottom:24px">
+                <h3>Discord</h3>
+                <p class="muted" id="dc-text" style="font-size:15px"></p>
+                <p class="msg" id="dc-msg" style="margin:0 0 14px"></p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="button" id="dc-link">Link Discord</button><button class="btn btn-ghost" type="button" id="dc-unlink" style="display:none">Unlink</button></div>
+            </div>
             <form class="box" id="settings-form">
                 <h3>Settings</h3>
                 <div class="field"><label for="s-name">Name</label><input id="s-name" required></div>
@@ -48,6 +55,7 @@
                 <button class="btn">Save changes</button>
                 <p class="msg" id="s-msg"></p>
             </form>
+            </div>
         </div>
     </div>
 </main>
@@ -66,6 +74,7 @@ async function init() {
     document.getElementById("role").textContent = user.role;
     document.getElementById("order-count").textContent = user.orders_count;
     document.getElementById("s-name").value = user.name;
+    showDiscord(user.discord);
 
     const licenses = (await (await fetch("/api/account/licenses", { headers })).json()).licenses || [];
     document.getElementById("licenses").innerHTML = licenses.length ? licenses.map(l =>
@@ -106,6 +115,41 @@ document.getElementById("end-others").onclick = async () => {
     if (!confirm("Log out on every other device? You stay logged in here.")) return;
     await fetch("/api/account/sessions/others", { method: "POST", headers });
     loadSessions();
+};
+
+// Discord: link the account to get the verified buyer role (and with it the buyer channels)
+const DC_RESULT = { linked: ["ok", "Done. Open Discord: the buyer channels are there now."],
+    "linked-no-licence": ["ok", "Done. You are in the Rotaidem server."],
+    cancelled: ["", "Linking was cancelled. Nothing changed."], expired: ["error", "That took too long. Press Link Discord again."],
+    error: ["error", "Discord did not let us link the account. Please try again, or contact us if it keeps happening."] };
+function showDiscord(dc) {
+    const box = document.getElementById("discord");
+    if (!dc || !dc.available) { box.hidden = true; return; }
+    box.hidden = false;
+    document.getElementById("dc-text").textContent = !dc.linked
+        ? "Link your Discord to join the Rotaidem server. Licence holders get the Verified buyer role and the buyer channels."
+        : `Linked as ${dc.name || "your Discord account"}. ` + (dc.buyer ? "You have the Verified buyer role." : "The buyer channels open once this account has a licence.");
+    document.getElementById("dc-link").textContent = dc.linked ? "Link again" : "Link Discord";
+    document.getElementById("dc-unlink").style.display = dc.linked ? "" : "none";
+    const result = DC_RESULT[new URLSearchParams(location.search).get("discord")];
+    if (result) {
+        const msg = document.getElementById("dc-msg");
+        msg.className = "msg " + result[0]; msg.textContent = result[1];
+        history.replaceState(null, "", location.pathname + "#discord");
+        box.scrollIntoView({ block: "center" });
+    }
+}
+document.getElementById("dc-link").onclick = async e => {
+    e.target.disabled = true;
+    const data = await (await fetch("/api/discord/start", { method: "POST", headers })).json().catch(() => ({}));
+    if (data.url) { location.href = data.url; return; }
+    e.target.disabled = false;
+    const msg = document.getElementById("dc-msg"); msg.className = "msg error"; msg.textContent = data.error || "Could not open Discord. Please try again.";
+};
+document.getElementById("dc-unlink").onclick = async () => {
+    if (!confirm("Unlink Discord? You lose the Verified buyer role; you stay in the server.")) return;
+    await fetch("/api/discord/unlink", { method: "POST", headers });
+    init();
 };
 
 document.getElementById("settings-form").onsubmit = async e => {

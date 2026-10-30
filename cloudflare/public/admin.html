@@ -322,6 +322,7 @@
     <button class="tab" data-tab="messages">Messages <span class="count" id="c-messages"></span></button>
     <div class="group">Apps</div>
     <button class="tab" data-tab="hub">RotaHub</button>
+    <button class="tab" data-tab="discord">Discord <span class="count" id="c-discord"></span></button>
     <div class="group">System</div>
     <button class="tab" data-tab="activity">Activity log</button>
     <button class="tab" data-tab="security">Security</button>
@@ -564,6 +565,41 @@
                 <div class="list-edit" id="ac-list"></div>
                 <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="ac-add">Add aircraft</button><button class="btn" type="button" id="ac-save">Save aircraft</button><button class="btn btn-ghost btn-sm" type="button" id="ac-reset">Use the pages' own list</button></div>
             </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-discord" data-title="Discord">
+        <p class="notice" id="dc-off" hidden>Discord linking runs on the STRATO website. This copy of the site cannot do it.</p>
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Set-up</h2><span id="dc-ready"></span></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">Customers link Discord under My account. The website adds them to your server and gives licence holders the buyer role; it is taken away when a licence is revoked. Lock the buyer channels to that role in Discord: edit the channel, Permissions, <strong>@everyone</strong>: View Channel off, <strong>your buyer role</strong>: View Channel on.</p>
+                <dl class="shop-facts" id="dc-setup"></dl>
+                <form id="dc-form" style="margin-top:20px">
+                    <div class="fields two" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                        <div class="field"><label for="dc-guild">Server ID</label><input id="dc-guild" inputmode="numeric" placeholder="e.g. 1187460112345678901"><div class="hint">In Discord: User Settings, Advanced, Developer Mode on. Then right-click the server icon, Copy Server ID.</div></div>
+                        <div class="field"><label for="dc-role">Buyer role ID</label><input id="dc-role" inputmode="numeric" placeholder="e.g. 1187460198765432109"><div class="hint">Server Settings, Roles, make a role such as Verified buyer, right-click it, Copy Role ID. Keep the bot's own role above it.</div></div>
+                    </div>
+                    <div class="field"><label>Licences that count</label><div id="dc-products" style="display:flex;gap:18px;flex-wrap:wrap"></div><div class="hint">None ticked: any active licence gives the role.</div></div>
+                    <button class="btn" type="submit">Save</button>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px">
+            <div class="panel-head"><h2>In Discord</h2></div>
+            <div class="panel-body">
+                <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the /verify command</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
+                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">/verify lets members check themselves; it answers with a Verify button. Check everyone again gives or takes the role for every linked member.</p>
+                <form id="dc-post-form">
+                    <div class="field"><label for="dc-channel">Post a Verify button in a channel</label><input id="dc-channel" inputmode="numeric" placeholder="Channel ID: right-click the channel, Copy Channel ID"></div>
+                    <div class="field"><textarea id="dc-post-text" rows="3" maxlength="1800">Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.</textarea></div>
+                    <button class="btn btn-ghost btn-sm" type="submit">Post it</button>
+                </form>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-head"><h2>Linked members</h2><span class="muted" style="font-size:13px" id="dc-count"></span></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Linked</th></tr></thead><tbody id="dc-members"></tbody></table></div>
         </div>
     </section>
 
@@ -1101,6 +1137,7 @@ function showTab(name) {
     $("side").classList.remove("open");
     history.replaceState(null, "", "#" + name);
     if (name === "shop") loadShop().catch(err => toast(err.message, true)); // prices and orders change elsewhere
+    if (name === "discord") loadDiscord(); // members link Discord on their own
 }
 
 // Downloads through the website's Download buttons (the same address within 10 minutes counts once).
@@ -2078,6 +2115,58 @@ $("ac-save").onclick = () => {
 };
 $("ac-reset").onclick = async () => { if (await confirmBox("Use the pages' own list?", "Your saved aircraft are removed and the pages show the list built into them again.", "Use the pages' list")) saveAircraft([], "The pages show their own list again"); };
 
+// Discord: the verified buyer role (the website does the work through Discord's API; see server.py)
+async function loadDiscord() {
+    try { state.discord = await api("/api/admin/discord"); }
+    catch (err) { state.discord = { unavailable: true }; }
+    renderDiscord();
+}
+function renderDiscord() {
+    const dc = state.discord || {};
+    $("dc-off").hidden = !dc.unavailable;
+    if (dc.unavailable) { $("dc-ready").innerHTML = '<span class="badge">Not here</span>'; return; }
+    const st = dc.setup || {}, cfg = dc.settings || {};
+    $("dc-ready").innerHTML = dc.ready ? '<span class="badge published">Working</span>' : '<span class="badge in_development">Not finished</span>';
+    const flag = (ok, what) => `<span class="badge ${ok ? "published" : "in_development"}">${ok ? "Set" : "Missing"}</span> ${what}`;
+    const copy = url => `<code>${esc(url)}</code> <button class="btn btn-ghost btn-sm" type="button" data-dc-copy="${esc(url)}">Copy</button>`;
+    $("dc-setup").innerHTML =
+        `<dt>Application keys</dt><dd>${flag(st.client_id, "Application ID")}<br>${flag(st.public_key, "Public Key")}<br>${flag(st.client_secret, "Client Secret")}<br>${flag(st.bot_token, "Bot token")}` +
+        `${st.client_id && st.public_key && st.client_secret && st.bot_token ? "" : '<br><span class="muted">Set them over SSH: <code>python3 rotaidem/strato/setup.py discord</code> (it explains each step).</span>'}</dd>` +
+        `<dt>OAuth2 redirect</dt><dd>${copy(dc.redirect_url || "")}<br><span class="muted">Developer Portal, your application, OAuth2, Redirects.</span></dd>` +
+        `<dt>Interactions Endpoint URL</dt><dd>${copy(dc.interactions_url || "")}<br><span class="muted">General Information. Needed for /verify.</span></dd>` +
+        `<dt>Bot in your server</dt><dd>${dc.invite_url ? `<a class="btn btn-ghost btn-sm" href="${esc(dc.invite_url)}" target="_blank" rel="noopener">Invite the bot</a>` : '<span class="muted">After the Application ID is set.</span>'}</dd>`;
+    $("dc-guild").value = cfg.guild_id || ""; $("dc-role").value = cfg.role_id || "";
+    $("dc-products").innerHTML = state.products.map(p => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0"><input type="checkbox" data-dc-product="${esc(p.id)}"${(cfg.products || []).includes(p.id) ? " checked" : ""}> ${esc(p.name)}</label>`).join("")
+        || '<span class="muted">No products yet.</span>';
+    const members = dc.members || [];
+    $("c-discord").textContent = members.length || "";
+    $("dc-count").textContent = members.length ? `${members.length} linked, ${members.filter(m => m.buyer).length} with the buyer role` : "";
+    $("dc-members").innerHTML = members.map(m => `<tr><td>${esc(m.name || "")}<div class="muted" style="font-size:13px">${esc(m.email || "")}</div></td><td>${esc(m.discord_name || m.discord_id)}</td>` +
+        `<td>${m.buyer ? '<span class="badge published">Yes</span>' : '<span class="badge">No licence</span>'}</td><td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td></tr>`).join("")
+        || empty(4, "Nobody has linked Discord yet. Customers do it under My account.");
+}
+$("dc-setup").onclick = e => { const b = e.target.closest("[data-dc-copy]"); if (b) navigator.clipboard.writeText(b.dataset.dcCopy).then(() => toast("Copied")); };
+$("dc-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const d = await post("/api/admin/discord", { guild_id: val("dc-guild"), role_id: val("dc-role"), products: [...document.querySelectorAll("[data-dc-product]:checked")].map(c => c.dataset.dcProduct) });
+        state.discord.settings = d.settings; state.discord.ready = d.ready; renderDiscord(); toast(d.ready ? "Discord is ready" : "Saved. Some set-up is still missing."); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("dc-command").onclick = async () => { try { await post("/api/admin/discord/command", {}); toast("/verify is in your server"); loadAudit(); } catch (err) { toast(err.message, true); } };
+$("dc-sync").onclick = async () => {
+    try {
+        const d = await post("/api/admin/discord/sync", {}), c = d.counts || {};
+        $("dc-sync-msg").textContent = Object.keys(c).length ? `Done: role given to ${c.given || 0}, taken from ${c.removed || 0}` + (c["not in server"] ? `, ${c["not in server"]} not in the server` : "") +
+            (c.failed ? `, ${c.failed} failed (${(d.problems || []).join("; ")})` : "") + "." : "Nobody has linked Discord yet.";
+        loadDiscord(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("dc-post-form").onsubmit = async e => {
+    e.preventDefault();
+    try { await post("/api/admin/discord/post", { channel_id: val("dc-channel"), text: $("dc-post-text").value }); toast("Posted in Discord"); loadAudit(); } catch (err) { toast(err.message, true); }
+};
+
 // Shop: Stripe set-up, discount codes, prices, sales and revenue per product
 function shopMoney(cents, currency) {
     try { return new Intl.NumberFormat(undefined, { style: "currency", currency: String(currency || "sek").toUpperCase() }).format(cents / 100); }
@@ -2959,7 +3048,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop(), loadDiscord()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

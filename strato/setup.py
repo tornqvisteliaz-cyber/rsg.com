@@ -24,6 +24,7 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
     python3 rotaidem/strato/setup.py signing-key     shows the public key HeavyPro uses to check licence answers
     python3 rotaidem/strato/setup.py stripe          sets up payments: the Stripe key and webhook secret (typed, never shown)
+    python3 rotaidem/strato/setup.py discord         connects the Discord bot for the verified buyer role (keys typed, never shown)
     python3 rotaidem/strato/setup.py fetch-installer [URL]  copies the newest HeavyPro installer from GitHub onto
                                                   rotaidem.com/files/ and points the Download buttons at it
 
@@ -1154,6 +1155,63 @@ def cmd_stripe():
         say(f"Could not reach Stripe from this server: {exc}")
 
 
+def cmd_discord():
+    """Discord: the application's keys and its bot token into config.env, then a test call. The server and role are
+    chosen in Admin -> Discord."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    site = site_url(values.get("SITE_URL"))
+    say("Discord: verified buyers get a role (and with it the buyer channels).")
+    say("1. discord.com/developers/applications -> New Application, call it Rotaidem.")
+    say("2. OAuth2 -> Redirects -> Add:  " + site + "/api/discord/callback")
+    say("3. General Information -> Interactions Endpoint URL:  " + site + "/api/discord/interactions")
+    say("   (save it after this command has run and the website is deployed: Discord tests the address)")
+    say("Nothing secret you type is shown. Press Enter to keep what is there now.")
+    say()
+    changed = False
+    client_id = ask("Application ID (General Information, a long number)", values.get("DISCORD_CLIENT_ID", ""))
+    if client_id and client_id != values.get("DISCORD_CLIENT_ID"):
+        if not re.match(r"^\d{15,22}$", client_id):
+            say("That does not look like an application ID (a long number). Nothing was changed.")
+            sys.exit(1)
+        values["DISCORD_CLIENT_ID"], changed = client_id, True
+    public_key = ask("Public Key (General Information, 64 letters and digits)", values.get("DISCORD_PUBLIC_KEY", ""))
+    if public_key and public_key != values.get("DISCORD_PUBLIC_KEY"):
+        if not re.match(r"^[0-9a-fA-F]{64}$", public_key):
+            say("That does not look like the Public Key (64 letters and digits). Nothing was changed.")
+            sys.exit(1)
+        values["DISCORD_PUBLIC_KEY"], changed = public_key.lower(), True
+    secret = ask_secret("Client Secret (OAuth2 -> Reset Secret)")
+    if secret:
+        values["DISCORD_CLIENT_SECRET"], changed = secret, True
+    token = ask_secret("Bot token (Bot -> Reset Token)")
+    if token:
+        values["DISCORD_BOT_TOKEN"], changed = token, True
+    if changed:
+        write_config(config_path(data_dir), values)
+        say("Saved in " + config_path(data_dir) + " (only you can read it).")
+    if not values.get("DISCORD_BOT_TOKEN"):
+        say("No bot token yet: Discord stays off.")
+        return
+    say()
+    api = values.get("DISCORD_API_URL", "https://discord.com/api/v10").rstrip("/")
+    req = urllib.request.Request(api + "/users/@me", headers={"Authorization": "Bot " + values["DISCORD_BOT_TOKEN"],
+                                                              "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            bot = json.loads(resp.read())
+        say(f"Discord answered: the bot token works ({bot.get('username', 'bot')}).")
+        if values.get("DISCORD_CLIENT_ID"):
+            say("4. Invite the bot to your server (Manage Roles is the permission it needs):")
+            say("   https://discord.com/oauth2/authorize?client_id=" + values["DISCORD_CLIENT_ID"] + "&scope=bot%20applications.commands&permissions=268435457")
+        say("5. In Discord, Server Settings -> Roles: drag the bot's role ABOVE the buyer role, or it cannot give it.")
+        say("6. Admin -> Discord on the website: paste the server ID and the buyer role ID, then press Add /verify.")
+    except urllib.error.HTTPError as exc:
+        say(f"Discord refused the bot token ({exc.code}). Copy it again from Bot -> Reset Token.")
+    except OSError as exc:
+        say(f"Could not reach Discord from this server: {exc}")
+
+
 def cmd_signing_key():
     """Print the public half of the licence signing key (safe to share; the private half stays in the database)."""
     data_dir = current_data_dir()
@@ -1378,6 +1436,8 @@ def main():
         cmd_signing_key()
     elif command == "stripe":
         cmd_stripe()
+    elif command == "discord":
+        cmd_discord()
     elif command == "fetch-installer":
         cmd_fetch_installer(args[1:])
     elif command in ("help", "-h", "--help"):
@@ -1385,7 +1445,7 @@ def main():
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test", "admin-password", "fetch-installer", "signing-key", "stripe"]
+                 "check", "email-test", "admin-password", "fetch-installer", "signing-key", "stripe", "discord"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")

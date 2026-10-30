@@ -56,6 +56,8 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/stripe/webhook") return stripeWebhook(request, env);
     if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
     if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
+    // Discord linking (verified buyer role) runs on the STRATO website (server.py), like file uploads.
+    if (path.startsWith("/api/discord/") || path.startsWith("/api/admin/discord")) return json({ error: "Discord linking runs on the STRATO website.", unavailable: true }, 501);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
     if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
     if (method === "POST" && path === "/api/admin/shop") return adminSaveShop(request, env);

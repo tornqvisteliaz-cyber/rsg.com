@@ -116,6 +116,130 @@ class FakeStripe:
         self.server.shutdown()
 
 
+class FakeDiscord:
+    """Stands in for discord.com/api: OAuth2 code exchange, the user, server members and their roles, commands, messages.
+    An OAuth2 code "code-<discord id>" belongs to that Discord user."""
+    BOT = "Bot bot-token-test"
+
+    def __init__(self):
+        self.members, self.commands, self.messages = {}, [], []  # members: {discord id: set of role ids}
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data=None):
+                raw = json.dumps(data).encode() if data is not None else b""
+                self.send_response(status)
+                if raw:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def body(self):
+                return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
+            def handle_any(self):
+                parts, auth, raw = self.path.strip("/").split("/"), self.headers.get("Authorization", ""), self.body()
+                if self.command == "POST" and self.path == "/oauth2/token":
+                    form = {k: v[0] for k, v in urllib.parse.parse_qs(raw.decode()).items()}
+                    ok = form.get("client_secret") == "client-secret-test" and form.get("code", "").startswith("code-")
+                    return self.reply(200, {"access_token": "access-" + form["code"][5:], "token_type": "Bearer"}) if ok else self.reply(400, {"error": "invalid_grant"})
+                if self.path == "/users/@me" and auth.startswith("Bearer access-"):
+                    uid = auth[len("Bearer access-"):]
+                    return self.reply(200, {"id": uid, "username": "pilot" + uid[-3:], "global_name": "Pilot " + uid[-3:]})
+                if auth != FakeDiscord.BOT:
+                    return self.reply(401, {"message": "401: Unauthorized"})
+                if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command == "PUT":
+                    data = json.loads(raw)
+                    if data.get("access_token") != "access-" + parts[3]:
+                        return self.reply(403, {"message": "Invalid OAuth2 access token"})
+                    if parts[3] in outer.members:
+                        return self.reply(204)
+                    outer.members[parts[3]] = set(data.get("roles") or [])
+                    return self.reply(201, {"user": {"id": parts[3]}})
+                if parts[:1] == ["guilds"] and len(parts) == 6 and parts[4] == "roles":
+                    if parts[3] not in outer.members:
+                        return self.reply(404, {"message": "Unknown Member"})
+                    (outer.members[parts[3]].add if self.command == "PUT" else outer.members[parts[3]].discard)(parts[5])
+                    return self.reply(204)
+                if parts[:1] == ["applications"] and self.command == "PUT":
+                    outer.commands = json.loads(raw)
+                    return self.reply(200, outer.commands)
+                if parts[:1] == ["channels"] and self.command == "POST":
+                    outer.messages.append((parts[1], json.loads(raw)))
+                    return self.reply(200, {"id": "1"})
+                if self.path == "/users/@me":
+                    return self.reply(200, {"id": "999", "username": "Rotaidem bot"})
+                self.reply(404, {"message": "Unknown"})
+
+            do_GET = do_POST = do_PUT = do_DELETE = handle_any
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self):
+        self.server.shutdown()
+
+
+# Ed25519 signing for the test's own "Discord" (the website only checks signatures). RFC 8032.
+_EP = 2 ** 255 - 19
+_EL = 2 ** 252 + 27742317777372353535851937790883648493
+_ED = -121665 * pow(121666, _EP - 2, _EP) % _EP
+
+
+def _ed_add(a, b):
+    A, B = (a[1] - a[0]) * (b[1] - b[0]) % _EP, (a[1] + a[0]) * (b[1] + b[0]) % _EP
+    C, D = 2 * a[3] * b[3] * _ED % _EP, 2 * a[2] * b[2] % _EP
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % _EP, G * H % _EP, F * G % _EP, E * H % _EP)
+
+
+def _ed_mul(s, point):
+    q = (0, 1, 1, 0)
+    while s:
+        if s & 1:
+            q = _ed_add(q, point)
+        point, s = _ed_add(point, point), s >> 1
+    return q
+
+
+def _ed_base():
+    y = 4 * pow(5, _EP - 2, _EP) % _EP
+    x2 = (y * y - 1) * pow(_ED * y * y + 1, _EP - 2, _EP) % _EP
+    x = pow(x2, (_EP + 3) // 8, _EP)
+    if (x * x - x2) % _EP:
+        x = x * pow(2, (_EP - 1) // 4, _EP) % _EP
+    x = _EP - x if x & 1 else x
+    return (x, y, 1, x * y % _EP)
+
+
+def _ed_bytes(point):
+    zi = pow(point[2], _EP - 2, _EP)
+    x, y = point[0] * zi % _EP, point[1] * zi % _EP
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def ed25519_keys(seed):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little") & ((1 << 254) - 8) | (1 << 254)
+    return a, h[32:], _ed_bytes(_ed_mul(a, _ed_base()))
+
+
+def ed25519_sign(seed, message):
+    a, prefix, public = ed25519_keys(seed)
+    r = int.from_bytes(hashlib.sha512(prefix + message).digest(), "little") % _EL
+    big_r = _ed_bytes(_ed_mul(r, _ed_base()))
+    k = int.from_bytes(hashlib.sha512(big_r + public + message).digest(), "little") % _EL
+    return big_r + ((r + k * a) % _EL).to_bytes(32, "little")
+
+
+DISCORD_SEED = b"rotaidem-test-discord-application"
+
+
 class Response:
     def __init__(self, raw, stderr):
         head, _, self.body = raw.partition(b"\r\n\r\n")
@@ -158,7 +282,7 @@ class Webspace:
     """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
     rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
-    def __init__(self, db_values, resend_url, stripe_url=""):
+    def __init__(self, db_values, resend_url, stripe_url="", discord_url=""):
         self.root = tempfile.mkdtemp(prefix="strato-")
         self.app = os.path.join(self.root, "rotaidem")
         os.mkdir(self.app)
@@ -173,6 +297,9 @@ class Webspace:
                        "MAIL_FROM": "Rotaidem <no-reply@rotaidem.com>", **db_values}
         if stripe_url:
             self.values.update(STRIPE_SECRET_KEY="sk_test_fake0123456789", STRIPE_API_URL=stripe_url, STRIPE_WEBHOOK_SECRET="whsec_testsecret")
+        if discord_url:
+            self.values.update(DISCORD_CLIENT_ID="112233445566778899", DISCORD_CLIENT_SECRET="client-secret-test", DISCORD_BOT_TOKEN="bot-token-test",
+                               DISCORD_PUBLIC_KEY=ed25519_keys(DISCORD_SEED)[2].hex(), DISCORD_API_URL=discord_url)
         if "MYSQL_HOST" not in self.values:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
@@ -233,13 +360,15 @@ class StratoCGITests:
             empty_mysql(cls.db_values)
         cls.resend = FakeResend()
         cls.stripe = FakeStripe()
-        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url)
+        cls.discord = FakeDiscord()
+        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url)
 
     @classmethod
     def tearDownClass(cls):
         cls.w.remove()
         cls.resend.stop()
         cls.stripe.stop()
+        cls.discord.stop()
 
     @classmethod
     def login(cls, who, password):
@@ -1272,6 +1401,84 @@ class StratoCGITests:
         buyer, _ = self.customer("aircraftfan")
         self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=buyer).status, 403)
         self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=t))["aircraft"], [])
+
+    def discord_call(self, event, seed=DISCORD_SEED, stamp=None):
+        raw = json.dumps(event).encode()
+        stamp = stamp or str(int(time.time()))
+        sig = ed25519_sign(seed, stamp.encode() + raw).hex()
+        return self.w.cgi("POST", "/api/discord/interactions", raw, headers={"X-Signature-Ed25519": sig, "X-Signature-Timestamp": stamp})
+
+    def discord_link(self, token, discord_id):
+        """My account -> Link Discord -> Discord asks -> back to the website. Returns where the customer lands."""
+        url = self.ok(self.w.cgi("POST", "/api/discord/start", token=token))["url"]
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+        self.assertEqual((q["client_id"], q["scope"], q["redirect_uri"]), ("112233445566778899", "identify guilds.join", "https://rotaidem.test/api/discord/callback"))
+        r = self.w.cgi("GET", "/api/discord/callback", query=urllib.parse.urlencode({"code": "code-" + discord_id, "state": q["state"]}))
+        self.assertEqual(r.status, 302, r.stderr[-500:])
+        return r.headers["location"]
+
+    def test_discord_verified_buyer_role(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        buyer, buyer_email = self.customer("discordbuyer")
+        self.assertFalse(self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]["available"], "not until server and role are chosen")
+        self.assertEqual(self.w.cgi("POST", "/api/discord/start", token=buyer).status, 503)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "my server", "role_id": role}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=buyer).status, 403)
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))["ready"])
+        try:
+            lic = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": buyer_email, "product_id": "heavypro", "send_email": False}, token=t))
+            # a licence holder links Discord: joins the server with the buyer role
+            self.assertEqual(self.discord_link(buyer, "300000000000000001"), "https://rotaidem.test/account?discord=linked#discord")
+            self.assertEqual(self.discord.members["300000000000000001"], {role})
+            me = self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]
+            self.assertEqual((me["linked"], me["name"], me["buyer"]), (True, "Pilot 001", True))
+            # the role follows the licence
+            lic_id = next(l["id"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == lic["keys"][0])
+            self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic_id}", {"status": "revoked"}, token=t))
+            self.assertEqual(self.discord.members["300000000000000001"], set(), "revoked: role taken")
+            self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"action": "activate", "ids": [lic_id]}, token=t))
+            self.assertEqual(self.discord.members["300000000000000001"], {role}, "active again: role back")
+            # someone without a licence joins the server but gets no role; a bad or old link does nothing
+            other, _ = self.customer("discordfan")
+            self.assertEqual(self.discord_link(other, "300000000000000002"), "https://rotaidem.test/account?discord=linked-no-licence#discord")
+            self.assertEqual(self.discord.members["300000000000000002"], set())
+            r = self.w.cgi("GET", "/api/discord/callback", query="code=code-300000000000000003&state=1.9999999999.abc.forged")
+            self.assertTrue(r.headers["location"].endswith("?discord=expired#discord"))
+            self.assertNotIn("300000000000000003", self.discord.members)
+            self.assertTrue(self.w.cgi("GET", "/api/discord/callback", query="error=access_denied").headers["location"].endswith("?discord=cancelled#discord"))
+            # /verify in Discord: only signed calls; linked members get their role, others a Verify button
+            self.assertEqual(self.w.cgi("POST", "/api/discord/interactions", {"type": 1}).status, 401)
+            self.assertEqual(self.discord_call({"type": 1}, seed=b"someone else").status, 401)
+            self.assertEqual(self.ok(self.discord_call({"type": 1})), {"type": 1})
+            self.discord.members["300000000000000001"].clear()
+            answer = self.ok(self.discord_call({"type": 2, "data": {"name": "verify"}, "member": {"user": {"id": "300000000000000001"}}}))
+            self.assertEqual((answer["type"], answer["data"]["flags"]), (4, 64))
+            self.assertIn("You are verified", answer["data"]["content"])
+            self.assertEqual(self.discord.members["300000000000000001"], {role})
+            answer = self.ok(self.discord_call({"type": 2, "data": {"name": "verify"}, "member": {"user": {"id": "300000000000000009"}}}))
+            self.assertEqual(answer["data"]["components"][0]["components"][0]["url"], "https://rotaidem.test/account#discord")
+            # the admin: members, check everyone, /verify command, a Verify button in a channel
+            info = self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))
+            self.assertEqual({m["discord_id"]: m["buyer"] for m in info["members"]}, {"300000000000000001": True, "300000000000000002": False})
+            self.assertEqual(info["interactions_url"], "https://rotaidem.test/api/discord/interactions")
+            self.assertTrue(all(info["setup"].values()))
+            self.discord.members["300000000000000002"].add(role)  # given by hand in Discord, no licence
+            counts = self.ok(self.w.cgi("POST", "/api/admin/discord/sync", token=t))["counts"]
+            self.assertEqual(counts, {"given": 1, "removed": 1})
+            self.assertEqual(self.discord.members["300000000000000002"], set())
+            self.ok(self.w.cgi("POST", "/api/admin/discord/command", token=t))
+            self.assertEqual([c["name"] for c in self.discord.commands], ["verify"])
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "general", "text": "Hi"}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "1300000000000000003", "text": "Verify here"}, token=t))
+            channel, message = self.discord.messages[-1]
+            self.assertEqual((channel, message["content"], message["components"][0]["components"][0]["label"]), ("1300000000000000003", "Verify here", "Verify on rotaidem.com"))
+            # unlink: role off, account no longer linked; settings stay staff-only
+            self.ok(self.w.cgi("POST", "/api/discord/unlink", token=buyer))
+            self.assertEqual(self.discord.members["300000000000000001"], set())
+            self.assertFalse(self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]["linked"])
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord", token=buyer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
 
     def test_update_feed_for_rotahub(self):
         t = self.owner_token
