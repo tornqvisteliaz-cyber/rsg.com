@@ -3315,6 +3315,24 @@ def clean_aircraft(items):
     return out
 
 
+def clean_testimonials(items):
+    """Pilot quotes (Admin -> Pilot quotes): [{name, about, text, image}], at most 20, shown under "What pilots say"."""
+    if not isinstance(items, list) or len(items) > 20:
+        raise ValueError("At most 20 quotes")
+    out = []
+    for i in items:
+        i = i if isinstance(i, dict) else {}
+        name, text = str(i.get("name") or "").strip()[:60], str(i.get("text") or "").replace("\r\n", "\n").strip()[:800]
+        if not (name and text):
+            continue
+        raw = str(i.get("image") or "").strip()
+        image = valid_image_url(raw)
+        if raw and not image:
+            raise ValueError(f"The picture for {name} must be an uploaded picture or an https:// link")
+        out.append({"name": name, "about": str(i.get("about") or "").strip()[:80], "text": text, "image": image})
+    return out
+
+
 def clean_faq(items):
     """The questions on the Support page: [{q, a}], at most 60."""
     if not isinstance(items, list) or len(items) > 60:
@@ -3405,6 +3423,7 @@ def site_settings():
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
             "aircraft": get_setting("site.aircraft", []) or [], "share": share_settings(),
+            "testimonials": get_setting("site.testimonials", []) or [],
             "links": get_setting("site.links", {}) or {}, "extras": site_extras(), "hub": hub_config()["downloads"]}
 
 
@@ -3467,6 +3486,8 @@ def admin_save_settings():
             set_setting("site.aircraft", clean_aircraft(b.get("aircraft")))
         if "share" in b:
             set_setting("site.share", clean_share(b.get("share")))
+        if "testimonials" in b:
+            set_setting("site.testimonials", clean_testimonials(b.get("testimonials")))
         if "links" in b:
             set_setting("site.links", clean_links(b.get("links")))
         if "extras" in b:
@@ -3493,7 +3514,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "links", "extras", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "testimonials", "links", "extras", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 

@@ -1,8 +1,9 @@
 // Shared layout: header toolbar with dropdowns, footer and login state.
 // <body data-layout="off"> skips the layout, data-footer="off" skips only the footer.
 const LOGO = "/logo.svg";
+const TRUSTPILOT = "https://www.trustpilot.com/review/rotaidem.com"; // our reviews (Trustpilot)
 const MENU = [
-    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
+    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], [TRUSTPILOT, "Reviews", "What customers say, on Trustpilot"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
     ["Support", "/support", [["/support", "Help and FAQ", "Answers to common questions"], ["/installation", "Installation guide", "Set up HeavyPro step by step"], ["/downloads", "Downloads", "Installers and updates"], ["/contact", "Contact us", "Email and contact form"]]],
     ["News", "/newsletter", null],
     ["Company", "/about", [["/about", "About us", "Who we are"], ["/work-at-rsg", "Careers", "Work with us"], ["/contact", "Contact", "Get in touch"]]],
@@ -42,15 +43,22 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 18px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>${trustpilotBadge()}
                 <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
-            <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
+            <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="${TRUSTPILOT}" target="_blank" rel="noopener">Reviews</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
             <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a id="ft-mail" href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
         </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
         body.append(footer);
     }
 }
+
+// The Trustpilot badge: <span data-trustpilot></span> (or data-trustpilot="ask" to invite a review) is filled in on every page.
+function trustpilotBadge(ask) {
+    return `<a class="tp-badge" href="${TRUSTPILOT}" target="_blank" rel="noopener"><span class="tp-star" aria-hidden="true">★</span><strong>Trustpilot</strong>` +
+        `<span>${ask ? "Review us" : "Read our reviews"}</span></a>`;
+}
+document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("[data-trustpilot]").forEach(el => { el.innerHTML = trustpilotBadge(el.dataset.trustpilot === "ask"); }));
 
 function paintAuth() {
     const box = document.getElementById("auth-links");
@@ -245,6 +253,15 @@ function applyLists(site) {
         if (table) table.innerHTML = aircraft.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.profile)}</td><td class="muted">${esc(a.note)}</td></tr>`).join("");
         if (names) names.textContent = aircraft.map(a => a.name).join(", ");
     }
+    // Admin -> Pilot quotes: "What pilots say" with their picture, shown wherever a page has the section
+    const quotes = site.testimonials || [];
+    if (quotes.length) document.querySelectorAll("[data-testimonials]").forEach(section => {
+        const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+        section.querySelector("[data-testimonials-list]").innerHTML = quotes.map(q => `<figure class="quote"><blockquote>${esc(q.text)}</blockquote><figcaption>` +
+            (q.image ? `<img class="avatar" src="${esc(safeImage(q.image))}" alt="" loading="lazy">` : `<span class="avatar" aria-hidden="true">${esc(initials(q.name))}</span>`) +
+            `<span><strong>${esc(q.name)}</strong>${q.about ? `<small>${esc(q.about)}</small>` : ""}</span></figcaption></figure>`).join("");
+        section.hidden = false;
+    });
     const faq = document.querySelector("[data-faq]");
     if (faq && (site.faq || []).length) faq.innerHTML = site.faq.map(i =>
         `<details><summary>${esc(i.q)}</summary><p style="white-space:pre-line">${esc(i.a)}</p></details>`).join("");

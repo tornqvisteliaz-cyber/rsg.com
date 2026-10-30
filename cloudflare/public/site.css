@@ -153,6 +153,24 @@ p { margin: 0 0 1em; }
 .facts div + div { padding-left: 32px; border-left: 1px solid rgba(255,255,255,.18); }
 .facts strong { display: block; color: #fff; font: 700 25px/1.2 var(--display); letter-spacing: -.01em; margin-bottom: 10px; }
 .facts span { color: #b2bbc5; font-size: 16px; }
+/* pilot quotes (Admin -> Pilot quotes) */
+.quotes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 48px; }
+.quote { margin: 0; }
+.quote blockquote { margin: 0 0 22px; font-size: 20px; line-height: 1.55; color: #fff; white-space: pre-line; }
+.quote blockquote::before { content: "\201C"; display: block; font: 700 61px/0.6 var(--display); color: var(--accent); margin: 18px 0 4px; }
+.quote figcaption { display: flex; align-items: center; gap: 14px; }
+.quote .avatar { width: 56px; height: 56px; flex: none; border-radius: 50%; object-fit: cover; border: 1px solid rgba(255,255,255,.2); background: var(--navy-2);
+  display: inline-grid; place-items: center; font: 700 18px/1 var(--display); color: var(--ink); }
+.quote strong { display: block; color: #fff; font-weight: 600; }
+.quote small { display: block; color: #b2bbc5; font-size: 14px; }
+/* Trustpilot badge (their green star, our type) */
+.tp-badge { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-size: 14px; color: var(--ink); padding: 7px 12px 7px 8px; border: 1px solid var(--line); background: rgba(var(--navy-rgb), .35); }
+.tp-badge:hover { border-color: var(--accent); }
+.tp-badge .tp-star { display: inline-grid; place-items: center; width: 22px; height: 22px; background: #00b67a; color: #fff; font-size: 15px; line-height: 1; }
+.tp-badge strong { font-weight: 600; }
+.tp-badge span:last-child { color: var(--muted); }
+.hero .tp-badge, .footer .tp-badge, .dark .tp-badge { border-color: rgba(255,255,255,.22); }
+.hero .tp-badge span:last-child { color: #c9d1d8; }
 .sale { margin: 0 0 12px; font-size: 15px; color: var(--muted); }
 .sale s { color: var(--muted); }
 .sale strong { color: var(--ink); font: 700 20px/1 var(--display); margin: 0 6px; }

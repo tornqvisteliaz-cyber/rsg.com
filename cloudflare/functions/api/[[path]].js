@@ -1156,6 +1156,16 @@ function cleanShare(data) {
   const d = one(data.default, "default");
   return { default: d.image ? { image: d.image } : {}, pages };
 }
+// Pilot quotes (Admin -> Pilot quotes): [{name, about, text, image}], at most 20 (same as server.py).
+function cleanTestimonials(items) {
+  if (!Array.isArray(items) || items.length > 20) throw new Error("At most 20 quotes");
+  return items.map(i => (i && typeof i === "object" ? i : {})).map(i => {
+    const name = String(i.name || "").trim().slice(0, 60), text = String(i.text || "").replace(/\r\n/g, "\n").trim().slice(0, 800), raw = String(i.image || "").trim();
+    const image = validImageUrl(raw);
+    if (name && text && raw && !image) throw new Error(`The picture for ${name} must be an uploaded picture or an https:// link`);
+    return { name, about: String(i.about || "").trim().slice(0, 80), text, image };
+  }).filter(i => i.name && i.text);
+}
 function cleanFaq(items) {
   if (!Array.isArray(items) || items.length > 60) throw new Error("The FAQ can have at most 60 questions");
   return items.map(i => ({ q: String((i || {}).q || "").trim().slice(0, 200), a: String((i || {}).a || "").trim().slice(0, 2000) })).filter(i => i.q && i.a);
@@ -1205,7 +1215,7 @@ async function siteSettings(env) {
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
     roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], aircraft: (await getSetting(env, "site.aircraft", [])) || [],
-    share: { default: {}, pages: {}, ...((await getSetting(env, "site.share", {})) || {}) }, links: (await getSetting(env, "site.links", {})) || {},
+    share: { default: {}, pages: {}, ...((await getSetting(env, "site.share", {})) || {}) }, testimonials: (await getSetting(env, "site.testimonials", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
     extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) }, hub: (await hubConfig(env)).downloads };
 }
 function validImageUrl(url) {
@@ -1247,6 +1257,7 @@ async function adminSaveSettings(request, env) {
     if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
     if ("aircraft" in body) await setSetting(env, "site.aircraft", cleanAircraft(body.aircraft));
     if ("share" in body) await setSetting(env, "site.share", cleanShare(body.share));
+    if ("testimonials" in body) await setSetting(env, "site.testimonials", cleanTestimonials(body.testimonials));
     if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
     if ("extras" in body) await setSetting(env, "site.extras", cleanExtras(body.extras || {}));
   } catch (err) { return json({ error: err.message }, 400); }
@@ -1264,7 +1275,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "links", "extras", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "testimonials", "links", "extras", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }

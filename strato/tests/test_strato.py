@@ -1480,6 +1480,23 @@ class StratoCGITests:
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
 
+    def test_pilot_quotes(self):
+        t = self.owner_token
+        quotes = [{"name": "Captain Erik L.", "about": "Airline pilot, Boeing 737", "text": "Closest a desk stick has felt.", "image": "/media/4.jpg"},
+                  {"name": "  ", "text": "no name: dropped"}, {"name": "Anna", "text": "", "image": ""},
+                  {"name": "Sim pilot", "text": "Smooth.", "image": "https://cdn.example.com/a.png", "extra": 1}]
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"testimonials": quotes}, token=t))["testimonials"]
+        self.assertEqual(saved, [quotes[0], {"name": "Sim pilot", "about": "", "text": "Smooth.", "image": "https://cdn.example.com/a.png"}])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["testimonials"][0]["name"], "Captain Erik L.")
+        bad = {"testimonials": [{"name": "X", "text": "Hi", "image": "javascript:alert(1)"}]}
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", bad, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"testimonials": [{"name": "x", "text": "y"}] * 21}, token=t).status, 400)
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            self.assertIn("Closest a desk stick has felt.", fh.read(), "published with the site settings")
+        fan, _ = self.customer("quotefan")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=fan).status, 403)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=t))["testimonials"], [])
+
     def test_update_feed_for_rotahub(self):
         t = self.owner_token
         setup = b"MZ" + os.urandom(2000)

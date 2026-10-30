@@ -80,6 +80,8 @@ async function init() {
     document.getElementById("licenses").innerHTML = licenses.length ? licenses.map(l =>
         `<tr><td style="font-family:ui-monospace,Consolas,monospace;letter-spacing:.04em;color:var(--ink);white-space:nowrap">${esc(l.license_key)}</td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td><button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${esc(l.license_key)}');this.textContent='Copied'">Copy</button></td></tr>`
     ).join("") : '<tr><td colspan="5" class="muted">No licence keys yet. They appear here after you buy a product.</td></tr>';
+    if (licenses.some(l => l.status === "active") && !document.getElementById("review-ask")) // owners: ask for a Trustpilot review
+        document.getElementById("licenses").closest(".box").insertAdjacentHTML("beforeend", `<p id="review-ask" style="padding:0 24px 22px;margin:0;font-size:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span class="muted">Flying with it? Tell other simmers:</span>${trustpilotBadge(true)}</p>`);
     const orders = (await (await fetch("/api/account/orders", { headers })).json()).orders || [];
     document.getElementById("orders").innerHTML = orders.length ? orders.map(o =>
         `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>${o.currency ? Number(o.amount || 0).toFixed(2) + " " + esc(String(o.currency).toUpperCase()) : "$" + Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`

@@ -188,6 +188,10 @@
         .list-row .fields.three-col { grid-template-columns: 1fr 1fr 1.4fr; }
         .list-row .home-pick { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
         .list-row .home-pick label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; color: var(--text); white-space: nowrap; }
+        .quote-row { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: start; }
+        .quote-row .pic { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); background: var(--bg); display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; }
+        .quote-row .pic-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+        .quote-row .pic-tools button { font-size: 12px; padding: 4px 8px; }
         .shop-facts { display: grid; grid-template-columns: 180px 1fr; gap: 0; margin: 0; }
         .shop-facts dt, .shop-facts dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
         .shop-facts dt { color: var(--muted); }
@@ -309,6 +313,7 @@
     <button class="tab" data-tab="texts">Page texts</button>
     <button class="tab" data-tab="pages">Roadmap &amp; FAQ</button>
     <button class="tab" data-tab="aircraft">Aircraft</button>
+    <button class="tab" data-tab="quotes">Pilot quotes</button>
     <button class="tab" data-tab="site">Site settings</button>
     <button class="tab" data-tab="look">Look &amp; media</button>
     <button class="tab" data-tab="media">Media library <span class="count" id="c-media"></span></button>
@@ -552,6 +557,18 @@
                 <p class="muted" style="margin-top:0;font-size:14px">The questions on the Support page. Add the ones testers ask you most.</p>
                 <div class="list-edit" id="faq-list"></div>
                 <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="faq-add">Add question</button><button class="btn" type="button" id="faq-save">Save FAQ</button><button class="btn btn-ghost btn-sm" type="button" id="faq-reset">Back to the original</button></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-quotes" data-title="Pilot quotes">
+        <div class="panel">
+            <div class="panel-head"><h2>What pilots say</h2><div class="actions"><a class="btn btn-ghost btn-sm" href="/heavypro" target="_blank" rel="noopener">HeavyPro page</a><a class="btn btn-ghost btn-sm" href="/" target="_blank" rel="noopener">Home page</a></div></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">Quotes with a picture, shown under <strong>What pilots say</strong> on the home, HeavyPro and product pages, next to your Trustpilot link. The section stays hidden until there is one.</p>
+                <p class="notice">Only use words the person really sent you, and their photo only with their permission.</p>
+                <div class="list-edit" id="q-list"></div>
+                <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="q-add">Add a quote</button><button class="btn" type="button" id="q-save">Save quotes</button></div>
             </div>
         </div>
     </section>
@@ -1969,6 +1986,7 @@ async function loadSite() {
     renderSlots();
     loadPagesEditor();
     loadAircraft();
+    loadQuotes();
     loadShare();
     renderLook();
 }
@@ -2075,6 +2093,37 @@ $("rm-save").onclick = () => savePageList("roadmap", state.roadmap, "Roadmap sav
 $("faq-save").onclick = () => savePageList("faq", state.faq, "FAQ saved");
 $("rm-reset").onclick = async () => { if (await confirmBox("Use the original roadmap?", "Your saved steps are removed and the page shows its built-in steps again.", "Use original")) savePageList("roadmap", [], "Roadmap is back to the original"); };
 $("faq-reset").onclick = async () => { if (await confirmBox("Use the original FAQ?", "Your saved questions are removed and the page shows its built-in questions again.", "Use original")) savePageList("faq", [], "FAQ is back to the original"); };
+
+// Pilot quotes: a picture, name, who they are and their words ("What pilots say" on the site)
+function loadQuotes() {
+    state.quotes = (state.site.testimonials || []).map(q => ({ ...q }));
+    renderQuotes();
+}
+function renderQuotes() {
+    const last = state.quotes.length - 1;
+    $("q-list").innerHTML = state.quotes.map((q, i) => `<div class="list-row"><div class="quote-row"><div>` +
+        (q.image ? `<img class="pic" src="${esc(safeImage(q.image))}" alt="">` : '<div class="pic">No picture</div>') +
+        `<div class="pic-tools"><button class="btn btn-ghost" type="button" data-q-up="${i}">Upload</button><button class="btn btn-ghost" type="button" data-q-lib="${i}">Library</button>` +
+        `${q.image ? `<button class="btn btn-ghost" type="button" data-q-clear="${i}">Remove</button>` : ""}</div></div>` +
+        `<div class="fields"><div class="fields two-col" style="grid-template-columns:1fr 1fr"><input data-q="name" data-i="${i}" maxlength="60" placeholder="Name, e.g. Captain Erik L." value="${esc(q.name)}">` +
+        `<input data-q="about" data-i="${i}" maxlength="80" placeholder="Who they are, e.g. Airline pilot, Boeing 737" value="${esc(q.about)}"></div>` +
+        `<textarea data-q="text" data-i="${i}" rows="4" maxlength="800" placeholder="Their words">${esc(q.text)}</textarea></div></div>${rowTools("q", i, last)}</div>`).join("")
+        || '<p class="muted">No quotes yet. Add the first one.</p>';
+}
+listEditor("q-list", "q", "quotes", renderQuotes);
+$("q-list").addEventListener("click", async e => {
+    const b = e.target.closest("[data-q-up],[data-q-lib],[data-q-clear]"); if (!b) return;
+    const i = Number(b.dataset.qUp ?? b.dataset.qLib ?? b.dataset.qClear);
+    if (b.dataset.qUp !== undefined) { const [u] = await uploadImages(await chooseFiles(false)); if (u) state.quotes[i].image = u; }
+    if (b.dataset.qLib !== undefined) { const u = await pickImage(); if (u) state.quotes[i].image = u; }
+    if (b.dataset.qClear !== undefined) state.quotes[i].image = "";
+    renderQuotes();
+});
+$("q-add").onclick = () => { state.quotes.push({ name: "", about: "", text: "", image: "" }); renderQuotes(); $("q-list").querySelector(`[data-i="${state.quotes.length - 1}"][data-q="name"]`).focus(); };
+$("q-save").onclick = async () => {
+    try { state.site = await post("/api/admin/settings", { testimonials: state.quotes.filter(q => q.name.trim() || q.text.trim()) }); loadQuotes(); toast("Quotes saved: they show on the site now"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
 
 // Aircraft: the supported aircraft on the home, Compatibility and HeavyPro pages. Nothing saved: the pages show their own list,
 // which is what the editor starts from.
