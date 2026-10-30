@@ -248,6 +248,14 @@
         .img-tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; font-size: 11px; background: rgba(0,0,0,.6); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .img-tile.pick { cursor: pointer; }
         .img-tile.pick:hover { outline: 2px solid var(--accent); }
+        .share-row { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: start; padding: 14px 0; border-top: 1px solid var(--line); }
+        .share-row:first-child { border-top: 0; }
+        .share-row img { width: 160px; aspect-ratio: 1.91/1; object-fit: cover; display: block; background: var(--bg); border: 1px solid var(--line); }
+        .share-row h3 { font-size: 15px; margin: 0 0 2px; }
+        .share-row .addr { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+        .share-row .fields { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; margin-bottom: 8px; }
+        .share-row .actions { justify-content: flex-start; }
+        .share-default { border: 0; padding-top: 0; }
         .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
         .slot img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: var(--bg); border: 1px solid var(--line); }
         .slot h3 { font-size: 15px; margin: 10px 0 2px; }
@@ -466,6 +474,16 @@
         <div class="panel">
             <div class="panel-head"><h2>Site images</h2><span class="muted" style="font-size:13px">Upload your own screenshots or photos for each place on the site</span></div>
             <div class="panel-body"><div class="slots" id="slots"></div></div>
+        </div>
+        <div class="panel" style="margin-top:24px">
+            <div class="panel-head"><h2>Link previews</h2><span class="muted" style="font-size:13px">What Discord, Messenger, iMessage and others show when you send a link</span></div>
+            <div class="panel-body">
+                <div class="share-row share-default" id="share-default"></div>
+                <p class="hint" style="margin:14px 0 18px">Each page can have its own picture, title and text. Empty fields use the default picture above, then the page's own picture, title and description.
+                    Apps remember a preview for a while: to see a change at once, send the link with <code>?v=2</code> at the end (any new number).</p>
+                <div id="share-list"></div>
+                <div class="actions" style="justify-content:flex-start;margin-top:16px"><button class="btn" type="button" id="share-save">Save link previews</button></div>
+            </div>
         </div>
     </section>
 
@@ -1914,6 +1932,7 @@ async function loadSite() {
     renderSlots();
     loadPagesEditor();
     loadAircraft();
+    loadShare();
     renderLook();
 }
 
@@ -2168,6 +2187,67 @@ $("slots").onclick = async e => {
     if (b.dataset.slotLink) { const u = (prompt("Image link (https://)") || "").trim(); if (u) saveSlot(b.dataset.slotLink, u); }
     if (b.dataset.slotReset) saveSlot(b.dataset.slotReset, state.site.defaults[b.dataset.slotReset]);
 };
+// Link previews: per page the picture, title and text that apps show for a link (written into the pages by the server)
+const SHARE_PAGES = [["/", "Home", "hero"], ["/heavypro", "HeavyPro", "heavypro"], ["/addons/", "Products", "product"], ["/addons/view", "Product page", "product"],
+    ["/downloads", "Downloads", "header"], ["/get-rotahub", "Get RotaHub", "header"], ["/compatibility", "Compatibility", "header"], ["/installation", "Installation guide", "header"],
+    ["/support", "Help and FAQ", "header"], ["/roadmap", "Roadmap", "header"], ["/newsletter", "News", "header"], ["/about", "About", "about"], ["/contact", "Contact", "header"], ["/work-at-rsg", "Careers", "header"]];
+state.sharePlaceholders = {};
+function loadShare() {
+    const saved = state.site.share || {};
+    state.share = { default: { ...(saved.default || {}) }, pages: Object.fromEntries(Object.entries(saved.pages || {}).map(([k, v]) => [k, { ...v }])) };
+    renderShare();
+    // the page's own title and description, shown greyed in the empty fields
+    SHARE_PAGES.forEach(([path]) => {
+        if (state.sharePlaceholders[path]) return;
+        pageItems(path, doc => [doc.querySelector("title"), doc.querySelector('meta[name="description"]')]).then(([t, d]) => {
+            state.sharePlaceholders[path] = { title: t ? t.textContent.trim() : "", description: d ? d.getAttribute("content") || "" : "" };
+            const row = $("share-list").querySelector(`[data-share-row="${CSS.escape(path)}"]`);
+            if (row) { row.querySelector('[data-sh="title"]').placeholder = state.sharePlaceholders[path].title || "Title"; row.querySelector('[data-sh="description"]').placeholder = state.sharePlaceholders[path].description || "Short text"; }
+        }).catch(() => {});
+    });
+}
+function sharePicture(path) {
+    const own = path ? (state.share.pages[path] || {}).image : "";
+    const slot = path ? (SHARE_PAGES.find(p => p[0] === path) || [])[2] : "";
+    return own || state.share.default.image || (slot ? (state.site.images || {})[slot] : "") || "";
+}
+function picButtons(key, has) {
+    return `<button class="btn btn-ghost btn-sm" type="button" data-sh-up="${esc(key)}">Upload</button><button class="btn btn-ghost btn-sm" type="button" data-sh-lib="${esc(key)}">Library</button>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-sh-link="${esc(key)}">Link</button>${has ? `<button class="btn btn-ghost btn-sm" type="button" data-sh-clear="${esc(key)}">Remove picture</button>` : ""}`;
+}
+function renderShare() {
+    const d = state.share.default.image || "";
+    $("share-default").innerHTML = `<img src="${esc(d ? safeImage(d) : safeImage((state.site.images || {}).hero))}" alt=""><div><h3>Default picture</h3>` +
+        `<p class="addr">${d ? "Used by every page below without a picture of its own." : "None: each page uses its own header picture."}</p><div class="actions">${picButtons("*", !!d)}</div></div>`;
+    $("share-list").innerHTML = SHARE_PAGES.map(([path, name]) => {
+        const own = state.share.pages[path] || {}, ph = state.sharePlaceholders[path] || {};
+        return `<div class="share-row" data-share-row="${esc(path)}"><img src="${esc(safeImage(sharePicture(path)))}" alt=""><div><h3>${esc(name)}</h3><p class="addr">${esc(location.host + path)}${own.image ? "" : " · default picture"}</p>` +
+            `<div class="fields"><input data-sh="title" data-path="${esc(path)}" maxlength="90" placeholder="${esc(ph.title || "Title")}" value="${esc(own.title || "")}">` +
+            `<input data-sh="description" data-path="${esc(path)}" maxlength="200" placeholder="${esc(ph.description || "Short text")}" value="${esc(own.description || "")}"></div>` +
+            `<div class="actions">${picButtons(path, !!own.image)}</div></div></div>`;
+    }).join("");
+}
+function setSharePicture(key, url) {
+    if (key === "*") state.share.default.image = url;
+    else state.share.pages[key] = { ...(state.share.pages[key] || {}), image: url };
+    renderShare();
+}
+$("share-list").oninput = e => {
+    const el = e.target.closest("[data-sh]"); if (!el) return;
+    state.share.pages[el.dataset.path] = { ...(state.share.pages[el.dataset.path] || {}), [el.dataset.sh]: el.value };
+};
+$("share-default").onclick = $("share-list").onclick = async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.shUp) { const [u] = await uploadImages(await chooseFiles(false)); if (u) setSharePicture(b.dataset.shUp, u); }
+    if (b.dataset.shLib) { const u = await pickImage(); if (u) setSharePicture(b.dataset.shLib, u); }
+    if (b.dataset.shLink) { const u = (prompt("Picture link (https://)") || "").trim(); if (u) setSharePicture(b.dataset.shLink, u); }
+    if (b.dataset.shClear) setSharePicture(b.dataset.shClear, "");
+};
+$("share-save").onclick = async () => {
+    try { state.site = await post("/api/admin/settings", { share: state.share }); loadShare(); toast("Link previews saved. Send a link with ?v=2 to see it straight away."); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+
 $("banner-form").onsubmit = async e => {
     e.preventDefault();
     try { state.site = await post("/api/admin/settings", { announcement: { text: val("b-text"), link: val("b-link"), enabled: $("b-on").checked, from: $("b-from").value, until: $("b-until").value } }); toast($("b-on").checked ? "Banner is live" : "Banner saved (hidden)"); loadAudit(); }

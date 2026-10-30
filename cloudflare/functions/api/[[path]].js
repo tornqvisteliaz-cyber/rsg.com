@@ -1137,6 +1137,23 @@ function cleanAircraft(items) {
   return items.map(i => (i && typeof i === "object" ? i : {})).map(i => ({ name: String(i.name || "").trim().slice(0, 80), profile: String(i.profile || "").trim().slice(0, 80),
     note: String(i.note || "").trim().slice(0, 200), home: !!i.home, home_text: String(i.home_text || "").trim().slice(0, 120) })).filter(i => i.name);
 }
+// Link previews: {default: {image}, pages: {"/heavypro": {image, title, description}}}, only known pages (functions/_middleware.js shows them).
+const SHARE_PAGES = { "/": "home", "/heavypro": "HeavyPro", "/addons/": "products", "/addons/view": "product", "/downloads": "downloads", "/get-rotahub": "get RotaHub",
+  "/compatibility": "compatibility", "/installation": "installation guide", "/support": "help and FAQ", "/roadmap": "roadmap", "/newsletter": "news", "/about": "about",
+  "/contact": "contact", "/work-at-rsg": "careers" };
+function cleanShare(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Link previews must be an object");
+  const one = (item, name) => {
+    item = item && typeof item === "object" ? item : {};
+    const raw = String(item.image || "").trim(), image = validImageUrl(raw);
+    if (raw && !image) throw new Error(`The ${name} picture must be an uploaded picture or an https:// link`);
+    return Object.fromEntries(Object.entries({ image, title: String(item.title || "").trim().slice(0, 90), description: String(item.description || "").trim().slice(0, 200) }).filter(([, v]) => v));
+  };
+  const pages = {};
+  for (const [path, name] of Object.entries(SHARE_PAGES)) { const item = one((data.pages || {})[path], name + " page"); if (Object.keys(item).length) pages[path] = item; }
+  const d = one(data.default, "default");
+  return { default: d.image ? { image: d.image } : {}, pages };
+}
 function cleanFaq(items) {
   if (!Array.isArray(items) || items.length > 60) throw new Error("The FAQ can have at most 60 questions");
   return items.map(i => ({ q: String((i || {}).q || "").trim().slice(0, 200), a: String((i || {}).a || "").trim().slice(0, 2000) })).filter(i => i.q && i.a);
@@ -1185,7 +1202,8 @@ async function siteSettings(env) {
   const texts = (await getSetting(env, "site.texts", {})) || {};
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
-    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], aircraft: (await getSetting(env, "site.aircraft", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
+    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], aircraft: (await getSetting(env, "site.aircraft", [])) || [],
+    share: { default: {}, pages: {}, ...((await getSetting(env, "site.share", {})) || {}) }, links: (await getSetting(env, "site.links", {})) || {},
     extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) }, hub: (await hubConfig(env)).downloads };
 }
 function validImageUrl(url) {
@@ -1226,6 +1244,7 @@ async function adminSaveSettings(request, env) {
     if ("roadmap" in body) await setSetting(env, "site.roadmap", cleanRoadmap(body.roadmap));
     if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
     if ("aircraft" in body) await setSetting(env, "site.aircraft", cleanAircraft(body.aircraft));
+    if ("share" in body) await setSetting(env, "site.share", cleanShare(body.share));
     if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
     if ("extras" in body) await setSetting(env, "site.extras", cleanExtras(body.extras || {}));
   } catch (err) { return json({ error: err.message }, 400); }
@@ -1243,7 +1262,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "links", "extras", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "links", "extras", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }

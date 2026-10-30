@@ -25,10 +25,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
-from html import escape
+from html import escape, unescape as html_unescape
 from pathlib import Path
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, has_request_context, jsonify, request, send_from_directory
 
 PUBLIC = Path(__file__).resolve().parent / "cloudflare" / "public"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -3042,7 +3042,7 @@ def site_settings():
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
-            "aircraft": get_setting("site.aircraft", []) or [],
+            "aircraft": get_setting("site.aircraft", []) or [], "share": share_settings(),
             "links": get_setting("site.links", {}) or {}, "extras": site_extras(), "hub": hub_config()["downloads"]}
 
 
@@ -3103,6 +3103,8 @@ def admin_save_settings():
             set_setting("site.faq", clean_faq(b.get("faq")))
         if "aircraft" in b:
             set_setting("site.aircraft", clean_aircraft(b.get("aircraft")))
+        if "share" in b:
+            set_setting("site.share", clean_share(b.get("share")))
         if "links" in b:
             set_setting("site.links", clean_links(b.get("links")))
         if "extras" in b:
@@ -3129,7 +3131,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "links", "extras", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "links", "extras", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
@@ -3205,7 +3207,7 @@ def media_file(media_id, ext):
 
 def public_path(name):
     folder = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
-    if not folder or not os.path.isdir(folder) or not re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name):
+    if not folder or not os.path.isdir(folder) or not (re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name) or name in SHARE_FILES):
         return ""
     return os.path.join(folder, name)
 
@@ -3256,6 +3258,90 @@ def site_settings_js():
 
 def publish_site_settings():
     write_public("site-settings.js", site_settings_js().encode())
+    publish_share_tags()
+
+
+# ---------- link previews (Admin -> Site settings -> Link previews) ----------
+# The picture, title and text that Discord, Messenger, iMessage and others show for a link. Those
+# apps never run the page's scripts, so the tags are written into the page itself: into the copies
+# in the website folder on STRATO (on every save and deploy), and on the way out everywhere else.
+
+SHARE_PAGES = (  # address, file, name in the admin, picture slot used when nothing else is set
+    ("/", "index.html", "Home", "hero"), ("/heavypro", "heavypro.html", "HeavyPro", "heavypro"),
+    ("/addons/", "addons/index.html", "Products", "product"), ("/addons/view", "addons/view.html", "Product page", "product"),
+    ("/downloads", "downloads.html", "Downloads", "header"), ("/get-rotahub", "get-rotahub.html", "Get RotaHub", "header"),
+    ("/compatibility", "compatibility.html", "Compatibility", "header"), ("/installation", "installation.html", "Installation guide", "header"),
+    ("/support", "support.html", "Help and FAQ", "header"), ("/roadmap", "roadmap.html", "Roadmap", "header"),
+    ("/newsletter", "newsletter.html", "News", "header"), ("/about", "about.html", "About", "about"),
+    ("/contact", "contact.html", "Contact", "header"), ("/work-at-rsg", "work-at-rsg.html", "Careers", "header"))
+SHARE_FILES = {f: (path, slot) for path, f, _name, slot in SHARE_PAGES}
+SHARE_BLOCK = re.compile(r"\s*<!-- share -->.*?<!-- /share -->", re.S)
+
+
+def clean_share(data):
+    """{"default": {"image"}, "pages": {"/heavypro": {"image", "title", "description"}}}: only known pages, nothing empty."""
+    if not isinstance(data, dict):
+        raise ValueError("Link previews must be an object")
+    def one(item, name):
+        item = item if isinstance(item, dict) else {}
+        raw = str(item.get("image") or "").strip()
+        image = valid_image_url(raw)
+        if raw and not image:
+            raise ValueError(f"The {name} picture must be an uploaded picture or an https:// link")
+        return {k: v for k, v in {"image": image, "title": str(item.get("title") or "").strip()[:90],
+                                  "description": str(item.get("description") or "").strip()[:200]}.items() if v}
+    pages = {}
+    for path, _f, name, _slot in SHARE_PAGES:
+        item = one((data.get("pages") or {}).get(path), name.lower() + " page")
+        if item:
+            pages[path] = item
+    return {"default": {k: v for k, v in one(data.get("default"), "default").items() if k == "image"}, "pages": pages}
+
+
+def share_settings():
+    saved = get_setting("site.share", {}) or {}
+    return {"default": saved.get("default") or {}, "pages": saved.get("pages") or {}}
+
+
+def share_base():
+    base = os.environ.get("SITE_URL", "").strip() or (request.host_url if has_request_context() else "")
+    base = base.rstrip("/")
+    return "" if not base else (base if "://" in base else "https://" + base.lower())
+
+
+def with_share_tags(page_html, file):
+    """The page with its link-preview tags (replacing any from before)."""
+    path, slot = SHARE_FILES[file]
+    share = share_settings()
+    own = share["pages"].get(path) or {}
+    title = re.search(r"<title>(.*?)</title>", page_html, re.S)
+    description = re.search(r'<meta name="description" content="([^"]*)"', page_html)
+    title = own.get("title") or html_unescape(title.group(1).strip() if title else "Rotaidem")
+    description = own.get("description") or html_unescape(description.group(1) if description else "")
+    image = own.get("image") or share["default"].get("image") or site_settings()["images"].get(slot) or IMAGE_SLOTS["hero"]
+    base = share_base()
+    absolute = lambda u: base + u if u.startswith("/") else u  # noqa: E731 - apps need full addresses
+    tags = [("og:type", "website"), ("og:site_name", "Rotaidem"), ("og:title", title), ("og:description", description),
+            ("og:url", absolute(path)), ("og:image", absolute(image))]
+    block = "\n    <!-- share -->\n" + "".join(f'    <meta property="{k}" content="{escape(v, quote=True)}">\n' for k, v in tags if v) + \
+        f'    <meta name="twitter:card" content="summary_large_image">\n    <meta name="twitter:image" content="{escape(absolute(image), quote=True)}">\n    <!-- /share -->'
+    page_html = SHARE_BLOCK.sub("", page_html)
+    return page_html.replace("\n</head>", block + "\n</head>", 1) if "\n</head>" in page_html else page_html.replace("</head>", block + "</head>", 1)
+
+
+def publish_share_tags():
+    for file in SHARE_FILES:
+        target = public_path(file)
+        if not target or not os.path.isfile(target):
+            continue
+        try:
+            with open(target, encoding="utf-8") as fh:
+                current = fh.read()
+            updated = with_share_tags(current, file)
+            if updated != current:
+                write_public(file, updated.encode("utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            app.logger.warning("Link preview for %s: %s", file, exc)
 
 
 @app.get("/site-settings.js")
@@ -3763,6 +3849,10 @@ def site(path=""):
     path = path.strip("/")
     for candidate in (path, f"{path}.html", f"{path}/index.html", "index.html" if not path else None):
         if candidate and (PUBLIC / candidate).is_file():
+            if candidate in SHARE_FILES:  # with its link-preview tags
+                resp = app.response_class(with_share_tags((PUBLIC / candidate).read_text(encoding="utf-8"), candidate), mimetype="text/html")
+                resp.headers["Cache-Control"] = "no-cache"
+                return resp
             return send_from_directory(PUBLIC, candidate)
     abort(404)
 

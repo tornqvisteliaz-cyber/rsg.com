@@ -556,6 +556,39 @@ class StratoCGITests:
             with open(os.path.join(self.w.public, page)) as fh:
                 self.assertIn('<script src="/site-settings.js"></script>', fh.read(), page)
 
+    def test_link_previews_written_into_the_pages(self):
+        """Discord, Messenger and others never run scripts: the preview tags are in the page files."""
+        t = self.owner_token
+        page = lambda name: open(os.path.join(self.w.public, name), encoding="utf-8").read()  # noqa: E731
+        home = page("index.html")
+        self.assertEqual(home.count("<!-- share -->"), 1, "deploy writes them")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/hero.jpg">', home)
+        self.assertIn('<meta property="og:url" content="https://rotaidem.test/">', home)
+        self.assertIn('<meta property="og:title" content="Rotaidem | HeavyPro for Microsoft Flight Simulator 2024">', home, "the page's own title")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/clouds.jpg">', page("heavypro.html"), "each page its own picture")
+        self.assertNotIn("<!-- share -->", page("admin.html"))
+        bad = {"share": {"pages": {"/heavypro": {"image": "javascript:alert(1)"}}}}
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", bad, token=t).status, 400)
+        share = {"default": {"image": "/media/7.png"},
+                 "pages": {"/heavypro": {"image": "https://cdn.example.com/heavy.jpg", "title": 'HeavyPro "launch" & more', "description": "Feel the weight"},
+                           "/not-a-page": {"title": "dropped"}, "/about": {"title": "  "}}}
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"share": share}, token=t))["share"]
+        self.assertEqual(saved, {"default": {"image": "/media/7.png"}, "pages": {"/heavypro": share["pages"]["/heavypro"]}})
+        heavy = page("heavypro.html")
+        self.assertEqual(heavy.count("<!-- share -->"), 1, "replaced, not added again")
+        self.assertIn('<meta property="og:image" content="https://cdn.example.com/heavy.jpg">', heavy)
+        self.assertIn('<meta property="og:title" content="HeavyPro &quot;launch&quot; &amp; more">', heavy)
+        self.assertIn('<meta property="og:description" content="Feel the weight">', heavy)
+        self.assertIn('<meta name="twitter:image" content="https://cdn.example.com/heavy.jpg">', heavy)
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/media/7.png">', page("index.html"), "the default picture for the rest")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/media/7.png">', page("addons/view.html"))
+        # pages the program itself sends carry the same tags
+        served = self.w.cgi("GET", "/heavypro").body.decode()
+        self.assertEqual(served.count("<!-- share -->"), 1)
+        self.assertIn("https://cdn.example.com/heavy.jpg", served)
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"share": {}}, token=t))
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/clouds.jpg">', page("heavypro.html"), "back to the page's own picture")
+
     # ---------- e-mail ----------
 
     def test_email_through_resend(self):
