@@ -199,6 +199,15 @@ back when it is restored. `/verify` in Discord lets members check themselves.
    **Add the /verify command** in Admin → Discord.
 9. Optional: in Admin → Discord, **Post a Verify button** in a channel such as #welcome.
 
+**Posting with the bot:** Admin → Discord → *Post to Discord*. Pick a channel, write a message and/or a
+card (title, text, link, picture), add link buttons, and choose who to ping (nobody, the buyer role,
+@here or @everyone). *Start from…* fills it in from a product update or a news post. In an
+announcement channel it is also published to servers that follow it. Posts can be edited or deleted
+from the list below the form. The bot needs **Send Messages** and **Embed Links** in those channels
+(and Mention Everyone for @everyone pings): the invite link from `setup.py discord` asks for them. If
+you invited the bot before this was added, open the invite link again or give its role those
+permissions in Server Settings → Roles.
+
 ## Security
 
 - **Settings:** `config.env` holds the secrets (database password, `SECRET_KEY`, `LICENSE_API_KEY`,

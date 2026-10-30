@@ -123,6 +123,7 @@ class FakeDiscord:
 
     def __init__(self):
         self.members, self.commands, self.messages = {}, [], []  # members: {discord id: set of role ids}
+        self.posted, self.crossposted = {}, []  # message id -> (channel, message) for Post to Discord
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -165,14 +166,32 @@ class FakeDiscord:
                 if parts[:1] == ["applications"] and self.command == "PUT":
                     outer.commands = json.loads(raw)
                     return self.reply(200, outer.commands)
+                if parts[:1] == ["guilds"] and parts[2:] == ["channels"]:
+                    return self.reply(200, [{"id": "1400000000000000001", "type": 4, "name": "Info", "position": 0},
+                                            {"id": "1400000000000000002", "type": 0, "name": "general", "parent_id": "1400000000000000001", "position": 1},
+                                            {"id": "1400000000000000003", "type": 5, "name": "announcements", "parent_id": "1400000000000000001", "position": 0},
+                                            {"id": "1400000000000000004", "type": 2, "name": "Voice", "position": 2}])
+                if parts[:1] == ["channels"] and len(parts) == 5 and parts[4] == "crosspost":
+                    outer.crossposted.append(parts[3])
+                    return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and len(parts) == 4 and self.command in ("PATCH", "DELETE"):
+                    if parts[3] not in outer.posted:
+                        return self.reply(404, {"message": "Unknown Message"})
+                    if self.command == "DELETE":
+                        del outer.posted[parts[3]]
+                        return self.reply(204)
+                    outer.posted[parts[3]] = (parts[1], json.loads(raw))
+                    return self.reply(200, {"id": parts[3]})
                 if parts[:1] == ["channels"] and self.command == "POST":
                     outer.messages.append((parts[1], json.loads(raw)))
-                    return self.reply(200, {"id": "1"})
+                    mid = str(1500000000000000000 + len(outer.messages))
+                    outer.posted[mid] = outer.messages[-1]
+                    return self.reply(200, {"id": mid})
                 if self.path == "/users/@me":
                     return self.reply(200, {"id": "999", "username": "Rotaidem bot"})
                 self.reply(404, {"message": "Unknown"})
 
-            do_GET = do_POST = do_PUT = do_DELETE = handle_any
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any
 
             def log_message(self, *args):
                 pass
@@ -1496,6 +1515,50 @@ class StratoCGITests:
         fan, _ = self.customer("quotefan")
         self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=fan).status, 403)
         self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=t))["testimonials"], [])
+
+    def test_post_to_discord_from_the_admin(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        self.assertEqual(self.w.cgi("GET", "/api/admin/discord/channels", token=t).status, 503, "not set up")
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            chans = self.ok(self.w.cgi("GET", "/api/admin/discord/channels", token=t))["channels"]
+            self.assertEqual([(c["name"], c["announcement"], c["category"]) for c in chans], [("announcements", True, "Info"), ("general", False, "Info")], "text channels only")
+            fan, _ = self.customer("discordposter")
+            post = {"channel_id": "1400000000000000003", "channel_name": "announcements", "ping": "buyers", "text": "New version!",
+                    "embed": {"title": "HeavyPro 0.7.0 is out", "description": "Smoother pitch", "url": "/heavypro", "image": "/media/3.png", "color": "#4cc38a"},
+                    "buttons": [{"label": "Update in RotaHub", "url": "/get-rotahub?product=HeavyPro"}, {"label": "", "url": ""}], "publish": True}
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", post, token=fan).status, 403)
+            for bad in ({"channel_id": "general"}, {"text": "", "embed": {}}, {"buttons": [{"label": "Go", "url": "javascript:alert(1)"}]},
+                        {"embed": {"title": "x", "image": "file:///c:/x.png"}}, {"text": "x" * 2001}):
+                self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", {**post, **bad}, token=t).status, 400, bad)
+            sent = self.ok(self.w.cgi("POST", "/api/admin/discord/message", post, token=t))
+            self.assertTrue(sent["published"])
+            channel, msg = self.discord.posted[sent["id"]]
+            self.assertEqual(channel, "1400000000000000003")
+            self.assertEqual(msg["content"], f"<@&{role}>\nNew version!")
+            self.assertEqual(msg["allowed_mentions"], {"parse": [], "roles": [role]}, "only the buyer role is pinged")
+            self.assertEqual(msg["embeds"][0], {"title": "HeavyPro 0.7.0 is out", "description": "Smoother pitch", "url": "https://rotaidem.test/heavypro",
+                                                 "color": 0x4cc38a, "image": {"url": "https://rotaidem.test/media/3.png"}})
+            self.assertEqual(msg["components"][0]["components"], [{"type": 2, "style": 5, "label": "Update in RotaHub", "url": "https://rotaidem.test/get-rotahub?product=HeavyPro"}])
+            self.assertEqual(self.discord.crossposted, [sent["id"]])
+            # nobody is pinged unless asked
+            plain = self.ok(self.w.cgi("POST", "/api/admin/discord/message", {"channel_id": "1400000000000000002", "text": "@everyone hi"}, token=t))
+            self.assertEqual(self.discord.posted[plain["id"]][1]["allowed_mentions"], {"parse": [], "roles": []})
+            # the list of posts; edit and delete
+            history = self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["messages"]
+            self.assertEqual([m["summary"] for m in history], ["@everyone hi", "HeavyPro 0.7.0 is out"])
+            self.assertEqual(history[1]["draft"]["embed"]["title"], "HeavyPro 0.7.0 is out")
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/message/1400000000000000003/{sent['id']}", {**post, "embed": {**post["embed"], "title": "HeavyPro 0.7.1 is out"}}, token=t))
+            self.assertEqual(self.discord.posted[sent["id"]][1]["embeds"][0]["title"], "HeavyPro 0.7.1 is out")
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["messages"][1]["summary"], "HeavyPro 0.7.1 is out")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000003/{sent['id']}", token=t))
+            self.assertNotIn(sent["id"], self.discord.posted)
+            del self.discord.posted[plain["id"]]  # deleted in Discord by hand: forgotten here too
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000002/{plain['id']}", token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["messages"], [])
+            self.assertIn("268585985", self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"], "the bot may post and embed")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
 
     def test_update_feed_for_rotahub(self):
         t = self.owner_token

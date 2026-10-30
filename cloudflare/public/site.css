@@ -106,6 +106,7 @@ p { margin: 0 0 1em; }
 .btn-sm { padding: 8px 14px; font-size: 14px; }
 .btn-block { width: 100%; }
 .btn[disabled] { opacity: .5; cursor: default; }
+.btn[hidden] { display: none; }
 .welcome .btn, .hero .btn { padding: 15px 26px; font-size: 16px; }
 
 /* heroes: the photo fills the screen, the words sit low on the left like a title card */

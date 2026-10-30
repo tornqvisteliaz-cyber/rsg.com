@@ -192,6 +192,23 @@
         .quote-row .pic { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); background: var(--bg); display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; }
         .quote-row .pic-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
         .quote-row .pic-tools button { font-size: 12px; padding: 4px 8px; }
+        .dp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+        .dp-card { border: 1px solid var(--line); padding: 14px 16px; margin: 0 0 18px; }
+        .dp-card legend { padding: 0 6px; font-size: 14px; font-weight: 500; color: var(--ink); }
+        .dp-btn-row { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: 6px; margin-bottom: 6px; }
+        .dp-preview { position: sticky; top: 90px; background: #313338; color: #dbdee1; padding: 16px; border-radius: 8px; font: 15px/1.4 "gg sans", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }
+        .dp-preview .who { display: flex; gap: 12px; }
+        .dp-preview .ava { width: 40px; height: 40px; border-radius: 50%; background: #111315 url(/logo.svg) center/60% no-repeat; flex: none; }
+        .dp-preview .name { color: #f2f3f5; font-weight: 600; } .dp-preview .name small { background: #5865f2; color: #fff; font-size: 10px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; vertical-align: 1px; }
+        .dp-preview .msg-text { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+        .dp-preview .mention { background: rgba(88,101,242,.3); color: #c9cdfb; border-radius: 3px; padding: 0 2px; }
+        .dp-preview .embed { margin-top: 8px; background: #2b2d31; border-left: 4px solid #aab6c2; border-radius: 4px; padding: 10px 14px 14px; max-width: 432px; }
+        .dp-preview .embed .t { color: #00a8fc; font-weight: 600; } .dp-preview .embed .t.plain { color: #f2f3f5; }
+        .dp-preview .embed .d { white-space: pre-wrap; margin-top: 6px; font-size: 14px; }
+        .dp-preview .embed img { display: block; max-width: 100%; border-radius: 4px; margin-top: 12px; }
+        .dp-preview .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+        .dp-preview .btns span { background: #4e5058; color: #fff; padding: 6px 14px; border-radius: 3px; font-size: 14px; }
+        @media (max-width: 1100px) { .dp-grid { grid-template-columns: 1fr; } .dp-preview { position: static; } }
         .shop-facts { display: grid; grid-template-columns: 180px 1fr; gap: 0; margin: 0; }
         .shop-facts dt, .shop-facts dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
         .shop-facts dt { color: var(--muted); }
@@ -587,6 +604,31 @@
 
     <section class="pane" id="pane-discord" data-title="Discord">
         <p class="notice" id="dc-off" hidden>Discord linking runs on the STRATO website. This copy of the site cannot do it.</p>
+        <div class="panel" style="margin-bottom:24px" id="dp-panel">
+            <div class="panel-head"><h2 id="dp-head">Post to Discord</h2><select id="dp-start" style="width:auto;padding:8px 12px" aria-label="Start from"></select></div>
+            <div class="panel-body dp-grid">
+                <form id="dp-form">
+                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+                        <div class="field" style="margin:0"><label for="dp-channel">Channel</label><select id="dp-channel"><option value="">Loading channels…</option></select></div>
+                        <button class="btn btn-ghost btn-sm" type="button" id="dp-reload" style="margin-bottom:2px">Refresh</button>
+                    </div>
+                    <div class="field" style="margin-top:14px"><label for="dp-ping">Ping</label><select id="dp-ping"><option value="none">Nobody</option><option value="buyers">Verified buyers (the buyer role)</option><option value="here">@here (members online)</option><option value="everyone">@everyone</option></select></div>
+                    <div class="field"><label for="dp-text">Message</label><textarea id="dp-text" rows="4" maxlength="1900" placeholder="What do you want to say?"></textarea></div>
+                    <fieldset class="dp-card"><legend>Card (optional)</legend>
+                        <div class="field"><label for="dp-title">Title</label><input id="dp-title" maxlength="256" placeholder="e.g. HeavyPro 0.6.1 is out"></div>
+                        <div class="field"><label for="dp-desc">Text</label><textarea id="dp-desc" rows="4" maxlength="4000"></textarea></div>
+                        <div class="field"><label for="dp-url">Title links to</label><input id="dp-url" placeholder="https://... or a page like /heavypro"></div>
+                        <div class="field"><label>Picture</label><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn btn-ghost btn-sm" type="button" id="dp-up">Upload</button><button class="btn btn-ghost btn-sm" type="button" id="dp-lib">Library</button><button class="btn btn-ghost btn-sm" type="button" id="dp-noimg" hidden>Remove</button><span class="muted" id="dp-img-name" style="font-size:13px"></span></div></div>
+                        <div class="field" style="margin:0"><label for="dp-color">Stripe colour</label><input id="dp-color" type="color" value="#aab6c2" style="width:64px;height:36px;padding:2px"></div>
+                    </fieldset>
+                    <div class="field"><label>Buttons (links)</label><div id="dp-buttons"></div><button class="btn btn-ghost btn-sm" type="button" id="dp-add-btn">Add button</button></div>
+                    <label id="dp-publish-row" style="display:none;gap:8px;align-items:center;font-weight:400;margin:0 0 16px"><input type="checkbox" id="dp-publish" checked> Publish to servers that follow this announcement channel</label>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" id="dp-send">Post</button><button class="btn btn-ghost" type="button" id="dp-cancel" hidden>Cancel editing</button><button class="btn btn-ghost" type="button" id="dp-clear">Clear</button></div>
+                </form>
+                <div><div class="muted" style="font-size:13px;margin-bottom:8px">Preview</div><div class="dp-preview" id="dp-preview"></div></div>
+            </div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Posted</th><th>Channel</th><th>Message</th><th></th></tr></thead><tbody id="dp-history"></tbody></table></div>
+        </div>
         <div class="panel" style="margin-bottom:24px">
             <div class="panel-head"><h2>Set-up</h2><span id="dc-ready"></span></div>
             <div class="panel-body">
@@ -2173,7 +2215,10 @@ async function loadDiscord() {
 function renderDiscord() {
     const dc = state.discord || {};
     $("dc-off").hidden = !dc.unavailable;
+    $("dp-panel").hidden = !dc.ready;
     if (dc.unavailable) { $("dc-ready").innerHTML = '<span class="badge">Not here</span>'; return; }
+    if (dc.ready && !state.dp.loaded) { state.dp.loaded = true; loadDpChannels(); loadDpHistory(); }
+    dpStartOptions(); renderDpButtons(); dpPreview();
     const st = dc.setup || {}, cfg = dc.settings || {};
     $("dc-ready").innerHTML = dc.ready ? '<span class="badge published">Working</span>' : '<span class="badge in_development">Not finished</span>';
     const flag = (ok, what) => `<span class="badge ${ok ? "published" : "in_development"}">${ok ? "Set" : "Missing"}</span> ${what}`;
@@ -2194,6 +2239,121 @@ function renderDiscord() {
         `<td>${m.buyer ? '<span class="badge published">Yes</span>' : '<span class="badge">No licence</span>'}</td><td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td></tr>`).join("")
         || empty(4, "Nobody has linked Discord yet. Customers do it under My account.");
 }
+// Post to Discord: the bot posts what you write here; what it posted can be edited or deleted
+state.dp = { image: "", buttons: [], editing: null, channels: [] };
+async function loadDpChannels() {
+    try {
+        const d = await api("/api/admin/discord/channels");
+        state.dp.channels = d.channels || [];
+        let cat = null;
+        $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
+            const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
+            cat = c.category;
+            return head + `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`;
+        }).join("") + (cat !== null ? "</optgroup>" : "");
+    } catch (err) { $("dp-channel").innerHTML = `<option value="">${esc(err.message)}</option>`; }
+    dpPreview();
+}
+async function loadDpHistory() {
+    try { state.dp.history = (await api("/api/admin/discord/messages")).messages || []; } catch (err) { state.dp.history = []; }
+    $("dp-history").innerHTML = state.dp.history.map(m => `<tr><td class="muted" style="white-space:nowrap">${date(m.at)}<div style="font-size:13px">${esc(m.by || "")}</div></td><td>#${esc(m.channel || m.channel_id)}</td><td>${esc(m.summary || "")}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-dp-edit="${esc(m.id)}">Edit</button><button class="btn btn-danger btn-sm" type="button" data-dp-del="${esc(m.id)}">Delete</button></div></td></tr>`).join("")
+        || empty(4, "Nothing posted from here yet.");
+}
+function dpStartOptions() {
+    const posts = (state.posts || []).filter(p => p.status !== "draft").slice(0, 5), prods = (state.products || []).filter(p => p.version);
+    $("dp-start").innerHTML = '<option value="">Start from…</option>' + (prods.length ? `<optgroup label="Product update">${prods.map(p => `<option value="p:${esc(p.id)}">${esc(p.name)} ${esc(p.version)}</option>`).join("")}</optgroup>` : "") +
+        (posts.length ? `<optgroup label="News post">${posts.map(p => `<option value="n:${p.id}">${esc(p.title)}</option>`).join("")}</optgroup>` : "") +
+        '<optgroup label="Other"><option value="v:">Verify for the buyer channels</option></optgroup>';
+}
+function dpDraft() {
+    const ch = state.dp.channels.find(c => c.id === $("dp-channel").value) || {};
+    return { channel_id: $("dp-channel").value, channel_name: ch.name || "", ping: $("dp-ping").value, text: $("dp-text").value,
+        embed: { title: val("dp-title"), description: $("dp-desc").value, url: val("dp-url"), image: state.dp.image, color: $("dp-color").value },
+        buttons: state.dp.buttons.filter(b => b.label.trim() || b.url.trim()), publish: ch.announcement ? $("dp-publish").checked : false };
+}
+function dpFill(d) {
+    const e = d.embed || {};
+    $("dp-ping").value = d.ping || "none"; $("dp-text").value = d.text || ""; $("dp-title").value = e.title || ""; $("dp-desc").value = e.description || "";
+    $("dp-url").value = e.url || ""; $("dp-color").value = e.color || "#aab6c2"; state.dp.image = e.image || ""; state.dp.buttons = (d.buttons || []).map(b => ({ ...b }));
+    renderDpButtons(); dpPreview();
+}
+function renderDpButtons() {
+    $("dp-buttons").innerHTML = state.dp.buttons.map((b, i) => `<div class="dp-btn-row"><input data-dpb="label" data-i="${i}" maxlength="80" placeholder="Label" value="${esc(b.label)}">` +
+        `<input data-dpb="url" data-i="${i}" placeholder="https://... or /heavypro" value="${esc(b.url)}"><button class="btn btn-ghost btn-sm" type="button" data-dpb-del="${i}" aria-label="Remove">&times;</button></div>`).join("");
+    $("dp-add-btn").hidden = state.dp.buttons.length >= 5;
+}
+function dpPreview() {
+    const d = dpDraft(), e = d.embed, role = ((state.discord || {}).settings || {}).role_id;
+    const ping = { buyers: "@Verified buyer", here: "@here", everyone: "@everyone" }[d.ping];
+    const text = (ping ? `<span class="mention">${ping}</span>\n` : "") + esc(d.text);
+    const embed = e.title || e.description || e.image ? `<div class="embed" style="border-left-color:${esc(e.color)}">${e.title ? `<div class="t${e.url ? "" : " plain"}">${esc(e.title)}</div>` : ""}` +
+        `${e.description ? `<div class="d">${esc(e.description)}</div>` : ""}${e.image ? `<img src="${esc(safeImage(e.image))}" alt="">` : ""}</div>` : "";
+    const btns = d.buttons.length ? `<div class="btns">${d.buttons.map(b => `<span>${esc(b.label || "Button")} ↗</span>`).join("")}</div>` : "";
+    $("dp-preview").innerHTML = `<div class="who"><div class="ava"></div><div style="min-width:0;flex:1"><div class="name">Rotaidem<small>APP</small></div>` +
+        `<div class="msg-text">${text || (embed ? "" : '<span style="color:#80848e">Your message shows here.</span>')}</div>${embed}${btns}</div></div>`;
+    const ch = state.dp.channels.find(c => c.id === $("dp-channel").value);
+    $("dp-publish-row").style.display = ch && ch.announcement && !state.dp.editing ? "flex" : "none";
+    $("dp-img-name").textContent = state.dp.image ? state.dp.image.split("/").pop() : "";
+    $("dp-noimg").hidden = !state.dp.image;
+    if (d.ping === "buyers" && !role) $("dp-ping").value = "none";
+}
+function dpReset() {
+    state.dp.editing = null; dpFill({}); $("dp-head").textContent = "Post to Discord"; $("dp-send").textContent = "Post"; $("dp-cancel").hidden = true; $("dp-channel").disabled = false; $("dp-start").value = "";
+}
+$("dp-form").oninput = $("dp-form").onchange = e => {
+    const b = e.target.closest("[data-dpb]");
+    if (b) state.dp.buttons[Number(b.dataset.i)][b.dataset.dpb] = b.value;
+    dpPreview();
+};
+$("dp-buttons").onclick = e => { const b = e.target.closest("[data-dpb-del]"); if (b) { state.dp.buttons.splice(Number(b.dataset.dpbDel), 1); renderDpButtons(); dpPreview(); } };
+$("dp-add-btn").onclick = () => { state.dp.buttons.push({ label: "", url: "" }); renderDpButtons(); $("dp-buttons").querySelector(`[data-i="${state.dp.buttons.length - 1}"][data-dpb="label"]`).focus(); };
+$("dp-up").onclick = async () => { const [u] = await uploadImages(await chooseFiles(false)); if (u) { state.dp.image = u; dpPreview(); } };
+$("dp-lib").onclick = async () => { const u = await pickImage(); if (u) { state.dp.image = u; dpPreview(); } };
+$("dp-noimg").onclick = () => { state.dp.image = ""; dpPreview(); };
+$("dp-reload").onclick = loadDpChannels;
+$("dp-clear").onclick = dpReset;
+$("dp-cancel").onclick = dpReset;
+$("dp-start").onchange = () => {
+    const [kind, id] = $("dp-start").value.split(/:(.*)/s);
+    if (kind === "p") {
+        const p = state.products.find(x => x.id === id) || {}, notes = ((p.changelog || [])[0] || {}).notes || "";
+        dpFill({ ping: "buyers", text: "", embed: { title: `${p.name} ${p.version} is out`, description: notes || p.tagline || "", url: "/addons/view?id=" + p.id, image: p.image_url || "" },
+            buttons: [{ label: "Update in RotaHub", url: "/get-rotahub?product=" + encodeURIComponent(p.name || p.id) }, { label: "What's new", url: "/addons/view?id=" + p.id }] });
+    } else if (kind === "n") {
+        const n = (state.posts || []).find(x => String(x.id) === id) || {};
+        dpFill({ ping: "none", embed: { title: n.title, description: String(n.content || "").slice(0, 600), url: "/newsletter", image: n.image_url || "" }, buttons: [{ label: "Read on rotaidem.com", url: "/newsletter" }] });
+    } else if (kind === "v") {
+        dpFill({ text: "Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.", buttons: [{ label: "Verify on rotaidem.com", url: "/account#discord" }] });
+    }
+};
+$("dp-form").onsubmit = async e => {
+    e.preventDefault();
+    const d = dpDraft();
+    try {
+        if (state.dp.editing) {
+            await post(`/api/admin/discord/message/${state.dp.editing.channel_id}/${state.dp.editing.id}`, d); toast("Changed in Discord");
+        } else {
+            if (!d.channel_id) return toast("Choose the channel first", true);
+            if (d.ping === "everyone" && !(await confirmBox("Ping @everyone?", "Everyone in the server gets a notification.", "Post and ping"))) return;
+            const r = await post("/api/admin/discord/message", d); toast(r.published ? "Posted and published" : "Posted in Discord");
+        }
+        dpReset(); loadDpHistory(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("dp-history").onclick = async e => {
+    const ed = e.target.closest("[data-dp-edit]"), del = e.target.closest("[data-dp-del]");
+    const m = (state.dp.history || []).find(x => x.id === (ed || del || {}).dataset?.[ed ? "dpEdit" : "dpDel"]);
+    if (!m) return;
+    if (ed) {
+        state.dp.editing = m; dpFill(m.draft || {}); $("dp-channel").value = m.channel_id; $("dp-channel").disabled = true;
+        $("dp-head").textContent = "Editing a post in #" + (m.channel || m.channel_id); $("dp-send").textContent = "Save changes"; $("dp-cancel").hidden = false;
+        $("dp-panel").scrollIntoView({ behavior: "smooth" }); dpPreview();
+    } else if (await confirmBox("Delete this post?", "It is removed from Discord.", "Delete")) {
+        try { await api(`/api/admin/discord/message/${m.channel_id}/${m.id}`, { method: "DELETE" }); toast("Deleted from Discord"); loadDpHistory(); loadAudit(); } catch (err) { toast(err.message, true); }
+    }
+};
+
 $("dc-setup").onclick = e => { const b = e.target.closest("[data-dc-copy]"); if (b) navigator.clipboard.writeText(b.dataset.dcCopy).then(() => toast("Copied")); };
 $("dc-form").onsubmit = async e => {
     e.preventDefault();

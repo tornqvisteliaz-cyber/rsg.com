@@ -2567,6 +2567,8 @@ def admin_save_shop():
 DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": []}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
+# Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072)
 
 
 def discord_settings():
@@ -2822,7 +2824,7 @@ def admin_discord():
     for u in db().all("SELECT id, name, email, discord_id, discord_name, discord_linked_at FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' ORDER BY discord_linked_at DESC"):
         members.append({**u, "buyer": has_buyer_licence(u)})
     invite = ("https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
-        {"client_id": DISCORD_CLIENT_ID, "scope": "bot applications.commands", "permissions": "268435457"})) if DISCORD_CLIENT_ID else ""
+        {"client_id": DISCORD_CLIENT_ID, "scope": "bot applications.commands", "permissions": DISCORD_BOT_PERMISSIONS})) if DISCORD_CLIENT_ID else ""
     return jsonify({"setup": {"client_id": bool(DISCORD_CLIENT_ID), "client_secret": bool(DISCORD_CLIENT_SECRET),
                               "bot_token": bool(DISCORD_BOT_TOKEN), "public_key": bool(DISCORD_PUBLIC_KEY)},
                     "ready": discord_ready(), "settings": discord_settings(), "invite_url": invite,
@@ -2899,6 +2901,153 @@ def admin_discord_post():
     if error:
         return err(error, 502)
     audit(user, "discord_post", channel)
+    return jsonify({"ok": True})
+
+
+# Posting with the bot (Admin -> Discord -> Post to Discord): a message, an optional card (embed) with
+# a picture, link buttons, and who to ping. What the bot posted is listed so it can be edited or deleted.
+
+DISCORD_PINGS = ("none", "buyers", "here", "everyone")
+
+
+def discord_absolute(url):
+    url = str(url or "").strip()
+    return site_url() + url if url.startswith("/") and not url.startswith("//") else url
+
+
+def discord_message(b):
+    """The message Discord gets from what the admin wrote. Raises ValueError with a message for the admin."""
+    text = str(b.get("text") or "").replace("\r\n", "\n").strip()
+    embed_in = b.get("embed") if isinstance(b.get("embed"), dict) else {}
+    embed = {}
+    title, desc = str(embed_in.get("title") or "").strip(), str(embed_in.get("description") or "").replace("\r\n", "\n").strip()
+    link, image = str(embed_in.get("url") or "").strip(), str(embed_in.get("image") or "").strip()
+    if len(title) > 256 or len(desc) > 4000:
+        raise ValueError("The card's title can have 256 characters and its text 4000")
+    if link and not (link.startswith("https://") or (link.startswith("/") and not link.startswith("//"))):
+        raise ValueError("The card's link must start with https:// or be a page like /heavypro")
+    if image and not valid_image_url(image):
+        raise ValueError("The card's picture must be an uploaded picture or an https:// link")
+    if title or desc or image:
+        embed = {k: v for k, v in {"title": title, "description": desc, "url": discord_absolute(link)}.items() if v}
+        color = str(embed_in.get("color") or "#aab6c2").strip()
+        embed["color"] = int(color[1:], 16) if re.match(r"^#[0-9a-fA-F]{6}$", color) else 0xAAB6C2
+        if image:
+            embed["image"] = {"url": discord_absolute(image)}
+    buttons = []
+    for btn in (b.get("buttons") or [])[:5]:
+        label, url = str((btn or {}).get("label") or "").strip(), str((btn or {}).get("url") or "").strip()
+        if not label and not url:
+            continue
+        if not label or len(label) > 80 or not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//"))):
+            raise ValueError("Each button needs a short label and a link (https:// or a page like /downloads)")
+        buttons.append({"type": 2, "style": 5, "label": label, "url": discord_absolute(url)})
+    if not text and not embed:
+        raise ValueError("Write a message or fill in the card")
+    ping = b.get("ping") if b.get("ping") in DISCORD_PINGS else "none"
+    role = discord_settings()["role_id"]
+    prefix = {"buyers": f"<@&{role}>" if role else "", "here": "@here", "everyone": "@everyone"}.get(ping, "")
+    content = (prefix + "\n" + text).strip() if prefix else text
+    if len(content) > 2000:
+        raise ValueError("A Discord message can have 2000 characters")
+    allowed = {"parse": ["everyone"] if ping in ("here", "everyone") else [], "roles": [role] if ping == "buyers" and role else []}
+    return {"content": content, "embeds": [embed] if embed else [], "components": [{"type": 1, "components": buttons}] if buttons else [],
+            "allowed_mentions": allowed}
+
+
+def discord_posts():
+    return get_setting("discord.posts", []) or []
+
+
+@app.get("/api/admin/discord/channels")
+def admin_discord_channels():
+    """The server's text and announcement channels, for the channel list when posting."""
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/channels")
+    if error:
+        return err(error, 502)
+    categories = {c["id"]: c.get("name", "") for c in rows or [] if c.get("type") == 4}
+    channels = [{"id": c["id"], "name": c.get("name", ""), "announcement": c.get("type") == 5, "category": categories.get(c.get("parent_id"), ""),
+                 "position": c.get("position", 0)} for c in rows or [] if c.get("type") in (0, 5)]
+    channels.sort(key=lambda c: (c["category"], c["position"]))
+    return jsonify({"channels": channels})
+
+
+@app.get("/api/admin/discord/messages")
+def admin_discord_messages():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"messages": discord_posts()})
+
+
+@app.post("/api/admin/discord/message")
+def admin_discord_send():
+    """Post a message with the bot (and publish it to following servers in an announcement channel)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can post in Discord", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel = str(b.get("channel_id") or "").strip()
+    if not SNOWFLAKE.match(channel):
+        return err("Choose the channel to post in", 400)
+    try:
+        message = discord_message(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    if error:
+        return err(error, 502)
+    published = False
+    if b.get("publish"):
+        _, perror, _ = discord_call("POST", f"/channels/{channel}/messages/{sent['id']}/crosspost")
+        published = not perror
+    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or b.get("text") or "")[:120]
+    posts = [{"id": sent["id"], "channel_id": channel, "channel": str(b.get("channel_name") or "")[:100], "summary": summary,
+              "at": utc_stamp(), "by": user["name"], "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}] + discord_posts()
+    set_setting("discord.posts", posts[:50])
+    audit(user, "discord_message", f"#{b.get('channel_name') or channel}: {summary[:60]}")
+    return jsonify({"ok": True, "id": sent["id"], "published": published})
+
+
+@app.post("/api/admin/discord/message/<channel>/<message_id>")
+def admin_discord_edit(channel, message_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change Discord posts", 403)
+    if not discord_ready() or not SNOWFLAKE.match(channel) or not SNOWFLAKE.match(message_id):
+        return err("Message not found", 404)
+    b = body()
+    try:
+        message = discord_message(b)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    _, error, status = discord_call("PATCH", f"/channels/{channel}/messages/{message_id}", payload=message)
+    if error:
+        return err("That message is gone from Discord" if status == 404 else error, 404 if status == 404 else 502)
+    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or b.get("text") or "")[:120]
+    set_setting("discord.posts", [{**p, "summary": summary, "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}
+                                  if p["id"] == message_id else p for p in discord_posts()])
+    audit(user, "discord_edit", summary[:60])
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/discord/message/<channel>/<message_id>")
+def admin_discord_delete(channel, message_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete Discord posts", 403)
+    if not discord_ready() or not SNOWFLAKE.match(channel) or not SNOWFLAKE.match(message_id):
+        return err("Message not found", 404)
+    _, error, status = discord_call("DELETE", f"/channels/{channel}/messages/{message_id}")
+    if error and status != 404:  # already gone from Discord: just forget it here
+        return err(error, 502)
+    set_setting("discord.posts", [p for p in discord_posts() if p["id"] != message_id])
+    audit(user, "discord_delete", message_id)
     return jsonify({"ok": True})
 
 
