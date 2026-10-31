@@ -207,8 +207,19 @@
         .dp-preview .embed .d { white-space: pre-wrap; margin-top: 6px; font-size: 14px; }
         .dp-preview .embed img { display: block; max-width: 100%; border-radius: 4px; margin-top: 12px; }
         .dp-preview .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+        .dp-preview .poll { margin-top: 8px; background: #2b2d31; border-radius: 8px; padding: 12px 14px; max-width: 432px; }
+        .dp-preview .poll .q { color: #f2f3f5; font-weight: 600; margin-bottom: 8px; }
+        .dp-preview .poll .a { border: 1px solid #3f4147; border-radius: 6px; padding: 8px 10px; margin-top: 6px; font-size: 14px; }
+        .dp-preview .poll .pf { color: #949ba4; font-size: 12px; margin-top: 8px; }
+        .dp-preview .reacts { display: flex; gap: 4px; margin-top: 6px; }
+        .dp-preview .reacts span { background: #2b2d31; border: 1px solid #5865f2; border-radius: 8px; padding: 1px 7px; font-size: 13px; }
         .dp-preview .btns span { background: #4e5058; color: #fff; padding: 6px 14px; border-radius: 3px; font-size: 14px; }
         @media (max-width: 1100px) { .dp-grid { grid-template-columns: 1fr; } .dp-preview { position: static; } }
+        .dc-checks { list-style: none; margin: 0; padding: 14px 20px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; font-size: 14px; }
+        .dc-checks li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; }
+        .dc-checks li::before { content: "✓"; color: var(--ok); font-weight: 700; }
+        .dc-checks li.bad::before { content: "✗"; color: var(--danger); }
+        .dc-checks li.bad { color: var(--ink); }
         .shop-facts { display: grid; grid-template-columns: 180px 1fr; gap: 0; margin: 0; }
         .shop-facts dt, .shop-facts dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
         .shop-facts dt { color: var(--muted); }
@@ -605,7 +616,7 @@
     <section class="pane" id="pane-discord" data-title="Discord">
         <p class="notice" id="dc-off" hidden>Discord linking runs on the STRATO website. This copy of the site cannot do it.</p>
         <div class="panel" style="margin-bottom:24px" id="dp-panel">
-            <div class="panel-head"><h2 id="dp-head">Post to Discord</h2><select id="dp-start" style="width:auto;padding:8px 12px" aria-label="Start from"></select></div>
+            <div class="panel-head"><h2 id="dp-head">Post to Discord</h2><span class="muted" id="dc-stats" style="font-size:13px;margin-left:auto;margin-right:12px"></span><select id="dp-start" style="width:auto;padding:8px 12px" aria-label="Start from"></select></div>
             <div class="panel-body dp-grid">
                 <form id="dp-form">
                     <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
@@ -613,7 +624,8 @@
                         <button class="btn btn-ghost btn-sm" type="button" id="dp-reload" style="margin-bottom:2px">Refresh</button>
                     </div>
                     <div class="field" style="margin-top:14px"><label for="dp-ping">Ping</label><select id="dp-ping"><option value="none">Nobody</option><option value="buyers">Verified buyers (the buyer role)</option><option value="here">@here (members online)</option><option value="everyone">@everyone</option></select></div>
-                    <div class="field"><label for="dp-text">Message</label><textarea id="dp-text" rows="4" maxlength="1900" placeholder="What do you want to say?"></textarea></div>
+                    <div class="field"><label for="dp-text">Message</label><textarea id="dp-text" rows="4" maxlength="1900" placeholder="What do you want to say? Type #channel-name to link a channel."></textarea>
+                        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><select id="dp-insert" style="width:auto;padding:6px 10px;font-size:13px" aria-label="Insert a channel link"><option value="">Insert a # channel</option></select><span class="hint" style="margin:0">#names of your channels become links in Discord, in the message and in the card text.</span></div></div>
                     <fieldset class="dp-card"><legend>Card (optional)</legend>
                         <div class="field"><label for="dp-title">Title</label><input id="dp-title" maxlength="256" placeholder="e.g. HeavyPro 0.6.1 is out"></div>
                         <div class="field"><label for="dp-desc">Text</label><textarea id="dp-desc" rows="4" maxlength="4000"></textarea></div>
@@ -622,15 +634,46 @@
                         <div class="field" style="margin:0"><label for="dp-color">Stripe colour</label><input id="dp-color" type="color" value="#aab6c2" style="width:64px;height:36px;padding:2px"></div>
                     </fieldset>
                     <div class="field"><label>Buttons (links)</label><div id="dp-buttons"></div><button class="btn btn-ghost btn-sm" type="button" id="dp-add-btn">Add button</button></div>
+                    <fieldset class="dp-card"><legend>Extras</legend>
+                        <div class="field"><label for="dp-react">The bot reacts with</label><input id="dp-react" maxlength="60" placeholder="e.g. ✈️ 🔥 (emojis, space between, up to 5)"></div>
+                        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dp-pin"> Pin it in the channel</label>
+                        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 10px"><input type="checkbox" id="dp-poll-on"> Add a poll</label>
+                        <div id="dp-poll" hidden>
+                            <div class="field"><label for="dp-poll-q">Question</label><input id="dp-poll-q" maxlength="300" placeholder="e.g. Which aircraft should get a profile next?"></div>
+                            <div class="field"><label for="dp-poll-a">Answers, one per line (2 to 10)</label><textarea id="dp-poll-a" rows="4" placeholder="iFly 737 MAX&#10;PMDG 777F&#10;Fenix A321"></textarea></div>
+                            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><label style="margin:0;font-weight:400">Open for <select id="dp-poll-h" style="width:auto;padding:6px 10px"><option value="1">1 hour</option><option value="8">8 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></label>
+                            <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0"><input type="checkbox" id="dp-poll-m"> More than one answer</label></div>
+                        </div>
+                    </fieldset>
+                    <div class="field"><label>When</label><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+                        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0"><input type="radio" name="dp-when" value="now" checked> Now</label>
+                        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0"><input type="radio" name="dp-when" value="later"> Later:</label>
+                        <input id="dp-at" type="datetime-local" style="width:auto"></div>
+                        <div class="hint">A post for later goes out at the first visit to the website after that time (with visitors, within a minute or two).</div></div>
                     <label id="dp-publish-row" style="display:none;gap:8px;align-items:center;font-weight:400;margin:0 0 16px"><input type="checkbox" id="dp-publish" checked> Publish to servers that follow this announcement channel</label>
                     <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" id="dp-send">Post</button><button class="btn btn-ghost" type="button" id="dp-cancel" hidden>Cancel editing</button><button class="btn btn-ghost" type="button" id="dp-clear">Clear</button></div>
                 </form>
                 <div><div class="muted" style="font-size:13px;margin-bottom:8px">Preview</div><div class="dp-preview" id="dp-preview"></div></div>
             </div>
+            <div class="table-wrap" id="dp-sched-wrap" hidden><table class="table"><thead><tr><th>Waiting to post (your time)</th><th>Channel</th><th>Message</th><th></th></tr></thead><tbody id="dp-sched"></tbody></table></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Posted</th><th>Channel</th><th>Message</th><th></th></tr></thead><tbody id="dp-history"></tbody></table></div>
         </div>
+        <form class="panel" id="da-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Automatic posts</h2></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">The bot posts these by itself. Leave a channel empty to switch that one off.</p>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+                    <div class="field"><label for="da-updates">Product updates</label><select id="da-updates"></select><div class="hint">When a product gets a new version (Publish an update).</div>
+                        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0 0"><input type="checkbox" id="da-ping"> Ping verified buyers</label></div>
+                    <div class="field"><label for="da-news">News posts</label><select id="da-news"></select><div class="hint">When a news post goes up (also scheduled ones). Posts already up are not sent.</div></div>
+                    <div class="field"><label for="da-sales">Sales (for the team)</label><select id="da-sales"></select><div class="hint">🎉 for every paid order: product and amount, no customer details. Use a staff-only channel.</div></div>
+                </div>
+                <button class="btn" type="submit">Save</button>
+            </div>
+        </form>
         <div class="panel" style="margin-bottom:24px">
-            <div class="panel-head"><h2>Set-up</h2><span id="dc-ready"></span></div>
+            <div class="panel-head"><h2>Set-up</h2><div class="actions"><span id="dc-ready"></span><button class="btn btn-sm" type="button" id="dc-check">Check set-up</button></div></div>
+            <ul class="dc-checks" id="dc-checks" hidden></ul>
             <div class="panel-body">
                 <p class="muted" style="margin-top:0;font-size:14px">Customers link Discord under My account. The website adds them to your server and gives licence holders the buyer role; it is taken away when a licence is revoked. Lock the buyer channels to that role in Discord: edit the channel, Permissions, <strong>@everyone</strong>: View Channel off, <strong>your buyer role</strong>: View Channel on.</p>
                 <dl class="shop-facts" id="dc-setup"></dl>
@@ -658,7 +701,7 @@
         </div>
         <div class="panel">
             <div class="panel-head"><h2>Linked members</h2><span class="muted" style="font-size:13px" id="dc-count"></span></div>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Linked</th></tr></thead><tbody id="dc-members"></tbody></table></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Last result</th><th>Linked</th></tr></thead><tbody id="dc-members"></tbody></table></div>
         </div>
     </section>
 
@@ -2215,7 +2258,9 @@ async function loadDiscord() {
 function renderDiscord() {
     const dc = state.discord || {};
     $("dc-off").hidden = !dc.unavailable;
-    $("dp-panel").hidden = !dc.ready;
+    $("dp-panel").hidden = $("da-form").hidden = !dc.ready;
+    const sv = dc.server || {};
+    $("dc-stats").textContent = sv.members ? `${sv.name ? sv.name + ": " : ""}${Number(sv.members).toLocaleString()} members, ${Number(sv.online || 0).toLocaleString()} online` : "";
     if (dc.unavailable) { $("dc-ready").innerHTML = '<span class="badge">Not here</span>'; return; }
     if (dc.ready && !state.dp.loaded) { state.dp.loaded = true; loadDpChannels(); loadDpHistory(); }
     dpStartOptions(); renderDpButtons(); dpPreview();
@@ -2236,8 +2281,10 @@ function renderDiscord() {
     $("c-discord").textContent = members.length || "";
     $("dc-count").textContent = members.length ? `${members.length} linked, ${members.filter(m => m.buyer).length} with the buyer role` : "";
     $("dc-members").innerHTML = members.map(m => `<tr><td>${esc(m.name || "")}<div class="muted" style="font-size:13px">${esc(m.email || "")}</div></td><td>${esc(m.discord_name || m.discord_id)}</td>` +
-        `<td>${m.buyer ? '<span class="badge published">Yes</span>' : '<span class="badge">No licence</span>'}</td><td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td></tr>`).join("")
-        || empty(4, "Nobody has linked Discord yet. Customers do it under My account.");
+        `<td>${m.buyer ? '<span class="badge published">Has a licence</span>' : '<span class="badge">No licence</span>'}</td>` +
+        `<td style="font-size:13px;max-width:320px" class="${/refused|could not|Not in/.test(m.discord_result || "") ? "" : "muted"}">${esc(m.discord_result || "-")}</td>` +
+        `<td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td></tr>`).join("")
+        || empty(5, "Nobody has linked Discord yet. Customers do it under My account.");
 }
 // Post to Discord: the bot posts what you write here; what it posted can be edited or deleted
 state.dp = { image: "", buttons: [], editing: null, channels: [] };
@@ -2246,6 +2293,10 @@ async function loadDpChannels() {
         const d = await api("/api/admin/discord/channels");
         state.dp.channels = d.channels || [];
         let cat = null;
+        const opts = sel => `<option value="">${sel}</option>` + state.dp.channels.map(c => `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`).join("");
+        $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
+        for (const id of ["da-updates", "da-news", "da-sales"]) $(id).innerHTML = opts("Off");
+        renderAuto();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
             const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
             cat = c.category;
@@ -2254,8 +2305,19 @@ async function loadDpChannels() {
     } catch (err) { $("dp-channel").innerHTML = `<option value="">${esc(err.message)}</option>`; }
     dpPreview();
 }
+function renderAuto() {
+    const cfg = (state.discord || {}).settings || {};
+    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
+}
 async function loadDpHistory() {
-    try { state.dp.history = (await api("/api/admin/discord/messages")).messages || []; } catch (err) { state.dp.history = []; }
+    let d = {};
+    try { d = await api("/api/admin/discord/messages"); } catch (err) {}
+    state.dp.history = d.messages || []; state.dp.scheduled = d.scheduled || [];
+    const chName = id => (state.dp.channels.find(c => c.id === id) || {}).name || id;
+    $("dp-sched-wrap").hidden = !state.dp.scheduled.length;
+    $("dp-sched").innerHTML = state.dp.scheduled.map(i => `<tr><td style="white-space:nowrap">${esc(new Date(i.at.replace(" ", "T") + "Z").toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}<div class="muted" style="font-size:13px">${esc(i.by || "")}</div></td>` +
+        `<td>#${esc(chName(i.post.channel_id))}</td><td>${esc(((i.post.embed || {}).title) || ((i.post.poll || {}).question) || i.post.text || "")}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-dp-now="${esc(i.id)}">Post now</button><button class="btn btn-danger btn-sm" type="button" data-dp-unsched="${esc(i.id)}">Cancel</button></div></td></tr>`).join("");
     $("dp-history").innerHTML = state.dp.history.map(m => `<tr><td class="muted" style="white-space:nowrap">${date(m.at)}<div style="font-size:13px">${esc(m.by || "")}</div></td><td>#${esc(m.channel || m.channel_id)}</td><td>${esc(m.summary || "")}</td>` +
         `<td><div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-dp-edit="${esc(m.id)}">Edit</button><button class="btn btn-danger btn-sm" type="button" data-dp-del="${esc(m.id)}">Delete</button></div></td></tr>`).join("")
         || empty(4, "Nothing posted from here yet.");
@@ -2268,9 +2330,17 @@ function dpStartOptions() {
 }
 function dpDraft() {
     const ch = state.dp.channels.find(c => c.id === $("dp-channel").value) || {};
+    const later = document.querySelector('input[name="dp-when"]:checked').value === "later" && $("dp-at").value;
     return { channel_id: $("dp-channel").value, channel_name: ch.name || "", ping: $("dp-ping").value, text: $("dp-text").value,
         embed: { title: val("dp-title"), description: $("dp-desc").value, url: val("dp-url"), image: state.dp.image, color: $("dp-color").value },
-        buttons: state.dp.buttons.filter(b => b.label.trim() || b.url.trim()), publish: ch.announcement ? $("dp-publish").checked : false };
+        buttons: state.dp.buttons.filter(b => b.label.trim() || b.url.trim()), publish: ch.announcement ? $("dp-publish").checked : false,
+        reactions: val("dp-react"), pin: $("dp-pin").checked, at: later ? new Date($("dp-at").value).toISOString() : "",
+        poll: $("dp-poll-on").checked ? { question: val("dp-poll-q"), answers: $("dp-poll-a").value.split("\n").map(a => a.trim()).filter(Boolean), hours: Number($("dp-poll-h").value), multiple: $("dp-poll-m").checked } : null };
+}
+// #channel-name -> a channel pill in the preview, as Discord shows it
+function dpChannels(html) {
+    const names = new Set(state.dp.channels.map(c => c.name.toLowerCase()));
+    return html.replace(/(^|[^\w&<])#([a-z0-9_\-]{1,100})/g, (m, pre, n) => names.has(n.toLowerCase()) ? `${pre}<span class="mention">#${n}</span>` : m);
 }
 function dpFill(d) {
     const e = d.embed || {};
@@ -2286,12 +2356,18 @@ function renderDpButtons() {
 function dpPreview() {
     const d = dpDraft(), e = d.embed, role = ((state.discord || {}).settings || {}).role_id;
     const ping = { buyers: "@Verified buyer", here: "@here", everyone: "@everyone" }[d.ping];
-    const text = (ping ? `<span class="mention">${ping}</span>\n` : "") + esc(d.text);
+    const text = (ping ? `<span class="mention">${ping}</span>\n` : "") + dpChannels(esc(d.text));
     const embed = e.title || e.description || e.image ? `<div class="embed" style="border-left-color:${esc(e.color)}">${e.title ? `<div class="t${e.url ? "" : " plain"}">${esc(e.title)}</div>` : ""}` +
-        `${e.description ? `<div class="d">${esc(e.description)}</div>` : ""}${e.image ? `<img src="${esc(safeImage(e.image))}" alt="">` : ""}</div>` : "";
+        `${e.description ? `<div class="d">${dpChannels(esc(e.description))}</div>` : ""}${e.image ? `<img src="${esc(safeImage(e.image))}" alt="">` : ""}</div>` : "";
     const btns = d.buttons.length ? `<div class="btns">${d.buttons.map(b => `<span>${esc(b.label || "Button")} ↗</span>`).join("")}</div>` : "";
-    $("dp-preview").innerHTML = `<div class="who"><div class="ava"></div><div style="min-width:0;flex:1"><div class="name">Rotaidem<small>APP</small></div>` +
-        `<div class="msg-text">${text || (embed ? "" : '<span style="color:#80848e">Your message shows here.</span>')}</div>${embed}${btns}</div></div>`;
+    const poll = d.poll && d.poll.question ? `<div class="poll"><div class="q">${esc(d.poll.question)}</div>${d.poll.answers.map(a => `<div class="a">${esc(a)}</div>`).join("")}` +
+        `<div class="pf">${d.poll.multiple ? "Select one or more answers" : "Select one answer"} · open ${esc($("dp-poll-h").selectedOptions[0].textContent)}</div></div>` : "";
+    const reacts = d.reactions.split(/\s+/).filter(Boolean).slice(0, 5);
+    $("dp-preview").innerHTML = `<div class="who"><div class="ava"></div><div style="min-width:0;flex:1"><div class="name">Rotaidem<small>APP</small>${d.pin ? ' <span style="color:#80848e;font-size:12px">📌 pinned</span>' : ""}</div>` +
+        `<div class="msg-text">${text || (embed || poll ? "" : '<span style="color:#80848e">Your message shows here.</span>')}</div>${embed}${poll}${btns}` +
+        `${reacts.length ? `<div class="reacts">${reacts.map(r => `<span>${esc(r)} 1</span>`).join("")}</div>` : ""}</div></div>`;
+    $("dp-poll").hidden = !$("dp-poll-on").checked;
+    $("dp-send").textContent = state.dp.editing ? "Save changes" : d.at ? "Schedule" : "Post";
     const ch = state.dp.channels.find(c => c.id === $("dp-channel").value);
     $("dp-publish-row").style.display = ch && ch.announcement && !state.dp.editing ? "flex" : "none";
     $("dp-img-name").textContent = state.dp.image ? state.dp.image.split("/").pop() : "";
@@ -2299,7 +2375,9 @@ function dpPreview() {
     if (d.ping === "buyers" && !role) $("dp-ping").value = "none";
 }
 function dpReset() {
-    state.dp.editing = null; dpFill({}); $("dp-head").textContent = "Post to Discord"; $("dp-send").textContent = "Post"; $("dp-cancel").hidden = true; $("dp-channel").disabled = false; $("dp-start").value = "";
+    state.dp.editing = null; dpFill({});
+    $("dp-react").value = ""; $("dp-pin").checked = false; $("dp-poll-on").checked = false; $("dp-poll-q").value = ""; $("dp-poll-a").value = ""; $("dp-at").value = "";
+    document.querySelector('input[name="dp-when"][value="now"]').checked = true; $("dp-head").textContent = "Post to Discord"; $("dp-send").textContent = "Post"; $("dp-cancel").hidden = true; $("dp-channel").disabled = false; $("dp-start").value = "";
 }
 $("dp-form").oninput = $("dp-form").onchange = e => {
     const b = e.target.closest("[data-dpb]");
@@ -2312,6 +2390,33 @@ $("dp-up").onclick = async () => { const [u] = await uploadImages(await chooseFi
 $("dp-lib").onclick = async () => { const u = await pickImage(); if (u) { state.dp.image = u; dpPreview(); } };
 $("dp-noimg").onclick = () => { state.dp.image = ""; dpPreview(); };
 $("dp-reload").onclick = loadDpChannels;
+let dpLastField = "dp-text";
+["dp-text", "dp-desc"].forEach(id => $(id).addEventListener("focus", () => { dpLastField = id; }));
+$("dp-insert").onchange = () => {
+    const name = $("dp-insert").value; if (!name) return;
+    const f = $(dpLastField), at = f.selectionStart ?? f.value.length, tag = "#" + name + " ";
+    f.value = f.value.slice(0, at) + (at && !/\s$/.test(f.value.slice(0, at)) ? " " : "") + tag + f.value.slice(f.selectionEnd ?? at);
+    $("dp-insert").value = ""; f.focus(); dpPreview();
+};
+$("dp-at").addEventListener("input", () => { document.querySelector('input[name="dp-when"][value="later"]').checked = true; dpPreview(); });
+$("dp-sched").onclick = async e => {
+    const now = e.target.closest("[data-dp-now]"), un = e.target.closest("[data-dp-unsched]");
+    try {
+        if (now) { await post(`/api/admin/discord/scheduled/${now.dataset.dpNow}/now`, {}); toast("Posted in Discord"); }
+        else if (un) { if (!(await confirmBox("Cancel this post?", "It will not be posted.", "Cancel it"))) return; await api(`/api/admin/discord/scheduled/${un.dataset.dpUnsched}`, { method: "DELETE" }); toast("Cancelled"); }
+        else return;
+        loadDpHistory(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("da-form").onsubmit = async e => {
+    e.preventDefault();
+    const cfg = (state.discord || {}).settings || {};
+    try {
+        const d = await post("/api/admin/discord", { guild_id: cfg.guild_id, role_id: cfg.role_id, products: cfg.products || [],
+            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, updates_ping: $("da-ping").checked });
+        state.discord.settings = d.settings; renderAuto(); toast("Automatic posts saved"); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
 $("dp-clear").onclick = dpReset;
 $("dp-cancel").onclick = dpReset;
 $("dp-start").onchange = () => {
@@ -2336,7 +2441,8 @@ $("dp-form").onsubmit = async e => {
         } else {
             if (!d.channel_id) return toast("Choose the channel first", true);
             if (d.ping === "everyone" && !(await confirmBox("Ping @everyone?", "Everyone in the server gets a notification.", "Post and ping"))) return;
-            const r = await post("/api/admin/discord/message", d); toast(r.published ? "Posted and published" : "Posted in Discord");
+            const r = await post("/api/admin/discord/message", d);
+            toast(r.scheduled ? "Scheduled: it is posted at that time" : r.published ? "Posted and published" : "Posted in Discord");
         }
         dpReset(); loadDpHistory(); loadAudit();
     } catch (err) { toast(err.message, true); }
@@ -2354,11 +2460,22 @@ $("dp-history").onclick = async e => {
     }
 };
 
+$("dc-check").onclick = async () => {
+    $("dc-check").disabled = true;
+    try {
+        const d = await api("/api/admin/discord/check");
+        $("dc-checks").innerHTML = d.checks.map(c => `<li class="${c.ok ? "" : "bad"}">${esc(c.text)}</li>`).join("") +
+            (d.ok ? '<li>All good. Press Check everyone again to give the role to licence holders who already linked.</li>' : "");
+        $("dc-checks").hidden = false;
+    } catch (err) { toast(err.message, true); }
+    $("dc-check").disabled = false;
+};
 $("dc-setup").onclick = e => { const b = e.target.closest("[data-dc-copy]"); if (b) navigator.clipboard.writeText(b.dataset.dcCopy).then(() => toast("Copied")); };
 $("dc-form").onsubmit = async e => {
     e.preventDefault();
     try {
         const d = await post("/api/admin/discord", { guild_id: val("dc-guild"), role_id: val("dc-role"), products: [...document.querySelectorAll("[data-dc-product]:checked")].map(c => c.dataset.dcProduct) });
+        state.dp.loaded = false;
         state.discord.settings = d.settings; state.discord.ready = d.ready; renderDiscord(); toast(d.ready ? "Discord is ready" : "Saved. Some set-up is still missing."); loadAudit();
     } catch (err) { toast(err.message, true); }
 };

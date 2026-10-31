@@ -157,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-30-discord"
+SCHEMA_VERSION = "2026-10-31-discord-check"
 
 
 def ensure_schema():
@@ -218,7 +218,9 @@ def ensure_schema():
                           # a sale: a lower price at checkout until a date (Admin -> Products)
                           ("products", "sale_amount INTEGER DEFAULT 0"), ("products", f"sale_until {word}"),
                           # the Discord account linked on My account (for the verified buyer role)
-                          ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}")):
+                          ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}"),
+                          # what happened the last time the role was given or taken (Admin -> Discord -> Linked members)
+                          ("users", "discord_result TEXT")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -1176,6 +1178,13 @@ def save_product():
         "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))),
         1 if b.get("update_required") else 0, updated_at, pay_amount, pay_currency, sale_amount, sale_until)
     audit(user, "save_product", pid + (f" (update {version})" if before and changed else ""))
+    if before and before["version"] != version and (b.get("status") or "") == "published":
+        entry = next((c for c in clean_changelog(b.get("changelog")) if c.get("version") == version), {})
+        discord_auto("updates", {"ping": "buyers" if discord_settings()["updates_ping"] else "none",
+                                 "embed": {"title": f"{name} {version} is out", "description": (entry.get("notes") or b.get("tagline") or "")[:1500],
+                                           "url": "/addons/view?id=" + pid, "image": b.get("image_url") or ""},
+                                 "buttons": [{"label": "Update in RotaHub", "url": "/get-rotahub?product=" + urllib.parse.quote(name)},
+                                             {"label": "What's new", "url": "/addons/view?id=" + pid}]})
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
 
@@ -1250,6 +1259,7 @@ def save_newsletter():
         db().run("INSERT INTO posts (title, content, image_url, date, status, publish_at) VALUES (?, ?, ?, ?, ?, ?)",
                  b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status, publish_at)
     audit(user, "save_post", ("draft: " if status == "draft" else "") + b["title"])
+    discord_announce_news()
     return jsonify({"ok": True})
 
 
@@ -2421,6 +2431,10 @@ def fulfil_checkout(session):
         app.logger.error("Licence e-mail after payment %s failed: %s", sid, error)
     if user:
         audit(user, "stripe_order", f"{product_id} {amount:.2f} {str(session.get('currency') or '').upper()}")
+    product = db().first("SELECT name FROM products WHERE id = ?", product_id) or {}
+    today_count = db().first("SELECT COUNT(*) AS n FROM stripe_payments WHERE created_at >= ?", utc_stamp()[:10] + " 00:00:00") or {}
+    discord_auto("sales", {"text": f"🎉 New sale: **{product.get('name') or product_id}** for {amount:.2f} {str(session.get('currency') or '').upper()}"
+                                   f" ({today_count.get('n') or 1} today)"})
     return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
 
 
@@ -2564,11 +2578,12 @@ def admin_save_shop():
 # the licence (bought, revoked, restored, claimed). Channels are locked to the role in Discord.
 # /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
 
-DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": []}
+DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": ""}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
-# Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone
-DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072)
+# Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
+# Add Reactions, Manage Messages (pins), Read Message History, Send Polls
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49))
 
 
 def discord_settings():
@@ -2581,7 +2596,7 @@ def discord_ready():
     return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
 
 
-def discord_call(method, path, payload=None, form=None, bearer=None):
+def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20):
     """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
     if form is not None:
         data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
@@ -2593,7 +2608,7 @@ def discord_call(method, path, payload=None, form=None, bearer=None):
     req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method,
                                  headers={"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return (json.loads(raw) if raw else {}), "", resp.status
     except urllib.error.HTTPError as exc:
@@ -2624,9 +2639,15 @@ def discord_sync_user(user):
     cfg = discord_settings()
     wanted = has_buyer_licence(user)
     _, error, status = discord_call("PUT" if wanted else "DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
-    if status == 404:
-        return "not in server"
-    return error or ("given" if wanted else "removed")
+    result = "not in server" if status == 404 else error or ("given" if wanted else "removed")
+    shown = {"given": "Role given", "removed": "No licence on this account: no role", "not in server": "Not in the server (left it, or could not be added)"}
+    if status == 403:
+        shown[result] = "Discord refused: the bot's role must be ABOVE the buyer role, with Manage Roles (press Check set-up)"
+    try:
+        db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: {shown.get(result, result)}"[:300], user["id"])
+    except Exception:  # noqa: BLE001 - only a note for the admin
+        pass
+    return result
 
 
 def discord_sync_owners(owners):
@@ -2701,8 +2722,10 @@ def discord_callback():
     user = db().first("SELECT * FROM users WHERE id = ?", user["id"])
     cfg, buyer = discord_settings(), has_buyer_licence(user)
     # into the server (already in: nothing changes), then the role to match the licence
-    discord_call("PUT", f"/guilds/{cfg['guild_id']}/members/{discord_id}", payload={"access_token": access, "roles": [cfg["role_id"]] if buyer else []})
+    _, join_error, _ = discord_call("PUT", f"/guilds/{cfg['guild_id']}/members/{discord_id}", payload={"access_token": access, "roles": [cfg["role_id"]] if buyer else []})
     result = discord_sync_user(user)
+    if result == "not in server" and join_error:
+        db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: could not add them to the server: {join_error}"[:300], user["id"])
     db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'discord_linked', ?, ?, ?)",
              user["id"], f"{name} ({result})", request.remote_addr or "", utc_stamp())
     return back("linked" if buyer else "linked-no-licence")
@@ -2821,14 +2844,67 @@ def admin_discord():
     if not staff_user():
         return err("Admin only", 403)
     members = []
-    for u in db().all("SELECT id, name, email, discord_id, discord_name, discord_linked_at FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' ORDER BY discord_linked_at DESC"):
+    for u in db().all("SELECT id, name, email, discord_id, discord_name, discord_linked_at, discord_result FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' ORDER BY discord_linked_at DESC"):
         members.append({**u, "buyer": has_buyer_licence(u)})
     invite = ("https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
         {"client_id": DISCORD_CLIENT_ID, "scope": "bot applications.commands", "permissions": DISCORD_BOT_PERMISSIONS})) if DISCORD_CLIENT_ID else ""
-    return jsonify({"setup": {"client_id": bool(DISCORD_CLIENT_ID), "client_secret": bool(DISCORD_CLIENT_SECRET),
+    server = {}
+    if discord_ready():
+        guild, _, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}?with_counts=true", timeout=8)
+        if guild:
+            server = {"name": guild.get("name", ""), "members": guild.get("approximate_member_count"), "online": guild.get("approximate_presence_count")}
+    return jsonify({"server": server, "setup": {"client_id": bool(DISCORD_CLIENT_ID), "client_secret": bool(DISCORD_CLIENT_SECRET),
                               "bot_token": bool(DISCORD_BOT_TOKEN), "public_key": bool(DISCORD_PUBLIC_KEY)},
                     "ready": discord_ready(), "settings": discord_settings(), "invite_url": invite,
                     "redirect_url": discord_redirect_uri(), "interactions_url": site_url() + "/api/discord/interactions", "members": members})
+
+
+DISCORD_MANAGE_ROLES, DISCORD_ADMINISTRATOR = 1 << 28, 1 << 3
+
+
+@app.get("/api/admin/discord/check")
+def admin_discord_check():
+    """Asks Discord why roles might not be given: keys, bot in the server, Manage Roles, role order."""
+    if not staff_user():
+        return err("Admin only", 403)
+    checks = []
+    def add(ok, text):
+        checks.append({"ok": bool(ok), "text": text})
+    cfg = discord_settings()
+    missing = [n for n, v in (("Application ID", DISCORD_CLIENT_ID), ("Client Secret", DISCORD_CLIENT_SECRET), ("Bot token", DISCORD_BOT_TOKEN)) if not v]
+    add(not missing, "Application keys are set" if not missing else "Missing: " + ", ".join(missing) + ". Run python3 rotaidem/strato/setup.py discord over SSH.")
+    add(cfg["guild_id"] and cfg["role_id"], "Server ID and buyer role ID are saved" if cfg["guild_id"] and cfg["role_id"] else "Paste the Server ID and the Buyer role ID below and save.")
+    if missing or not (cfg["guild_id"] and cfg["role_id"]):
+        return jsonify({"checks": checks, "ok": False})
+    bot, error, _ = discord_call("GET", "/users/@me", timeout=10)
+    add(bot, f"The bot token works ({bot.get('username')})" if bot else f"Discord does not accept the bot token: {error}. Run setup.py discord again with a new token (Bot, Reset Token).")
+    if not bot:
+        return jsonify({"checks": checks, "ok": False})
+    roles, error, status = discord_call("GET", f"/guilds/{cfg['guild_id']}/roles", timeout=10)
+    if not roles:
+        add(False, "The bot cannot see the server: invite it with Invite the bot (and check the Server ID)." if status in (403, 404) else f"Could not read the server's roles: {error}")
+        return jsonify({"checks": checks, "ok": False})
+    by_id = {r["id"]: r for r in roles}
+    buyer = by_id.get(cfg["role_id"])
+    add(buyer, f"The buyer role is @{buyer['name']}" if buyer else "The Buyer role ID is not a role in this server: copy it again (right-click the role, Copy Role ID).")
+    me, error, status = discord_call("GET", f"/guilds/{cfg['guild_id']}/members/{bot['id']}", timeout=10)
+    add(me, "The bot is in the server" if me else "The bot is not in the server: press Invite the bot.")
+    if not (buyer and me):
+        return jsonify({"checks": checks, "ok": False})
+    mine = [by_id[r] for r in me.get("roles", []) if r in by_id] + [by_id[cfg["guild_id"]]] if cfg["guild_id"] in by_id else [by_id[r] for r in me.get("roles", []) if r in by_id]
+    perms = 0
+    for r in mine:
+        perms |= int(r.get("permissions") or 0)
+    add(perms & (DISCORD_MANAGE_ROLES | DISCORD_ADMINISTRATOR), "The bot has Manage Roles" if perms & (DISCORD_MANAGE_ROLES | DISCORD_ADMINISTRATOR)
+        else "The bot's role does not have Manage Roles: Server Settings, Roles, the bot's role, turn on Manage Roles (or invite it again).")
+    top = max([r.get("position", 0) for r in mine] or [0])
+    top_name = next((r["name"] for r in mine if r.get("position", 0) == top), "its role")
+    add(top > buyer.get("position", 0), f"The bot's role @{top_name} is above @{buyer['name']}" if top > buyer.get("position", 0)
+        else f"The bot's role @{top_name} is BELOW (or level with) @{buyer['name']}: in Server Settings, Roles, drag @{top_name} above @{buyer['name']}. This is the usual reason the role is not given.")
+    add(not buyer.get("managed"), "The buyer role can be given by bots" if not buyer.get("managed") else f"@{buyer['name']} belongs to an integration and cannot be given: make a normal role.")
+    add(perms & (1 | DISCORD_ADMINISTRATOR), "The bot may add people to the server (Create Invite)" if perms & (1 | DISCORD_ADMINISTRATOR)
+        else "The bot lacks Create Invite, so it cannot add people who are not in the server yet: turn it on for the bot's role.")
+    return jsonify({"checks": checks, "ok": all(c["ok"] for c in checks)})
 
 
 @app.post("/api/admin/discord")
@@ -2841,7 +2917,15 @@ def admin_save_discord():
     if (guild and not SNOWFLAKE.match(guild)) or (role and not SNOWFLAKE.match(role)):
         return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
     products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
-    set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products})
+    old = discord_settings()
+    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel")}
+    if any(v and not SNOWFLAKE.match(v) for v in channels.values()):
+        return err("Choose the channels from the list", 400)
+    if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
+        # from now on: news posts that are already up are not announced again
+        set_setting("discord.announced_posts", [r["id"] for r in visible_posts()])
+    set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products, **channels,
+                                     "updates_ping": bool(b.get("updates_ping", old["updates_ping"]))})
     audit(user, "save_discord", f"server {guild or '-'}, role {role or '-'}")
     return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready()})
 
@@ -2915,12 +2999,40 @@ def discord_absolute(url):
     return site_url() + url if url.startswith("/") and not url.startswith("//") else url
 
 
-def discord_message(b):
+def discord_channel_names():
+    """{channel name: id} for the server's text channels, so #name in a post becomes a channel link."""
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/channels", timeout=8)
+    return {} if error else {c.get("name", "").lower(): c["id"] for c in rows or [] if c.get("type") in (0, 2, 5, 13, 15)}
+
+
+def link_channels(text, names):
+    return re.sub(r"(?<![<\w&])#([a-z0-9_\-]{1,100})", lambda m: f"<#{names[m.group(1).lower()]}>" if m.group(1).lower() in names else m.group(0), text)
+
+
+def discord_poll(b):
+    """A poll from the admin: question, 2-10 answers, how many hours it stays open."""
+    p = b.get("poll") if isinstance(b.get("poll"), dict) else {}
+    question = str(p.get("question") or "").strip()
+    if not question:
+        return None
+    answers = [str(a).strip() for a in (p.get("answers") or []) if str(a).strip()]
+    if len(question) > 300 or not 2 <= len(answers) <= 10 or any(len(a) > 55 for a in answers):
+        raise ValueError("A poll needs a question (300 characters) and 2 to 10 answers (55 characters each)")
+    try:
+        hours = max(1, min(768, int(p.get("hours") or 24)))
+    except (TypeError, ValueError):
+        hours = 24
+    return {"question": {"text": question}, "answers": [{"poll_media": {"text": a}} for a in answers], "duration": hours,
+            "allow_multiselect": bool(p.get("multiple")), "layout_type": 1}
+
+
+def discord_message(b, names=None):
     """The message Discord gets from what the admin wrote. Raises ValueError with a message for the admin."""
-    text = str(b.get("text") or "").replace("\r\n", "\n").strip()
+    names = names or {}
+    text = link_channels(str(b.get("text") or "").replace("\r\n", "\n").strip(), names)
     embed_in = b.get("embed") if isinstance(b.get("embed"), dict) else {}
     embed = {}
-    title, desc = str(embed_in.get("title") or "").strip(), str(embed_in.get("description") or "").replace("\r\n", "\n").strip()
+    title, desc = str(embed_in.get("title") or "").strip(), link_channels(str(embed_in.get("description") or "").replace("\r\n", "\n").strip(), names)
     link, image = str(embed_in.get("url") or "").strip(), str(embed_in.get("image") or "").strip()
     if len(title) > 256 or len(desc) > 4000:
         raise ValueError("The card's title can have 256 characters and its text 4000")
@@ -2942,8 +3054,9 @@ def discord_message(b):
         if not label or len(label) > 80 or not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//"))):
             raise ValueError("Each button needs a short label and a link (https:// or a page like /downloads)")
         buttons.append({"type": 2, "style": 5, "label": label, "url": discord_absolute(url)})
-    if not text and not embed:
-        raise ValueError("Write a message or fill in the card")
+    poll = discord_poll(b)
+    if not text and not embed and not poll:
+        raise ValueError("Write a message, fill in the card or add a poll")
     ping = b.get("ping") if b.get("ping") in DISCORD_PINGS else "none"
     role = discord_settings()["role_id"]
     prefix = {"buyers": f"<@&{role}>" if role else "", "here": "@here", "everyone": "@everyone"}.get(ping, "")
@@ -2951,12 +3064,114 @@ def discord_message(b):
     if len(content) > 2000:
         raise ValueError("A Discord message can have 2000 characters")
     allowed = {"parse": ["everyone"] if ping in ("here", "everyone") else [], "roles": [role] if ping == "buyers" and role else []}
-    return {"content": content, "embeds": [embed] if embed else [], "components": [{"type": 1, "components": buttons}] if buttons else [],
-            "allowed_mentions": allowed}
+    message = {"content": content, "embeds": [embed] if embed else [], "components": [{"type": 1, "components": buttons}] if buttons else [],
+               "allowed_mentions": allowed}
+    if poll:
+        message["poll"] = poll
+    return message
+
+
+DISCORD_EMOJI = re.compile(r"^[^\s<>:/\\]{1,16}$")
+
+
+def discord_send(channel, b, by="Rotaidem"):
+    """Posts one message (and its reactions, pin and publishing). Returns (message id, error, published)."""
+    message = discord_message(b, discord_channel_names())
+    sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    if error:
+        return None, error, False
+    mid = sent["id"]
+    for emoji in [e for e in str(b.get("reactions") or "").split() if DISCORD_EMOJI.match(e)][:5]:
+        discord_call("PUT", f"/channels/{channel}/messages/{mid}/reactions/{urllib.parse.quote(emoji)}/@me")
+    if b.get("pin"):
+        discord_call("PUT", f"/channels/{channel}/pins/{mid}")
+    published = False
+    if b.get("publish"):
+        _, perror, _ = discord_call("POST", f"/channels/{channel}/messages/{mid}/crosspost")
+        published = not perror
+    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or (message.get("poll") or {}).get("question", {}).get("text")
+               or b.get("text") or "")[:120]
+    posts = [{"id": mid, "channel_id": channel, "channel": str(b.get("channel_name") or "")[:100], "summary": summary, "at": utc_stamp(), "by": by,
+              "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}] + discord_posts()
+    set_setting("discord.posts", posts[:50])
+    return mid, "", published
 
 
 def discord_posts():
     return get_setting("discord.posts", []) or []
+
+
+DISCORD_POST_FIELDS = ("channel_name", "text", "embed", "buttons", "ping", "poll", "reactions", "pin", "publish")
+
+
+def discord_scheduled():
+    return get_setting("discord.scheduled", []) or []
+
+
+def discord_claim(key):
+    """True for exactly one caller per key (two visits at the same moment must not post twice)."""
+    try:
+        db().run("INSERT INTO meta (key, value) VALUES (?, ?)", "discord.claim." + key, utc_stamp())
+        return True
+    except Exception:  # noqa: BLE001 - the key exists: someone else took it
+        return False
+
+
+def visible_posts():
+    return db().all("SELECT * FROM posts WHERE status IS NULL OR status = 'published' OR (status = 'scheduled' AND publish_at <= ?) ORDER BY id", utc_stamp())
+
+
+def discord_auto(kind, b):
+    """An automatic post (product update, news, sale) in its chosen channel. Never fails the caller."""
+    channel = discord_settings().get(kind + "_channel") if discord_ready() else ""
+    if not channel:
+        return
+    try:
+        _, error, _ = discord_send(channel, b, "Automatic")
+        if error:
+            app.logger.warning("Automatic Discord post (%s): %s", kind, error)
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Automatic Discord post (%s) failed", kind)
+
+
+def discord_announce_news():
+    """News posts that are up and not announced yet go to the news channel (a few at a time)."""
+    if not discord_ready() or not discord_settings()["news_channel"]:
+        return
+    done = set(get_setting("discord.announced_posts", []) or [])
+    for post in [p for p in visible_posts() if p["id"] not in done][:3]:
+        if not discord_claim(f"news.{post['id']}"):
+            continue
+        set_setting("discord.announced_posts", sorted(done | {post["id"]}))
+        done.add(post["id"])
+        discord_auto("news", {"embed": {"title": post["title"], "description": str(post["content"] or "")[:600], "url": "/newsletter",
+                                        "image": post.get("image_url") or ""}, "buttons": [{"label": "Read on rotaidem.com", "url": "/newsletter"}]})
+
+
+def discord_run_due():
+    """Scheduled Discord posts and scheduled news run at the first request after their time (no cron on STRATO)."""
+    if not DISCORD_BOT_TOKEN:
+        return
+    now = time.time()
+    last = get_setting("discord.checked", 0) or 0
+    if now - float(last) < 60:
+        return
+    set_setting("discord.checked", now)
+    if not discord_ready():
+        return
+    stamp = utc_stamp()
+    for item in [i for i in discord_scheduled() if i["at"] <= stamp]:
+        set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item["id"]])
+        if not discord_claim("post." + item["id"]):
+            continue
+        try:
+            post = item["post"]
+            _, error, _ = discord_send(post["channel_id"], post, item.get("by") or "Scheduled")
+            if error:
+                app.logger.warning("Scheduled Discord post %s: %s", item["id"], error)
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Scheduled Discord post %s failed", item["id"])
+    discord_announce_news()
 
 
 @app.get("/api/admin/discord/channels")
@@ -2980,7 +3195,37 @@ def admin_discord_channels():
 def admin_discord_messages():
     if not staff_user():
         return err("Admin only", 403)
-    return jsonify({"messages": discord_posts()})
+    return jsonify({"messages": discord_posts(), "scheduled": discord_scheduled()})
+
+
+@app.post("/api/admin/discord/scheduled/<item_id>/now")
+def admin_discord_post_now(item_id):
+    """A scheduled post, sent straight away."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can post in Discord", 403)
+    item = next((i for i in discord_scheduled() if i["id"] == item_id), None)
+    if not item or not discord_claim("post." + item_id):
+        return err("That post is not waiting any more", 404)
+    set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item_id])
+    try:
+        mid, error, _ = discord_send(item["post"]["channel_id"], item["post"], user["name"])
+    except ValueError as exc:
+        return err(str(exc), 400)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_message", "scheduled post sent now")
+    return jsonify({"ok": True, "id": mid})
+
+
+@app.delete("/api/admin/discord/scheduled/<item_id>")
+def admin_discord_unschedule(item_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item_id])
+    audit(user, "discord_unschedule", item_id)
+    return jsonify({"ok": True})
 
 
 @app.post("/api/admin/discord/message")
@@ -2996,22 +3241,29 @@ def admin_discord_send():
     if not SNOWFLAKE.match(channel):
         return err("Choose the channel to post in", 400)
     try:
-        message = discord_message(b)
+        discord_message(b)  # check it now, also when it is sent later
     except ValueError as exc:
         return err(str(exc), 400)
-    sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    at = str(b.get("at") or "").strip()
+    if at:  # post later: from the admin as an ISO time in UTC
+        try:
+            when = datetime.strptime(at[:16], "%Y-%m-%dT%H:%M").strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return err("Pick the date and time to post it", 400)
+        if when <= utc_stamp():
+            return err("Pick a time in the future, or post it now", 400)
+        item = {"id": secrets.token_hex(6), "at": when, "by": user["name"], "post": {**{k: b.get(k) for k in DISCORD_POST_FIELDS}, "channel_id": channel}}
+        set_setting("discord.scheduled", sorted(discord_scheduled() + [item], key=lambda i: i["at"])[:50])
+        audit(user, "discord_schedule", f"#{b.get('channel_name') or channel} at {when} UTC")
+        return jsonify({"ok": True, "scheduled": item["id"], "at": when})
+    try:
+        mid, error, published = discord_send(channel, b, user["name"])
+    except ValueError as exc:
+        return err(str(exc), 400)
     if error:
         return err(error, 502)
-    published = False
-    if b.get("publish"):
-        _, perror, _ = discord_call("POST", f"/channels/{channel}/messages/{sent['id']}/crosspost")
-        published = not perror
-    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or b.get("text") or "")[:120]
-    posts = [{"id": sent["id"], "channel_id": channel, "channel": str(b.get("channel_name") or "")[:100], "summary": summary,
-              "at": utc_stamp(), "by": user["name"], "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}] + discord_posts()
-    set_setting("discord.posts", posts[:50])
-    audit(user, "discord_message", f"#{b.get('channel_name') or channel}: {summary[:60]}")
-    return jsonify({"ok": True, "id": sent["id"], "published": published})
+    audit(user, "discord_message", f"#{b.get('channel_name') or channel}: {discord_posts()[0]['summary'][:60]}")
+    return jsonify({"ok": True, "id": mid, "published": published})
 
 
 @app.post("/api/admin/discord/message/<channel>/<message_id>")
@@ -3023,9 +3275,10 @@ def admin_discord_edit(channel, message_id):
         return err("Message not found", 404)
     b = body()
     try:
-        message = discord_message(b)
+        message = discord_message(b, discord_channel_names())
     except ValueError as exc:
         return err(str(exc), 400)
+    message.pop("poll", None)  # a poll cannot be changed once it is posted
     _, error, status = discord_call("PATCH", f"/channels/{channel}/messages/{message_id}", payload=message)
     if error:
         return err("That message is gone from Discord" if status == 404 else error, 404 if status == 404 else 502)
@@ -4429,6 +4682,15 @@ def init_schema():
 def schema_guard():
     if request.path.startswith("/api/") and not init_schema():
         return err("Database is not reachable right now. Try again in a minute.", 503)
+
+
+@app.before_request
+def due_discord_posts():
+    if request.path.startswith("/api/") and request.path != "/api/discord/interactions":
+        try:
+            discord_run_due()
+        except Exception:  # noqa: BLE001 - visitors never see a Discord problem
+            app.logger.exception("Due Discord posts failed")
 
 
 init_schema()

@@ -1202,8 +1202,8 @@ def cmd_discord():
             bot = json.loads(resp.read())
         say(f"Discord answered: the bot token works ({bot.get('username', 'bot')}).")
         if values.get("DISCORD_CLIENT_ID"):
-            say("4. Invite the bot to your server (it needs Manage Roles, and to post: Send Messages and Embed Links):")
-            say("   https://discord.com/oauth2/authorize?client_id=" + values["DISCORD_CLIENT_ID"] + "&scope=bot%20applications.commands&permissions=268585985")
+            say("4. Invite the bot to your server (Manage Roles, and to post: Send Messages, Embed Links, reactions, pins, polls):")
+            say("   https://discord.com/oauth2/authorize?client_id=" + values["DISCORD_CLIENT_ID"] + "&scope=bot%20applications.commands&permissions=562950222081089")
         say("5. In Discord, Server Settings -> Roles: drag the bot's role ABOVE the buyer role, or it cannot give it.")
         say("6. Admin -> Discord on the website: paste the server ID and the buyer role ID, then press Add /verify.")
     except urllib.error.HTTPError as exc:

@@ -203,10 +203,22 @@ back when it is restored. `/verify` in Discord lets members check themselves.
 card (title, text, link, picture), add link buttons, and choose who to ping (nobody, the buyer role,
 @here or @everyone). *Start from…* fills it in from a product update or a news post. In an
 announcement channel it is also published to servers that follow it. Posts can be edited or deleted
-from the list below the form. The bot needs **Send Messages** and **Embed Links** in those channels
-(and Mention Everyone for @everyone pings): the invite link from `setup.py discord` asks for them. If
-you invited the bot before this was added, open the invite link again or give its role those
-permissions in Server Settings → Roles.
+from the list below the form.
+
+- **#channel links:** type `#channel-name` (or use *Insert a # channel*): it becomes a link in Discord.
+- **Extras:** the bot can react with emojis, pin the post, and add a **poll** (2 to 10 answers, open
+  from an hour to two weeks).
+- **Post later:** pick a date and time. STRATO has no timer, so the post goes out at the first visit
+  to the website after that time (with normal traffic, within a minute or two). *Post now* and
+  *Cancel* are in the waiting list.
+- **Automatic posts:** choose a channel for product updates (optionally pinging verified buyers), for
+  news posts, and for sales (🎉 product and amount only; use a staff-only channel).
+
+The bot needs **Send Messages**, **Embed Links**, **Add Reactions**, **Manage Messages** (pins),
+**Read Message History**, **Send Polls** and, for @everyone pings, **Mention Everyone**: the invite
+link from `setup.py discord` (and Admin → Discord → Invite the bot) asks for all of them. If you
+invited the bot before, open the invite link again or give its role those permissions in Server
+Settings → Roles.
 
 ## Security
 
