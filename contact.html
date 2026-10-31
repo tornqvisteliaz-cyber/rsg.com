@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Contact | Rotaidem</title>
+    <meta name="description" content="Contact Rotaidem.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/rsg.com/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/rsg.com/">Home</a> / Contact</div><h1 data-text="contact.contact">Contact</h1><p data-text="contact.questions-about-our-products">Questions about our products, support or partnerships.</p></div></section>
+<section class="section"><div class="wrap split" style="align-items:start">
+    <div>
+        <h2 data-text="contact.reach-us">Reach us</h2>
+        <table class="table"><tbody>
+            <tr><td class="muted">General and support</td><td><a href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></td></tr>
+            <tr><td class="muted">Help and FAQ</td><td><a href="/rsg.com/support">Support page</a></td></tr>
+            <tr><td class="muted">Careers</td><td><a href="/rsg.com/work-at-rsg">Careers page</a></td></tr>
+        </tbody></table>
+    </div>
+    <form class="box" id="contact-form">
+        <h3 data-text="contact.send-a-message">Send a message</h3>
+        <div class="field"><label for="cname">Name</label><input id="cname" required></div>
+        <div class="field"><label for="cemail">Email</label><input id="cemail" type="email" required></div>
+        <div class="field"><label for="cmessage">Message</label><textarea id="cmessage" rows="6" required></textarea></div>
+        <button class="btn">Send message</button>
+        <p id="cstatus" class="msg"></p>
+    </form>
+</div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+document.getElementById("contact-form").onsubmit = async e => {
+    e.preventDefault();
+    const st = document.getElementById("cstatus");
+    const res = await fetch("/rsg.com/api/contact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: document.getElementById("cname").value, email: document.getElementById("cemail").value, message: document.getElementById("cmessage").value }) }).catch(() => null);
+    st.className = "msg " + (res && res.ok ? "ok" : "error");
+    st.textContent = res && res.ok ? "Thank you. We will get back to you soon." : "The message could not be sent. Please email us instead.";
+    if (res && res.ok) e.target.reset();
+};
+</script>
+</body>
+</html>

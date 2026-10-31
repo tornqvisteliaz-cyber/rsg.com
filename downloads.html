@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Downloads | Rotaidem</title>
+    <meta name="description" content="Download Rotaidem products.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/rsg.com/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/rsg.com/">Home</a> / <a href="/rsg.com/support">Support</a> / Downloads</div><h1 data-text="downloads.downloads">Downloads</h1><p data-text="downloads.installers-and-updates-for">Every Rotaidem product installs and updates through RotaHub.</p></div></section>
+<section class="section"><div class="wrap">
+    <div class="box" style="margin-bottom:24px"><h3 style="margin-top:0" data-text="downloads.get-everything-with-rotahub">Get everything with RotaHub</h3><p class="muted" data-text="downloads.rotahub-is-our-free">RotaHub is our free app for Windows. Download it, log in with your Rotaidem account and press Install on a product. It activates your licence key and keeps everything up to date.</p><a class="btn" href="/rsg.com/get-rotahub">Download RotaHub</a><div id="hub-news"></div></div>
+    <div class="box box-flush"><div class="table-wrap"><table class="table">
+        <thead><tr><th>Product</th><th>Version</th><th>Platform</th><th></th></tr></thead>
+        <tbody id="downloads"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+    </table></div></div>
+    <p class="muted" style="margin-top:20px">RotaHub activates your licence key when you install. Your keys are in the email you received and under <a href="/rsg.com/account">My account</a>. Need help? See the <a href="/rsg.com/installation">installation guide</a>.</p>
+</div></section>
+<section class="section alt" id="help"><div class="wrap">
+    <h2 data-text="downloads.trouble-downloading-or-installing">Trouble downloading or installing?</h2>
+    <div class="grid grid-3" style="margin-top:28px">
+        <div class="box"><h3 data-text="downloads.windows-protected-your-pc">"Windows protected your PC"</h3><p class="muted" data-text="downloads.windows-shows-this-for">Windows shows this for new programs that are not code-signed yet. Click <strong>More info</strong>, then <strong>Run anyway</strong>. RotaHub is safe to run.</p></div>
+        <div class="box"><h3 data-text="downloads.the-browser-blocks-the">The browser blocks the file</h3><p class="muted" data-text="downloads.chrome-or-edge-may">Chrome or Edge may say the file "isn't commonly downloaded". Open the downloads list (Ctrl+J), click the file's <strong>⋯</strong> menu and choose <strong>Keep</strong> (Edge: <strong>Keep anyway</strong>).</p></div>
+        <div class="box"><h3 data-text="downloads.antivirus-or-company-network">Antivirus or company network</h3><p class="muted" data-text="downloads.some-antivirus-programs-and">Some antivirus programs and work networks remove .exe files. Allow RotaHub.exe in your antivirus, or download it at home. Still stuck? Email Eliaz@rotaidem.com and we help you.</p></div>
+    </div>
+</div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const fallback = '<tr><td><strong>HeavyPro</strong></td><td class="muted">Not yet released</td><td>Windows 11</td><td style="text-align:right"><a class="btn btn-ghost btn-sm" href="/rsg.com/roadmap">See roadmap</a></td></tr>';
+// Version history from the admin: the newest version open to read, older ones folded away.
+function changelogRow(p) {
+    const list = p.changelog || [];
+    if (!list.length) return "";
+    const entry = v => `<div class="cl-entry"><strong>${esc(v.version)}</strong>${v.date ? ` <span class="muted">${esc(v.date)}</span>` : ""}${v.notes ? `<p>${esc(v.notes)}</p>` : ""}</div>`;
+    return `<tr class="cl-row"><td colspan="4"><details><summary>What's new in ${esc(list[0].version)}</summary>${list[0].notes ? `<p>${esc(list[0].notes)}</p>` : ""}` +
+        (list.length > 1 ? `<details class="cl-older"><summary>Older versions (${list.length - 1})</summary>${list.slice(1).map(entry).join("")}</details>` : "") + "</details></td></tr>";
+}
+// RotaHub's own newest version and what changed (Admin -> RotaHub -> RotaHub versions)
+fetch("/rsg.com/api/hub").then(r => r.json()).then(h => {
+    const v = (h.changelog || [])[0];
+    if (v) document.getElementById("hub-news").innerHTML = `<details style="margin-top:16px"><summary>What's new in RotaHub ${esc(v.version)}</summary>${v.notes ? `<p class="muted" style="white-space:pre-line">${esc(v.notes)}</p>` : ""}</details>`;
+}).catch(() => {});
+const token = localStorage.getItem("rsg_token");
+fetch("/rsg.com/api/products", { headers: token ? { "X-Rotaidem-Token": token } : {} }).then(r => r.json()).then(d => {
+    const items = d.products || [];
+    const body = document.getElementById("downloads");
+    body.innerHTML = items.length ? items.map((p, i) => {
+        const link = /^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "");
+        const ready = link || p.has_download; // the installer link itself only goes to RotaHub
+        const action = ready ? `<a class="btn btn-sm" href="/rsg.com/get-rotahub?product=${encodeURIComponent(p.name || p.id)}" data-dl="${esc(p.id)}">Get it in RotaHub</a>` : `<span class="badge ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || "Not yet released")}</span>`;
+        return `<tr data-i="${i}"><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(ready ? (p.version || "") : "Not yet released")}</td><td>${esc(p.simulator || "Windows 11")}</td><td style="text-align:right;white-space:nowrap">${action}</td></tr>` + changelogRow(p);
+    }).join("") : fallback;
+}).catch(() => { document.getElementById("downloads").innerHTML = fallback; });
+</script>
+</body>
+</html>
