@@ -120,6 +120,58 @@ public sealed class SignedAnswerTests : IDisposable
         Assert.Equal(LicenseStatus.ClockTampered, client.CheckOffline(store).Status);
     }
 
+    [Theory]
+    [InlineData("expired", LicenseStatus.Expired)]
+    [InlineData("revoked", LicenseStatus.Revoked)]
+    [InlineData("activation_limit", LicenseStatus.ActivationLimit)]
+    [InlineData("activation_churn", LicenseStatus.ActivationLimit)]
+    [InlineData("not_activated", LicenseStatus.NotActivated)]
+    [InlineData("not_found", LicenseStatus.NotFound)]
+    public async Task Each_refusal_gets_its_own_state_and_the_servers_instructions(string reason, LicenseStatus expected)
+    {
+        var refusal = new FakeServer((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+            { Content = new StringContent(JsonSerializer.Serialize(new { valid = false, reason, error = "What to do: " + reason }), Encoding.UTF8, "application/json") }));
+        var result = await Client(refusal).ActivateAsync(_key);
+        Assert.Equal(expected, result.Status);
+        Assert.False(result.IsValid);
+        Assert.Equal("What to do: " + reason, result.Message);
+        Assert.Null(result.Token);
+    }
+
+    [Fact]
+    public async Task Revoked_online_wins_over_a_saved_answer_that_is_still_in_its_lease()
+    {
+        var store = Store();
+        var client = Client(new FakeServer(Json(new { valid = false, reason = "revoked", error = "This licence key has been revoked." })));
+        store.Save(_key, DateTimeOffset.UtcNow, _server.Token(_key, client.MachineId, null));
+        Assert.Equal(LicenseStatus.Revoked, (await client.CheckAsync(store, TimeSpan.FromDays(14))).Status);
+    }
+
+    [Fact]
+    public async Task Server_outage_keeps_working_on_the_saved_lease()
+    {
+        var store = Store();
+        var down = new FakeServer((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("{}") }));
+        var client = Client(down);
+        store.Save(_key, DateTimeOffset.UtcNow, _server.Token(_key, client.MachineId, null));
+        var result = await client.CheckAsync(store, TimeSpan.FromDays(14));
+        Assert.Equal(LicenseStatus.OfflineGrace, result.Status);
+        Assert.True(result.LeaseUntil <= DateTimeOffset.UtcNow.AddDays(14.01));
+    }
+
+    [Fact]
+    public void Editing_the_last_check_date_in_license_json_does_not_extend_the_signed_lease()
+    {
+        var store = Store();
+        var client = Client(new FakeServer(Offline));
+        var issued = DateTimeOffset.UtcNow.AddDays(-15);
+        store.Save(_key, issued, _server.Token(_key, client.MachineId, null, issued: issued));
+        var file = File.ReadAllText(store.FilePath);
+        var future = DateTimeOffset.UtcNow.AddYears(1).ToString("o");
+        File.WriteAllText(store.FilePath, System.Text.RegularExpressions.Regex.Replace(file, "\"LastValidatedUtc\":\"[^\"]*\"", $"\"LastValidatedUtc\":\"{future}\""));
+        Assert.Equal(LicenseStatus.LeaseExpired, client.CheckOffline(store, TimeSpan.FromDays(14)).Status);
+    }
+
     [Fact]
     public void Key_saved_by_an_older_version_must_be_confirmed_online_first()
     {
