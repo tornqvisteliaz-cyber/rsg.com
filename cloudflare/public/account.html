@@ -41,6 +41,12 @@
                 </div>
             </div>
             <div>
+            <div class="box" id="affiliate" hidden style="margin-bottom:24px">
+                <h3 style="margin-top:0">Affiliate</h3>
+                <p class="muted" id="af-text" style="font-size:15px"></p>
+                <div class="field" style="margin:0 0 14px"><label for="af-link">Your referral link</label><div style="display:flex;gap:8px"><input id="af-link" readonly style="font-family:ui-monospace,Consolas,monospace"><button class="btn btn-ghost" type="button" id="af-copy">Copy</button></div></div>
+                <div class="grid grid-3" style="gap:12px"><div class="card"><label class="muted">Referred sales</label><div class="stat-num" id="af-orders" style="font-size:28px">0</div></div><div class="card"><label class="muted">To be paid</label><div class="stat-num" id="af-pending" style="font-size:28px">0</div></div><div class="card"><label class="muted">Paid out</label><div class="stat-num" id="af-paid" style="font-size:28px">0</div></div></div>
+            </div>
             <div class="box" id="discord" hidden style="margin-bottom:24px">
                 <h3>Discord</h3>
                 <p class="muted" id="dc-text" style="font-size:15px"></p>
@@ -75,6 +81,7 @@ async function init() {
     document.getElementById("order-count").textContent = user.orders_count;
     document.getElementById("s-name").value = user.name;
     showDiscord(user.discord);
+    loadAffiliate();
 
     const licenses = (await (await fetch("/api/account/licenses", { headers })).json()).licenses || [];
     document.getElementById("licenses").innerHTML = licenses.length ? licenses.map(l =>
@@ -167,6 +174,26 @@ document.getElementById("settings-form").onsubmit = async e => {
     msg.textContent = res.ok ? (document.getElementById("s-new").value ? "Saved. Your other devices have been logged out." : "Saved.") : (data.error || "Could not save.");
     if (res.ok) { localStorage.setItem("rsg_name", data.name); document.getElementById("s-cur").value = ""; document.getElementById("s-new").value = ""; init(); paintAuth(); }
 };
+// Affiliate dashboard: shown only to accounts that are an affiliate (Admin -> Affiliates)
+async function loadAffiliate() {
+    const d = await (await fetch("/api/account/affiliate", { headers })).json().catch(() => ({}));
+    const aff = d.affiliate;
+    const box = document.getElementById("affiliate");
+    if (!aff) { box.hidden = true; return; }
+    box.hidden = false;
+    document.getElementById("af-text").textContent = aff.status === "active"
+        ? `Share your link. You earn ${aff.percent}% of every sale it brings.`
+        : "Your affiliate code is paused. Contact us if you think this is a mistake.";
+    document.getElementById("af-link").value = aff.link;
+    document.getElementById("af-orders").textContent = aff.orders;
+    document.getElementById("af-pending").textContent = aff.pending.amount.toFixed(2);
+    document.getElementById("af-paid").textContent = aff.paid.amount.toFixed(2);
+}
+document.getElementById("af-copy").onclick = () => {
+    const f = document.getElementById("af-link"); f.select();
+    navigator.clipboard.writeText(f.value).then(() => { document.getElementById("af-copy").textContent = "Copied"; });
+};
+
 init();
 loadSessions();
 </script>

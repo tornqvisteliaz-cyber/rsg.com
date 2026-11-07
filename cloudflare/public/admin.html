@@ -348,6 +348,7 @@
     <div class="group">Marketing</div>
     <button class="tab" data-tab="email">Email a product</button>
     <button class="tab" data-tab="subscribers">Subscribers <span class="count" id="c-subscribers"></span></button>
+    <button class="tab" data-tab="affiliates">Affiliates <span class="count" id="c-affiliates"></span></button>
     <div class="group">Customers</div>
     <button class="tab" data-tab="orders">Orders <span class="count" id="c-orders"></span></button>
     <button class="tab" data-tab="users">Users <span class="count" id="c-users"></span></button>
@@ -813,6 +814,30 @@
             <form class="panel-body" id="sub-form" style="border-bottom:1px solid var(--line)"><div style="display:flex;gap:0;align-items:stretch"><textarea id="sub-email" rows="2" placeholder="Add addresses by hand: one, or paste many separated by commas or new lines" required style="resize:vertical"></textarea><button class="btn">Add</button></div><div class="hint">Addresses already on the list are skipped, and people who unsubscribed are never added back.</div></form>
             <div style="border-bottom:1px solid var(--line);padding-top:16px"><div class="bars" id="sub-chart" style="height:80px"></div><div class="bars-legend"><span id="sub-chart-label"></span><span>Today</span></div></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th>Signed up from</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody id="subs-list"></tbody></table></div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-affiliates" data-title="Affiliates">
+        <form class="panel" id="af-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2 id="af-form-title">Add an affiliate</h2><span class="muted" id="af-owed" style="font-size:13px"></span></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">An affiliate shares a link (<code id="af-example">rotaidem.com/?ref=CODE</code>) and earns a share of the sales it brings. Give them a code and a percent; the rest is counted for you.</p>
+                <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;align-items:end">
+                    <div class="field"><label for="af-code">Code</label><input id="af-code" maxlength="31" placeholder="e.g. erik, yt-flightdeck" required></div>
+                    <div class="field"><label for="af-name">Name (optional)</label><input id="af-name" maxlength="100" placeholder="Who it is"></div>
+                    <div class="field"><label for="af-email">Their account email (optional)</label><input id="af-email" type="email" placeholder="So they see it on My account"></div>
+                    <div class="field"><label for="af-percent">Percent</label><input id="af-percent" type="number" min="1" max="90" step="1"></div>
+                </div>
+                <div class="form-grid" style="grid-template-columns:2fr 1fr auto;align-items:end">
+                    <div class="field"><label for="af-note">Note (optional)</label><input id="af-note" maxlength="300" placeholder="Only you see this"></div>
+                    <div class="field"><label for="af-status">Status</label><select id="af-status"><option value="active">Active</option><option value="disabled">Paused</option></select></div>
+                    <div class="field"><button class="btn" id="af-save">Save affiliate</button><button class="btn btn-ghost" type="button" id="af-cancel" style="display:none;margin-left:6px">Cancel</button></div>
+                </div>
+            </div>
+        </form>
+        <div class="panel">
+            <div class="panel-head"><h2>Affiliates</h2><button class="btn btn-ghost btn-sm" type="button" onclick="exportAffiliates()">Export CSV</button></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Code</th><th>Who</th><th>Percent</th><th>Referred sales</th><th>To be paid</th><th>Paid out</th><th>Status</th><th></th></tr></thead><tbody id="af-list"></tbody></table></div>
         </div>
     </section>
 
@@ -1718,6 +1743,67 @@ async function loadCampaigns() {
 }
 
 // subscribers
+// Affiliates: people with a referral code who earn a share of the sales they bring.
+let affiliates = [];
+async function loadAffiliates() {
+    const d = await api("/api/admin/affiliates");
+    affiliates = d.affiliates || [];
+    $("c-affiliates").textContent = affiliates.length || "";
+    $("af-percent").placeholder = d.default_percent;
+    if (!$("af-percent").value && !editingAffiliate) $("af-percent").value = "";
+    $("af-owed").textContent = d.pending_total ? `${money(d.pending_total)} to be paid out` : "";
+    $("af-example").textContent = (location.host || "rotaidem.com") + "/?ref=CODE";
+    $("af-list").innerHTML = affiliates.length ? affiliates.map(a => `<tr>
+        <td><code>${esc(a.code)}</code></td>
+        <td>${esc(a.name || a.email || "—")}${a.name && a.email ? `<div class="muted" style="font-size:13px">${esc(a.email)}</div>` : ""}</td>
+        <td>${a.percent}%</td><td>${a.orders}</td>
+        <td>${a.pending.amount ? `<strong>${money(a.pending.amount)}</strong>` : "—"}</td>
+        <td class="muted">${a.paid.amount ? money(a.paid.amount) : "—"}</td>
+        <td>${a.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Paused</span>'}</td>
+        <td class="actions" style="white-space:nowrap">
+            ${a.pending.orders ? `<button class="btn btn-ghost btn-sm" data-af-pay="${a.id}">Mark ${money(a.pending.amount)} paid</button>` : ""}
+            <button class="btn btn-ghost btn-sm" data-af-edit="${a.id}">Edit</button>
+            <button class="btn btn-ghost btn-sm" data-af-del="${a.id}">Delete</button>
+        </td></tr>`).join("") : '<tr><td colspan="8" class="muted" style="padding:20px">No affiliates yet. Add one above, then share their link.</td></tr>';
+}
+let editingAffiliate = null;
+function affiliateForm(a) {
+    editingAffiliate = a ? a.id : null;
+    $("af-form-title").textContent = a ? "Edit affiliate" : "Add an affiliate";
+    $("af-code").value = a ? a.code : ""; $("af-name").value = a ? a.name : ""; $("af-email").value = a ? a.email : "";
+    $("af-percent").value = a ? a.percent : ""; $("af-note").value = a ? a.note : ""; $("af-status").value = a ? a.status : "active";
+    $("af-save").textContent = a ? "Save changes" : "Save affiliate";
+    $("af-cancel").style.display = a ? "" : "none";
+}
+$("af-form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        await post("/api/admin/affiliates", { id: editingAffiliate, code: $("af-code").value.trim(), name: $("af-name").value.trim(),
+            email: $("af-email").value.trim(), percent: $("af-percent").value || undefined, note: $("af-note").value.trim(), status: $("af-status").value });
+        toast(editingAffiliate ? "Affiliate saved" : "Affiliate added");
+        affiliateForm(null); loadAffiliates();
+    } catch (err) { toast(err.message, true); }
+};
+$("af-cancel").onclick = () => affiliateForm(null);
+$("af-list").onclick = async e => {
+    const edit = e.target.closest("[data-af-edit]"), pay = e.target.closest("[data-af-pay]"), del = e.target.closest("[data-af-del]");
+    if (edit) { affiliateForm(affiliates.find(a => a.id == edit.dataset.afEdit)); window.scrollTo(0, 0); return; }
+    if (pay) {
+        const a = affiliates.find(x => x.id == pay.dataset.afPay);
+        if (!await confirmBox("Mark paid?", `Confirm you have sent ${money(a.pending.amount)} to ${a.name || a.code}. This clears their To be paid.`, "Mark paid")) return;
+        try { await post(`/api/admin/affiliates/${a.id}/pay`, {}); toast("Marked paid"); loadAffiliates(); } catch (err) { toast(err.message, true); }
+    }
+    if (del) {
+        const a = affiliates.find(x => x.id == del.dataset.afDel);
+        if (!await confirmBox("Delete affiliate?", `Remove ${a.code} and its commission history. The orders stay.`, "Delete", true)) return;
+        try { await api(`/api/admin/affiliates/${a.id}`, { method: "DELETE" }); toast("Deleted"); loadAffiliates(); } catch (err) { toast(err.message, true); }
+    }
+};
+function exportAffiliates() {
+    downloadCsv("affiliates.csv", [["Code", "Name", "Email", "Percent", "Referred sales", "To be paid", "Paid out", "Status"],
+        ...affiliates.map(a => [a.code, a.name, a.email, a.percent + "%", a.orders, a.pending.amount.toFixed(2), a.paid.amount.toFixed(2), a.status])]);
+}
+
 async function loadSubscribers() {
     state.subs = (await api("/api/admin/subscribers")).subscribers || [];
     renderSubscribers();
@@ -3374,7 +3460,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop(), loadDiscord()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop(), loadDiscord(), loadAffiliates()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

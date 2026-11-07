@@ -157,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-31-discord-check"
+SCHEMA_VERSION = "2026-11-07-affiliates"
 
 
 def ensure_schema():
@@ -200,6 +200,12 @@ def ensure_schema():
         # One row per paid Stripe Checkout session: claimed first, so an order is never made twice.
         f"CREATE TABLE IF NOT EXISTS stripe_payments (session_id {ident} PRIMARY KEY, product_id {word}, user_id INTEGER, email TEXT, "
         f"order_id INTEGER, license_key {word}, created_at {word})",
+        # Affiliate program: people with a referral code earn a share of the sales they bring.
+        f"CREATE TABLE IF NOT EXISTS affiliates (id {pk}, code {ident} UNIQUE, user_id INTEGER, email {ident}, name TEXT, "
+        f"percent INTEGER DEFAULT 20, status {word} DEFAULT 'active', note TEXT, created_at {word})",
+        # One row per referred paid order: what the affiliate earned, and whether you have paid it out.
+        f"CREATE TABLE IF NOT EXISTS affiliate_commissions (id {pk}, affiliate_id INTEGER, order_id INTEGER UNIQUE, amount {money} DEFAULT 0, "
+        f"currency {word}, rate INTEGER DEFAULT 0, status {word} DEFAULT 'pending', created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -220,7 +226,9 @@ def ensure_schema():
                           # the Discord account linked on My account (for the verified buyer role)
                           ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}"),
                           # what happened the last time the role was given or taken (Admin -> Discord -> Linked members)
-                          ("users", "discord_result TEXT")):
+                          ("users", "discord_result TEXT"),
+                          # the affiliate code that referred the order (Admin -> Affiliates)
+                          ("orders", f"affiliate_code {ident}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -2355,6 +2363,7 @@ def account_claim_license():
 PAY_CURRENCIES = ("sek", "eur", "usd", "gbp", "nok", "dkk")
 CHECKOUT_SESSION = re.compile(r"^cs_[A-Za-z0-9_]{10,250}$")
 REFERRAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")  # window.endorsely_referral from the buyer's browser
+AFFILIATE_DEFAULT_PERCENT = 20  # a new affiliate earns this share of each referred sale (Admin -> Affiliates)
 
 
 def stripe_mode():
@@ -2416,9 +2425,12 @@ def fulfil_checkout(session):
     except Exception:  # noqa: BLE001 - the other request (page or webhook) claimed it a moment ago
         return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
     amount = (session.get("amount_total") or 0) / 100
-    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?)",
-             user_id or None, product_id, amount, sid, str(session.get("currency") or "").lower())
+    currency = str(session.get("currency") or "").lower()
+    affiliate_code = str(meta.get("affiliate_code") or "")
+    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?)",
+             user_id or None, product_id, amount, sid, currency, affiliate_code)
     order = db().first("SELECT id FROM orders WHERE payment_ref = ?", sid)
+    referred_by = credit_affiliate(order["id"], amount, currency, affiliate_code, user_id, email) if order else None
     key = ""
     while not key:
         candidate = generate_key(key_prefix_for(product_id))
@@ -2434,7 +2446,7 @@ def fulfil_checkout(session):
     product = db().first("SELECT name FROM products WHERE id = ?", product_id) or {}
     today_count = db().first("SELECT COUNT(*) AS n FROM stripe_payments WHERE created_at >= ?", utc_stamp()[:10] + " 00:00:00") or {}
     discord_auto("sales", {"text": f"🎉 New sale: **{product.get('name') or product_id}** for {amount:.2f} {str(session.get('currency') or '').upper()}"
-                                   f" ({today_count.get('n') or 1} today)"})
+                                   f" ({today_count.get('n') or 1} today)" + (f" · referred by {referred_by['code']}" if referred_by else "")})
     return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
 
 
@@ -2468,6 +2480,8 @@ def checkout(pid):
     referral = str(body().get("referral") or "").strip()
     if REFERRAL_ID.match(referral):
         fields["metadata[endorsely_referral]"] = referral  # Endorsely (affiliates) credits the sale from this
+    if affiliate_by_code(body().get("ref")):  # our own affiliate program
+        fields["metadata[affiliate_code]"] = str(body().get("ref")).strip()
     session, error = stripe_call("POST", "/v1/checkout/sessions", fields)
     if error or not (session or {}).get("url"):
         return err(error or "Stripe did not open a checkout page", 502)
@@ -2569,6 +2583,135 @@ def admin_save_shop():
     set_setting("shop.settings", settings)
     audit(user, "save_shop", "discount codes " + ("on" if settings["promo_codes"] else "off"))
     return jsonify({"ok": True, "settings": settings})
+
+
+# ---------- affiliate program ----------
+# People with a referral code earn a share of the sales they bring. A visitor arriving with ?ref=CODE
+# keeps the code (auth.js), it travels to Stripe Checkout as metadata, and a paid order credits the
+# affiliate a commission (their percent of the amount). You mark commissions paid in Admin -> Affiliates.
+
+AFFILIATE_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$")
+
+
+def affiliate_by_code(code):
+    code = str(code or "").strip()
+    if not AFFILIATE_CODE.match(code):
+        return None
+    return db().first("SELECT * FROM affiliates WHERE LOWER(code) = ? AND status = 'active'", code.lower())
+
+
+def affiliate_for_user(user):
+    """The affiliate account tied to a logged-in user, by account id or by email."""
+    return db().first("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?", user["id"], (user.get("email") or "").lower())
+
+
+def credit_affiliate(order_id, amount, currency, affiliate_code, buyer_id, buyer_email):
+    """One commission for a referred order. Skips self-referral and does nothing without a valid code."""
+    aff = affiliate_by_code(affiliate_code)
+    if not aff:
+        return None
+    if (aff["user_id"] and buyer_id and int(aff["user_id"]) == int(buyer_id)) or (aff["email"] and aff["email"].lower() == (buyer_email or "").lower()):
+        return None  # you cannot refer yourself
+    commission = round((float(amount or 0) * int(aff["percent"] or 0)) / 100, 2)
+    try:
+        db().run("INSERT INTO affiliate_commissions (affiliate_id, order_id, amount, currency, rate, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                 aff["id"], order_id, commission, (currency or "").lower(), int(aff["percent"] or 0), utc_stamp())
+    except Exception:  # noqa: BLE001 - already credited (order_id is unique)
+        return None
+    return aff
+
+
+def affiliate_totals(affiliate_id):
+    rows = db().all("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status", affiliate_id)
+    by = {r["status"]: {"orders": int(r["n"] or 0), "amount": round(float(r["total"] or 0), 2)} for r in rows}
+    return {"pending": by.get("pending", {"orders": 0, "amount": 0}), "paid": by.get("paid", {"orders": 0, "amount": 0}),
+            "orders": sum(v["orders"] for v in by.values())}
+
+
+@app.get("/api/account/affiliate")
+def account_affiliate():
+    """The logged-in user's own affiliate dashboard, if they are an affiliate."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    aff = affiliate_for_user(user)
+    if not aff:
+        return jsonify({"affiliate": None})
+    return jsonify({"affiliate": {"code": aff["code"], "percent": aff["percent"], "status": aff["status"],
+                                  "link": site_url() + "/?ref=" + urllib.parse.quote(aff["code"]), **affiliate_totals(aff["id"])}})
+
+
+@app.get("/api/admin/affiliates")
+def admin_affiliates():
+    if not staff_user():
+        return err("Admin only", 403)
+    out = []
+    for aff in db().all("SELECT * FROM affiliates ORDER BY id DESC"):
+        out.append({"id": aff["id"], "code": aff["code"], "name": aff["name"] or "", "email": aff["email"] or "", "percent": aff["percent"],
+                    "status": aff["status"], "note": aff["note"] or "", "created_at": aff["created_at"], **affiliate_totals(aff["id"])})
+    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT,
+                    "pending_total": round(float((db().first("SELECT SUM(amount) AS t FROM affiliate_commissions WHERE status = 'pending'") or {}).get("t") or 0), 2)})
+
+
+@app.post("/api/admin/affiliates")
+def admin_save_affiliate():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    b = body()
+    code = str(b.get("code") or "").strip()
+    if not AFFILIATE_CODE.match(code):
+        return err("The code is 3 to 31 letters, digits, dashes or underscores, starting with a letter or digit", 400)
+    email = str(b.get("email") or "").strip().lower()
+    if email and not EMAIL_RE.match(email):
+        return err("Enter a valid email address or leave it empty", 400)
+    percent = clamp_int(b.get("percent"), AFFILIATE_DEFAULT_PERCENT, 1, 90)
+    status = b.get("status") if b.get("status") in ("active", "disabled") else "active"
+    clash = db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower())
+    edit_id = b.get("id")
+    if clash and str(clash["id"]) != str(edit_id or ""):
+        return err(f'The code "{code}" is already used by another affiliate', 409)
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    if edit_id:
+        if not db().first("SELECT id FROM affiliates WHERE id = ?", int(edit_id)):
+            return err("Affiliate not found", 404)
+        db().run("UPDATE affiliates SET code = ?, email = ?, user_id = ?, name = ?, percent = ?, status = ?, note = ? WHERE id = ?",
+                 code, email, customer["id"] if customer else None, str(b.get("name") or "")[:100], percent, status, str(b.get("note") or "")[:300], int(edit_id))
+        audit(user, "save_affiliate", f"{code} ({percent}%, {status})")
+    else:
+        db().run("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 code, email, customer["id"] if customer else None, str(b.get("name") or "")[:100], percent, status, str(b.get("note") or "")[:300], utc_stamp())
+        audit(user, "add_affiliate", f"{code} ({percent}%)")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/affiliates/<int:affiliate_id>/pay")
+def admin_pay_affiliate(affiliate_id):
+    """Mark this affiliate's pending commissions as paid (after you have sent the money)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    aff = db().first("SELECT * FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    pending = affiliate_totals(affiliate_id)["pending"]
+    db().run("UPDATE affiliate_commissions SET status = 'paid' WHERE affiliate_id = ? AND status = 'pending'", affiliate_id)
+    audit(user, "pay_affiliate", f"{aff['code']} ({pending['orders']} orders)")
+    return jsonify({"ok": True, "paid": pending})
+
+
+@app.delete("/api/admin/affiliates/<int:affiliate_id>")
+def admin_delete_affiliate(affiliate_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    aff = db().first("SELECT code FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    db().run("DELETE FROM affiliate_commissions WHERE affiliate_id = ?", affiliate_id)
+    db().run("DELETE FROM affiliates WHERE id = ?", affiliate_id)
+    audit(user, "delete_affiliate", aff["code"])
+    return jsonify({"ok": True})
 
 
 # ---------- Discord: a "Verified buyer" role for licence holders ----------

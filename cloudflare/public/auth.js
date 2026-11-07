@@ -11,6 +11,20 @@ const MENU = [
 // Path prefix when the site is served from a sub-folder (GitHub Pages preview sets <meta name="site-base">).
 const BASE = ((document.querySelector('meta[name="site-base"]') || {}).content || "").replace(/\/$/, "");
 function withBase(path) { return BASE && path.startsWith("/") && !path.startsWith(BASE + "/") ? BASE + path : path; }
+// Affiliate referral: an arriving ?ref=CODE is kept for 30 days and sent at checkout.
+(function () {
+    try {
+        const code = new URLSearchParams(location.search).get("ref");
+        if (code && /^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(code)) localStorage.setItem("rsg_ref", JSON.stringify({ code, at: Date.now() }));
+    } catch (err) {}
+})();
+function affiliateRef() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("rsg_ref") || "null");
+        if (saved && Date.now() - saved.at < 30 * 864e5) return saved.code;
+    } catch (err) {}
+    return "";
+}
 document.addEventListener("click", e => {
     const a = e.target.closest && e.target.closest("a[href]");
     if (!BASE || !a) return;
@@ -102,7 +116,7 @@ async function rsgBuy(productId, button) {
     try {
         // Endorsely (affiliates): the referral this visitor came with goes to Stripe, so the sale is credited
         const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token, "Content-Type": "application/json" },
-            body: JSON.stringify({ referral: window.endorsely_referral || "" }) });
+            body: JSON.stringify({ referral: window.endorsely_referral || "", ref: affiliateRef() }) });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.url) { location.href = data.url; return; }
         if (data.login) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }

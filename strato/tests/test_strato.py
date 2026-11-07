@@ -1384,6 +1384,45 @@ class StratoCGITests:
         self.assertFalse(next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")["can_buy"])
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/system", token=t))["stripe"], "test")
 
+    def test_affiliate_program(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Aff App", "id": "aff-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        # create an affiliate; code + percent are validated
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates", {"code": "x"}, token=t).status, 400, "code too short")
+        aff_user, aff_email = self.customer("affpartner")
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"code": "erik", "name": "Erik", "email": aff_email, "percent": "25"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates", {"code": "ERIK"}, token=t).status, 409, "code taken (case-insensitive)")
+        buyer, _ = self.customer("affbuyer")
+        # buying with ?ref carries the code to Stripe and, once paid, credits the affiliate
+        self.ok(self.w.cgi("POST", "/api/checkout/aff-app", {"ref": "erik"}, token=buyer))
+        form = self.stripe.created[-1]
+        self.assertEqual(form.get("metadata[affiliate_code]"), "erik")
+        sid = form and self.stripe.sessions and list(self.stripe.sessions)[-1]
+        self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual((row["orders"], row["pending"]["amount"], row["percent"]), (1, 25.0, 25), "25% of 100.00")
+        # the affiliate sees it on My account
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=aff_user))["affiliate"]
+        self.assertEqual((me["code"], me["orders"], me["pending"]["amount"]), ("erik", 1, 25.0))
+        self.assertTrue(me["link"].endswith("/?ref=erik"))
+        # self-referral earns nothing: the affiliate buying through their own link
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Self App", "id": "self-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/checkout/self-app", {"ref": "erik"}, token=aff_user))
+        sid2 = list(self.stripe.sessions)[-1]
+        self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=aff_user, query="session_id=" + sid2))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual(row["orders"], 1, "self-referral did not add a commission")
+        # mark paid clears what is owed; a customer cannot touch any of this
+        self.assertEqual(self.w.cgi("GET", "/api/admin/affiliates", token=buyer).status, 403)
+        afid = row["id"]
+        self.ok(self.w.cgi("POST", f"/api/admin/affiliates/{afid}/pay", {}, token=t))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual((row["pending"]["amount"], row["paid"]["amount"]), (0, 25.0))
+        self.ok(self.w.cgi("DELETE", f"/api/admin/affiliates/{afid}", token=t))
+        self.assertFalse(any(a["code"] == "erik" for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"]))
+
     def test_sale_price_and_the_shop(self):
         t = self.owner_token
         product = {"name": "Sale App", "id": "sale-app", "status": "published", "pay_amount": "7.99", "pay_currency": "usd"}

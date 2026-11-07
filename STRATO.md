@@ -220,6 +220,20 @@ link from `setup.py discord` (and Admin → Discord → Invite the bot) asks for
 invited the bot before, open the invite link again or give its role those permissions in Server
 Settings → Roles.
 
+## Affiliate program
+
+Reward people who send you buyers. In **Admin -> Affiliates**, add an affiliate with a short **code**
+and a **percent** (e.g. `erik`, 25%). They share their link, `https://rotaidem.com/?ref=erik`. When a
+visitor arrives with that link and buys (within 30 days), the affiliate earns that percent of the sale.
+
+- The code travels to Stripe Checkout as metadata, and a paid order credits the commission. Nobody can
+  refer themselves (same account or email earns nothing).
+- The **To be paid** column is what you owe. Pay it however you like (bank transfer, PayPal, a free
+  licence), then press **Mark paid** to clear it. Export CSV for your records.
+- If you set the affiliate's **account email**, they see their link and earnings on their own **My account**
+  page. You can pause an affiliate without deleting their history.
+- This is separate from the Endorsely script; use either or both.
+
 ## Security
 
 - **Settings:** `config.env` holds the secrets (database password, `SECRET_KEY`, `LICENSE_API_KEY`,

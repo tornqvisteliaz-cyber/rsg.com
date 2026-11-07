@@ -58,6 +58,8 @@ async function handleRequest(context) {
     if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
     // Discord linking (verified buyer role) runs on the STRATO website (server.py), like file uploads.
     if (path.startsWith("/api/discord/") || path.startsWith("/api/admin/discord")) return json({ error: "Discord linking runs on the STRATO website.", unavailable: true }, 501);
+    if (path.startsWith("/api/admin/affiliates")) return json({ error: "Affiliates are managed on the STRATO website.", unavailable: true }, 501);
+    if (method === "GET" && path === "/api/account/affiliate") return accountAffiliate(request, env);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
     if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
     if (method === "POST" && path === "/api/admin/shop") return adminSaveShop(request, env);
@@ -160,9 +162,11 @@ async function ensure(env) {
                              ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
                              ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"],
                              ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"],
-                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"]]) {
+                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"], ["orders", "affiliate_code TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS affiliates (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, user_id INTEGER, email TEXT, name TEXT, percent INTEGER DEFAULT 20, status TEXT DEFAULT 'active', note TEXT, created_at TEXT)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS affiliate_commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, affiliate_id INTEGER, order_id INTEGER UNIQUE, amount NUMERIC DEFAULT 0, currency TEXT, rate INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', created_at TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -935,8 +939,11 @@ async function fulfilCheckout(env, request, session) {
     await env.DB.prepare("INSERT INTO stripe_payments (session_id, product_id, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)").bind(sid, productId, userId || null, email, utcStamp()).run();
   } catch (err) { return get(); } // the other request (page or webhook) claimed it a moment ago
   const amount = (Number(session.amount_total) || 0) / 100;
-  await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?)").bind(userId || null, productId, amount, sid, String(session.currency || "").toLowerCase()).run();
+  const currency = String(session.currency || "").toLowerCase();
+  const affiliateCode = String((session.metadata || {}).affiliate_code || "");
+  await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?)").bind(userId || null, productId, amount, sid, currency, affiliateCode).run();
   const order = await env.DB.prepare("SELECT id FROM orders WHERE payment_ref = ?").bind(sid).first();
+  if (order) await creditAffiliate(env, order.id, amount, currency, affiliateCode, userId, email);
   let key = "";
   while (!key) {
     const candidate = generateKey(await keyPrefixFor(env, productId));
@@ -946,6 +953,34 @@ async function fulfilCheckout(env, request, session) {
   await emailLicenseKeys(env, request, email, [key], productId);
   if (user) await audit(env, user, "stripe_order", `${productId} ${amount.toFixed(2)} ${String(session.currency || "").toUpperCase()}`);
   return get();
+}
+const AFFILIATE_CODE = /^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/;
+async function affiliateByCode(env, code) {
+  code = String(code || "").trim();
+  if (!AFFILIATE_CODE.test(code)) return null;
+  return env.DB.prepare("SELECT * FROM affiliates WHERE LOWER(code) = ? AND status = 'active'").bind(code.toLowerCase()).first().catch(() => null);
+}
+async function creditAffiliate(env, orderId, amount, currency, code, buyerId, buyerEmail) {
+  const aff = await affiliateByCode(env, code);
+  if (!aff) return null;
+  if ((aff.user_id && buyerId && Number(aff.user_id) === Number(buyerId)) || (aff.email && aff.email.toLowerCase() === String(buyerEmail || "").toLowerCase())) return null;
+  const commission = Math.round((Number(amount || 0) * Number(aff.percent || 0)) / 100 * 100) / 100;
+  try {
+    await env.DB.prepare("INSERT INTO affiliate_commissions (affiliate_id, order_id, amount, currency, rate, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)")
+      .bind(aff.id, orderId, commission, String(currency || "").toLowerCase(), Number(aff.percent || 0), utcStamp()).run();
+  } catch (err) { return null; }
+  return aff;
+}
+async function accountAffiliate(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const aff = await env.DB.prepare("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
+  if (!aff) return json({ affiliate: null });
+  const rows = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status").bind(aff.id).all()).results || [];
+  const by = {}; for (const r of rows) by[r.status] = { orders: Number(r.n) || 0, amount: Math.round((Number(r.total) || 0) * 100) / 100 };
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  return json({ affiliate: { code: aff.code, percent: aff.percent, status: aff.status, link: base + "/?ref=" + encodeURIComponent(aff.code),
+    pending: by.pending || { orders: 0, amount: 0 }, paid: by.paid || { orders: 0, amount: 0 }, orders: Object.values(by).reduce((n, v) => n + v.orders, 0) } });
 }
 async function checkout(request, env, pid) {
   const user = await currentUser(request, env, { ignoreGate: true });
@@ -963,8 +998,10 @@ async function checkout(request, env, pid) {
     success_url: `${base}/checkout-done?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/addons/view?id=${encodeURIComponent(pid)}&cancelled=1` };
   if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
   if ((await shopSettings(env)).promo_codes) fields.allow_promotion_codes = "true"; // codes made in the Stripe dashboard
-  const referral = String((await request.json().catch(() => ({}))).referral || "").trim(); // window.endorsely_referral from the buyer's browser
+  const reqBody = await request.json().catch(() => ({}));
+  const referral = String(reqBody.referral || "").trim(); // window.endorsely_referral from the buyer's browser
   if (/^[A-Za-z0-9_-]{1,100}$/.test(referral)) fields["metadata[endorsely_referral]"] = referral; // Endorsely (affiliates) credits the sale from this
+  if (await affiliateByCode(env, reqBody.ref)) fields["metadata[affiliate_code]"] = String(reqBody.ref).trim(); // our own affiliate program
   const [session, error] = await stripeCall(env, "POST", "/v1/checkout/sessions", fields);
   if (error || !(session || {}).url) return json({ error: error || "Stripe did not open a checkout page" }, 502);
   return json({ url: session.url });
