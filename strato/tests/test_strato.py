@@ -1498,17 +1498,15 @@ class StratoCGITests:
         self.ok(self.w.cgi("DELETE", f"/api/admin/affiliates/{afid}", token=t))
         self.assertFalse(any(a["code"] == "erik" for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"]))
 
-    def test_affiliate_accounts_apply_and_tracking(self):
+    def test_affiliate_accounts_and_tracking(self):
         t = self.owner_token
         self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Track App", "id": "track-app", "status": "published", "pay_amount": "80", "pay_currency": "usd"}, token=t))
         joe, joe_email = self.customer("affjoe")
-        # a non-affiliate sees no account but learns the rate, so the apply form can show it
-        before = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))
-        self.assertEqual((before["affiliate"], before["percent"]), (None, 20))
-        # the customer applies; it starts pending and cannot be applied for twice
-        applied = self.ok(self.w.cgi("POST", "/api/account/affiliate/apply", {"about": "YouTube"}, token=joe))
-        self.assertEqual((applied["status"], applied["code"]), ("pending", "affjoe"))
-        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=joe).status, 409, "already applied")
+        # a customer who is not an affiliate has no affiliate account (there is no self-signup)
+        self.assertIsNone(self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"])
+        # only an admin adds affiliates; they can start one as pending, tied to the person's account email
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"code": "affjoe", "email": joe_email, "percent": "20", "status": "pending"}, token=t))
+        afid = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "affjoe")["id"]
         mine = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"]
         self.assertEqual(mine["status"], "pending")
         # a pending code earns nothing and counts no clicks (only active codes do)
@@ -1521,8 +1519,7 @@ class StratoCGITests:
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
         row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "affjoe")
         self.assertEqual((row["orders"], row["clicks"], row["status"]), (0, 0, "pending"))
-        afid = row["id"]
-        # staff approve it, keeping the code the applicant chose
+        # staff approve it
         self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"id": afid, "code": "affjoe", "email": joe_email, "percent": "20", "status": "active"}, token=t))
         # now the link counts clicks and a referred sale earns a tracked commission
         buyer2, buyer2_email = self.customer("trackbuyer2")
@@ -1544,9 +1541,10 @@ class StratoCGITests:
         detail = self.ok(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=t))["affiliate"]
         self.assertEqual(detail["payout"], "paypal@affjoe.test")
         self.assertEqual(detail["orders_list"][0]["buyer"], buyer2_email)
-        # a customer cannot reach the admin detail or apply endpoints as staff
+        # a customer cannot reach the admin detail, and self-signup no longer exists
         self.assertEqual(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=buyer).status, 403)
         self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "x"}, token=buyer).status, 404, "buyer is not an affiliate")
+        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=buyer).status, 404, "no self-signup endpoint")
 
     def test_affiliate_payouts_over_stripe_connect(self):
         t = self.owner_token

@@ -233,12 +233,12 @@ visitor arrives with that link and buys (within 30 days), the affiliate earns th
 - **Which orders?** Press **Orders** on a row to see every sale that affiliate brought — the date, the
   buyer, the product, the sale and the commission — plus where they want to be paid and how many times
   their link was opened (**Clicks**).
-- **Self-signup.** Customers can apply for a code themselves from **My account** (it arrives as
-  **Pending** with a Discord note). Press **Approve** to turn it on, or **Edit** to change the code or
-  percent first. An affiliate sees their link, their referred orders and their running total on My
-  account, and sets their own payout details there.
-- If you set an affiliate's **account email**, that person sees it on their My account page. You can
-  pause an affiliate without deleting their history.
+- **Only you add affiliates.** There is no public sign-up. You create each one in Admin; set their
+  **status** to **Pending** while you get them set up, then **Active** when ready (or **Paused** to stop
+  it without deleting the history).
+- If you set an affiliate's **account email**, that person sees their link, their referred orders, their
+  running total and their payout details on their own **My account** page. Nobody else sees anything
+  about affiliates there.
 - This is separate from the Endorsely script; use either or both.
 
 **Automatic payouts (Stripe Connect).** Instead of paying each affiliate by hand, let the site do it:

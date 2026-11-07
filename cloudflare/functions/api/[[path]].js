@@ -60,7 +60,6 @@ async function handleRequest(context) {
     if (path.startsWith("/api/discord/") || path.startsWith("/api/admin/discord")) return json({ error: "Discord linking runs on the STRATO website.", unavailable: true }, 501);
     if (path.startsWith("/api/admin/affiliates")) return json({ error: "Affiliates are managed on the STRATO website.", unavailable: true }, 501);
     if (method === "GET" && path === "/api/account/affiliate") return accountAffiliate(request, env);
-    if (method === "POST" && path === "/api/account/affiliate/apply") return accountAffiliateApply(request, env);
     if (method === "POST" && path === "/api/account/affiliate/payout") return accountAffiliatePayout(request, env);
     if (method === "POST" && path === "/api/account/affiliate/connect") return json({ error: "Automatic payouts run on the STRATO website.", unavailable: true }, 501);
     if (method === "POST" && path === "/api/affiliate/click") return affiliateClick(request, env);
@@ -1012,21 +1011,6 @@ async function accountAffiliate(request, env) {
     connected: !!aff.stripe_account, payouts_ready: !!aff.payouts_ready,
     link: base + "/?ref=" + encodeURIComponent(aff.code), orders_list: await affiliateOrders(env, aff.id), ...(await affiliateTotals(env, aff.id)) },
     percent: AFFILIATE_DEFAULT_PERCENT, payouts: { on: false, min: 50, last: "" } });
-}
-async function accountAffiliateApply(request, env) {
-  const user = await currentUser(request, env, { ignoreGate: true });
-  if (!user) return json({ error: "Log in first" }, 401);
-  if (await env.DB.prepare("SELECT id FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null))
-    return json({ error: "You already have an affiliate account" }, 409);
-  const body = await request.json().catch(() => ({}));
-  const code = String(body.code || "").trim() || slug(user.name || "").slice(0, 31);
-  if (!AFFILIATE_CODE.test(code)) return json({ error: "Pick a code of 3 to 31 letters, digits, dashes or underscores" }, 400);
-  if (await env.DB.prepare("SELECT id FROM affiliates WHERE LOWER(code) = ?").bind(code.toLowerCase()).first().catch(() => null))
-    return json({ error: `The code "${code}" is taken. Try another one.` }, 409);
-  const why = String(body.about || "").trim().slice(0, 300);
-  await env.DB.prepare("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)")
-    .bind(code, String(user.email || "").toLowerCase(), user.id, String(user.name || "").slice(0, 100), AFFILIATE_DEFAULT_PERCENT, why ? "Applied: " + why : "Applied from My account", utcStamp()).run();
-  return json({ ok: true, status: "pending", code });
 }
 async function accountAffiliatePayout(request, env) {
   const user = await currentUser(request, env, { ignoreGate: true });
