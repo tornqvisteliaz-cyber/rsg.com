@@ -246,15 +246,18 @@ visitor arrives with that link and buys (within 30 days), the affiliate earns th
 - The affiliate presses **Set up automatic payouts** on their My account page and completes Stripe's
   onboarding (their name, bank or debit card — you never see it). This uses Stripe Connect, which your
   account already supports; it adds no new service or monthly cost.
-- In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on and set a
-  **minimum** (e.g. $50). From then on, the site transfers each connected affiliate their pending
-  commissions once a week, as long as they are above the minimum, and marks those commissions paid.
-  **Run payouts now** sends everything that is due immediately.
+- In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on. From then
+  on, each commission is sent **straight to a connected affiliate the moment their referred sale is
+  paid** — automatic and direct, no button to press and no waiting.
+- The **catch-up minimum** only covers affiliates who connect Stripe *after* they have already earned:
+  the site sweeps up what they are owed above that minimum (weekly, or with **Run payouts now**). Anyone
+  who was already connected is paid instantly, minimum or not.
 - You always receive the full sale first, so your Stripe balance covers the commission. Transfers carry
-  an idempotency key, so a retry can never pay twice. Affiliates who do not connect Stripe are still paid
-  by hand with **Mark paid** — nothing changes for them.
-- STRATO has no always-on cron, so the weekly run happens on the first visit after it is due (the same
-  way scheduled Discord posts work). A busy site runs it on time; a quiet one runs it on the next visit.
+  an idempotency key, so a retry can never pay twice. A buyer's success page never fails over a payout —
+  if a transfer cannot be made it stays pending and the next sweep settles it.
+- Affiliates who do not connect Stripe are still paid by hand with **Mark paid** — nothing changes.
+- STRATO has no always-on cron, so the weekly catch-up happens on the first visit after it is due (the
+  same way scheduled Discord posts work).
 
 ## Security
 

@@ -2440,6 +2440,8 @@ def fulfil_checkout(session):
              user_id or None, product_id, amount, sid, currency, affiliate_code)
     order = db().first("SELECT id FROM orders WHERE payment_ref = ?", sid)
     referred_by = credit_affiliate(order["id"], amount, currency, affiliate_code, user_id, email) if order else None
+    if referred_by:
+        affiliate_autopay(referred_by)  # pay their cut straight away if automatic payouts are on and they are set up
     key = ""
     while not key:
         candidate = generate_key(key_prefix_for(product_id))
@@ -2674,8 +2676,10 @@ def account_affiliate():
     aff = affiliate_for_user(user)
     if not aff:
         return jsonify({"affiliate": None, "percent": AFFILIATE_DEFAULT_PERCENT})
-    if aff.get("stripe_account") and not aff.get("payouts_ready") and stripe_connect_ready(aff):
-        aff = affiliate_for_user(user)  # they just finished Stripe onboarding
+    if aff.get("stripe_account"):
+        stripe_connect_ready(aff)   # refresh the cached flag for the dashboard
+        affiliate_autopay(aff)      # and pay anything still pending, directly, now they are set up
+        aff = affiliate_for_user(user) or aff
     data = affiliate_public(aff)
     data.pop("note", None)  # the admin's own note stays private
     return jsonify({"affiliate": data, "percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings()})
@@ -2903,8 +2907,24 @@ def affiliate_payout_run():
     return {"paid": out, "min": minimum}
 
 
+def affiliate_autopay(aff):
+    """Pay a connected, ready affiliate their pending commissions right now, straight to their account.
+    Used the moment a referred sale is paid (and when they finish onboarding) so money is auto and direct.
+    Ignores the minimum — that only guards the weekly catch-up. Never raises: on failure the commission
+    stays pending and the weekly run settles it."""
+    if not STRIPE_SECRET_KEY or not aff or not get_setting("affiliate.payouts_on", False):
+        return []
+    try:
+        if not stripe_connect_ready(aff):
+            return []
+        return affiliate_pay_one(aff, 0)
+    except Exception:  # noqa: BLE001 - a buyer's success page never fails over a payout
+        app.logger.exception("Instant affiliate payout failed for %s", (aff or {}).get("code"))
+        return []
+
+
 def affiliate_payouts_due():
-    """Run the weekly batch at the first request after it is due (STRATO has no cron)."""
+    """Run the weekly catch-up at the first request after it is due (STRATO has no cron)."""
     if not STRIPE_SECRET_KEY or not get_setting("affiliate.payouts_on", False):
         return
     now = time.time()

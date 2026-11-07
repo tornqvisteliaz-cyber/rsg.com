@@ -821,11 +821,11 @@
         <form class="panel" id="af-pay-form" style="margin-bottom:24px">
             <div class="panel-head"><h2>Automatic payouts</h2><span class="muted" id="af-pay-last" style="font-size:13px"></span></div>
             <div class="panel-body">
-                <p class="muted" style="margin-top:0;font-size:14px">Affiliates connect a Stripe account from their <strong>My account</strong> page. When this is on, the site sends each affiliate their commissions automatically (weekly), once they are above the minimum. You can also pay anyone by hand with <strong>Mark paid</strong>.</p>
+                <p class="muted" style="margin-top:0;font-size:14px">Affiliates connect a Stripe account from their <strong>My account</strong> page. When this is on, each commission is sent straight to a connected affiliate <strong>the moment their referred sale is paid</strong>. The minimum below only guards a weekly catch-up for affiliates who connect after they have already earned. Anyone without Stripe is still paid by hand with <strong>Mark paid</strong>.</p>
                 <div id="af-pay-nostripe" class="muted" style="font-size:14px;display:none">Connect Stripe first (Admin → RotaHub → payments) to pay affiliates automatically.</div>
                 <div class="form-grid" style="grid-template-columns:auto 1fr auto;align-items:end;gap:16px">
                     <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0;width:auto"><input type="checkbox" id="af-pay-on"> Pay affiliates automatically</label>
-                    <div class="field" style="max-width:220px"><label for="af-pay-min">Minimum payout ($)</label><input id="af-pay-min" type="number" min="0" step="1"></div>
+                    <div class="field" style="max-width:220px"><label for="af-pay-min">Catch-up minimum ($)</label><input id="af-pay-min" type="number" min="0" step="1"></div>
                     <div class="field" style="display:flex;gap:8px"><button class="btn" id="af-pay-save">Save</button><button class="btn btn-ghost" type="button" id="af-pay-run">Run payouts now</button></div>
                 </div>
                 <p class="msg" id="af-pay-msg" style="margin:10px 0 0"></p>

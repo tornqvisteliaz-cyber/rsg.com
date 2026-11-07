@@ -222,13 +222,13 @@ async function loadAffiliate() {
         cbox.style.display = "";
         const auto = d.payouts && d.payouts.on;
         if (aff.connected && aff.payouts_ready) {
-            ctext.textContent = auto ? "Set up ✓ Your commissions are sent to your Stripe account automatically." : "Set up ✓ You'll be paid to your Stripe account once automatic payouts are switched on.";
+            ctext.textContent = auto ? "Set up ✓ Every commission is sent straight to your Stripe account the moment your referred sale is paid." : "Set up ✓ You'll be paid straight to your Stripe account as soon as we switch automatic payouts on.";
             cbtn.style.display = "none";
         } else if (aff.connected) {
             ctext.textContent = "Almost there — finish your Stripe details so we can pay you.";
             cbtn.style.display = ""; cbtn.textContent = "Finish Stripe setup";
         } else {
-            ctext.textContent = auto ? `Connect a Stripe account and we pay your commissions automatically (above $${Number(d.payouts.min || 0).toFixed(2)}).` : "Connect a Stripe account to get paid automatically once we switch payouts on.";
+            ctext.textContent = auto ? "Connect a Stripe account and each commission is paid straight to you, automatically, as soon as the sale is paid." : "Connect a Stripe account to get paid automatically once we switch payouts on.";
             cbtn.style.display = ""; cbtn.textContent = "Set up automatic payouts";
         }
     } else { cbox.style.display = "none"; }

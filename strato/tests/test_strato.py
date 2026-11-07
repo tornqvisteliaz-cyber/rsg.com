@@ -1531,14 +1531,16 @@ class StratoCGITests:
         # a second run pays nothing and never double-transfers
         self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
         self.assertEqual(len(self.stripe.transfers), 1)
-        # a new commission below the (raised) minimum waits
-        self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "50"}, token=t))
+        # with payouts on and the affiliate set up, a NEW referred sale pays instantly and directly:
+        # straight through the moment the sale is paid, no run and no minimum wait
         payer2, _ = self.customer("payer2")
         self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer2))
         sid2 = list(self.stripe.sessions)[-1]; self.stripe.pay(sid2)
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer2, query="session_id=" + sid2))
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [], "20.00 is below the 50.00 minimum")
-        self.assertEqual(len(self.stripe.transfers), 1)
+        self.assertEqual(len(self.stripe.transfers), 2, "the second commission was paid instantly on the sale")
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
+        self.assertEqual((me["pending"]["amount"], me["paid"]["amount"]), (0, 40.0))
+        self.assertTrue(all(o["status"] == "paid" for o in me["orders_list"]))
         # customers cannot run payouts or change the settings
         self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=payer).status, 403)
         self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": False}, token=payer).status, 403)
