@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rotaidem | HeavyPro for Microsoft Flight Simulator 2024</title>
+    <meta name="description" content="Rotaidem makes HeavyPro, a Windows app that gives your joystick the response of a heavy airliner in Microsoft Flight Simulator 2024.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
+</head>
+<body>
+<section class="welcome" data-image="hero" style="background-image:url('/rsg.com/img/hero.jpg')">
+    <div class="wrap">
+        <span class="pre">Microsoft Flight Simulator 2024</span>
+        <h1 data-text="index.welcome-to-rotaidem">Welcome to<br>Rotaidem</h1>
+        <div class="rule"></div>
+        <p data-text="index.we-make-software-that">We make software that brings the feel of real airliner flying to your desk. Our first product, HeavyPro, is on its way.</p>
+        <div class="countdown" data-countdown hidden></div>
+        <div class="actions"><a href="/rsg.com/heavypro" class="btn btn-light">Discover HeavyPro</a><a href="/rsg.com/about" class="btn btn-ghost">About us</a></div>
+    </div>
+</section>
+
+<section class="section">
+    <div class="wrap split">
+        <div>
+            <h2 data-text="index.a-joystick-is-not">A joystick is not a yoke</h2>
+            <p class="lead" data-text="index.a-short-desktop-stick">A short desktop stick reacts instantly. An A320 or a 777 does not. HeavyPro calculates how the real aircraft would answer your stick, from its type, weight, airspeed and flight phase, and gives your controls that heavy, realistic feel: pitch and roll build up and settle the way they do on a real airliner.</p>
+            <p class="muted" data-text="index.it-does-not-touch">It does not touch aircraft files or flight models, and it steps aside whenever the autopilot is flying.</p>
+            <a href="/rsg.com/heavypro" class="more">How HeavyPro works</a>
+        </div>
+        <figure class="trace" data-trace aria-label="Illustration: a quick stick movement and the response HeavyPro gives it">
+            <div class="trace-plot"><svg viewBox="0 0 600 375" preserveAspectRatio="none" aria-hidden="true"><line class="zero" x1="0" y1="187.5" x2="600" y2="187.5"/><path class="t-stick" d=""/><path class="t-heavy" d=""/></svg></div>
+            <figcaption>
+                <div class="trace-keys"><span class="k-stick">Your stick</span><span class="k-heavy">With HeavyPro</span></div>
+                <label class="trace-control">Move the stick <input type="range" min="-100" max="100" value="0" step="1"></label>
+                <p class="trace-note">An illustration. In the simulator the response depends on the aircraft, its weight, airspeed and flight phase.</p>
+            </figcaption>
+        </figure>
+    </div>
+</section>
+
+<section class="section profiles" data-section="profiles" data-image="feature" style="background-image:url('/rsg.com/img/approach.jpg')">
+    <div class="wrap">
+        <h2 data-text="index.made-for-the-aircraft">Made for the aircraft you already fly</h2>
+        <p class="lead" data-text="index.heavypro-recognises-the-aircraft">HeavyPro recognises the aircraft you load and picks a matching profile. Every profile can be tuned.</p>
+        <div class="facts" data-aircraft="home">
+            <div><strong>iFly 737 MAX</strong><span>Boeing 737 MAX profile</span></div>
+            <div><strong>PMDG 737 and 777</strong><span>Boeing narrow-body and wide-body profiles</span></div>
+            <div><strong>Asobo 787 and others</strong><span>Default airliner and general aviation profiles</span></div>
+        </div>
+    </div>
+</section>
+
+<section class="section dark" data-testimonials hidden>
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="index.what-pilots-say">What pilots say</h2><span data-trustpilot></span></div>
+        <div class="quotes" data-testimonials-list></div>
+    </div>
+</section>
+
+<section class="section" data-section="products">
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="index.products">Products</h2><a href="/rsg.com/addons/" class="more">All products</a></div>
+        <div class="grid grid-3" id="home-products"><p class="muted">Loading products…</p></div>
+    </div>
+</section>
+
+<section class="section alt" data-section="news">
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="index.latest-news">Latest news</h2><a href="/rsg.com/newsletter" class="more">All news</a></div>
+        <div class="grid grid-3" id="home-news"><p class="muted">Loading news…</p></div>
+    </div>
+</section>
+
+<section class="section-tight" data-section="signup">
+    <div class="wrap signup-band">
+        <div><h2 data-text="index.hear-about-heavypro-first">Hear about HeavyPro first</h2><p class="muted" style="margin:0" data-text="index.one-email-when-it">One email when it launches, and the occasional development update. No spam.</p></div>
+        <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Your email address" required><button class="btn">Subscribe</button><p class="msg"></p></form>
+    </div>
+</section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+fetch("/rsg.com/api/products").then(r => r.json()).then(d => {
+    const items = (d.products || []).slice(0, 3);
+    document.getElementById("home-products").innerHTML = items.length ? items.map(productCard).join("")
+        : '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>';
+}).catch(() => { document.getElementById("home-products").innerHTML = '<div class="empty" style="grid-column:1/-1"><h3>HeavyPro is on the way</h3><p>Our first release is being finished. Products will be listed here at launch.</p></div>'; });
+fetch("/rsg.com/api/newsletter").then(r => r.json()).then(d => {
+    const posts = (d.posts || []).slice(0, 3);
+    document.getElementById("home-news").innerHTML = posts.length ? posts.map(p => `<a class="news-card" href="/rsg.com/newsletter"><div class="tile"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div><div class="date">${esc(p.date)}</div><h3>${esc(p.title)}</h3></a>`).join("")
+        : '<p class="muted">No news yet.</p>';
+}).catch(() => { document.getElementById("home-news").innerHTML = '<p class="muted">No news yet.</p>'; });
+
+// The trace: a desktop stick jumps, HeavyPro's answer builds up and settles. A simple spring
+// (a sketch of the idea, not HeavyPro's own model). Let go of the slider and it springs back to centre.
+(function () {
+    const fig = document.querySelector("[data-trace]");
+    if (!fig) return;
+    const svg = fig.querySelector("svg"), stickPath = fig.querySelector(".t-stick"), heavyPath = fig.querySelector(".t-heavy");
+    const slider = fig.querySelector("input"), W = 600, H = 375, N = 300, DT = 1 / 60;
+    const stick = new Array(N).fill(0), heavy = new Array(N).fill(0);
+    let u = 0, x = 0, v = 0, running = false, visible = false, demoDone = false, timer = [];
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const y = val => (H / 2 - val / 100 * (H / 2 - 18)).toFixed(1);
+    const path = arr => arr.map((val, i) => (i ? "L" : "M") + (i * W / (N - 1)).toFixed(1) + " " + y(val)).join("");
+    function step() {
+        const w = 4.2, z = .78;                     // how quickly it answers, how much it overshoots
+        v += (w * w * (u - x) - 2 * z * w * v) * DT;
+        x += v * DT;
+        stick.push(u); stick.shift(); heavy.push(x); heavy.shift();
+    }
+    function draw() { stickPath.setAttribute("d", path(stick)); heavyPath.setAttribute("d", path(heavy)); }
+    function settled() { return Math.abs(u - x) < .05 && Math.abs(v) < .05 && stick.every(s => s === u) && heavy.every(h => Math.abs(h - x) < .05); }
+    function loop() {
+        step(); draw();
+        if (visible && !settled()) requestAnimationFrame(loop); else running = false;
+    }
+    function kick() { if (!running && visible) { running = true; requestAnimationFrame(loop); } }
+    function set(val) { u = Math.max(-100, Math.min(100, val)); slider.value = u; kick(); }
+    slider.addEventListener("input", () => { timer.forEach(clearTimeout); set(+slider.value); });
+    ["pointerup", "pointercancel", "touchend", "blur"].forEach(ev => slider.addEventListener(ev, () => set(0)));
+    slider.addEventListener("keyup", () => setTimeout(() => set(0), 400));
+    if (still) {                                  // no motion: draw one movement and its answer at once
+        for (let i = 0; i < N; i++) { u = i > 40 && i < 150 ? 75 : 0; step(); }
+        u = 0; draw();
+    } else draw();
+    new IntersectionObserver(entries => {
+        visible = entries[0].isIntersecting;
+        if (visible && !still && !demoDone) {     // once, when it first comes into view: a quick pull and release
+            demoDone = true;
+            timer = [setTimeout(() => set(75), 500), setTimeout(() => set(0), 1900)];
+        }
+        kick();
+    }, { threshold: .5 }).observe(svg);
+})();
+</script>
+</body>
+</html>

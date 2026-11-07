@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log in | Rotaidem</title>
+    <meta name="description" content="Log in to your Rotaidem account.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
+</head>
+<body data-footer="off">
+<main class="auth">
+    <div class="auth-side" data-image="login" style="background-image:url('/rsg.com/img/clouds.jpg')"><div><h2 data-text="login.welcome-back">Welcome back</h2><p data-text="login.your-licences-downloads-and">Your licences, downloads and orders are waiting in your account.</p></div></div>
+    <div class="auth-form">
+        <form id="form">
+            <h1 style="font-size:32px" data-text="login.log-in">Log in</h1>
+            <p class="muted" style="margin-bottom:26px" data-text="login.use-the-email-address">Use the email address or username you signed up with.</p>
+            <div class="field"><label for="email">Email or username</label><input id="email" autocomplete="username" required></div>
+            <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+            <p class="forgot"><a href="/rsg.com/forgot-password">Forgot password?</a></p>
+            <button class="btn btn-block">Log in</button>
+            <p id="error" class="msg"></p>
+            <p class="alt-link">New to Rotaidem? <a href="/rsg.com/signup">Create an account</a></p>
+        </form>
+    </div>
+</main>
+<script src="/rsg.com/auth.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+$("form").onsubmit = async e => {
+    e.preventDefault();
+    const msg = $("error"); msg.className = "msg"; msg.textContent = "Logging in…";
+    const res = await fetch("/rsg.com/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: $("email").value, password: $("password").value }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (data.unverified) {
+        msg.className = "msg error";
+        msg.innerHTML = `${esc(data.error)} <a href="/rsg.com/verify-email#email=${encodeURIComponent(data.email || "")}">Send the link again</a>`;
+        return;
+    }
+    if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Login is not available right now."; return; }
+    saveSession(data);
+    const next = new URLSearchParams(location.search).get("next") || ""; // e.g. back to Downloads
+    location.href = next.startsWith("/rsg.com/") && !next.startsWith("//") ? next : data.is_admin ? "/rsg.com/admin" : "/rsg.com/account";
+};
+</script>
+</body>
+</html>

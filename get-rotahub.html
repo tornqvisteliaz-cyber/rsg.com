@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="site-base" content="/rsg.com">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Get RotaHub | Rotaidem</title>
+    <meta name="description" content="Download RotaHub, the free app that installs and updates Rotaidem products.">
+    <link rel="icon" type="image/svg+xml" href="/rsg.com/favicon.svg">
+    <link rel="stylesheet" href="/rsg.com/site.css">
+    <script src="/rsg.com/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/rsg.com/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/rsg.com/">Home</a> / <a href="/rsg.com/downloads">Downloads</a> / RotaHub</div><h1 data-text="get-rotahub.title">Get RotaHub</h1><p data-text="get-rotahub.lead">Rotaidem products install and update through RotaHub, our free app for Windows.</p></div></section>
+<section class="section"><div class="wrap">
+    <div class="box">
+        <h3 style="margin-top:0" id="hub-title">Your RotaHub download is starting…</h3>
+        <p class="muted" id="hub-sub">If nothing happens, press the button.</p>
+        <a class="btn" id="hub-dl" href="/rsg.com/downloads">Download RotaHub</a>
+    </div>
+    <div class="grid grid-3" style="margin-top:28px">
+        <div class="box"><h3>1. Open RotaHub</h3><p class="muted">Run RotaHub.exe from your downloads. It installs itself and adds a Start menu shortcut. If Windows says it protected your PC, click <strong>More info</strong>, then <strong>Run anyway</strong>.</p></div>
+        <div class="box"><h3>2. Log in</h3><p class="muted">Use your Rotaidem account, the same as on this website. No account yet? <a href="/rsg.com/signup">Create one</a> first.</p></div>
+        <div class="box"><h3 id="hub-step3">3. Press Install</h3><p class="muted" id="hub-step3-text">Pick the product in your library and press Install. RotaHub puts it in place, activates your licence key and keeps it up to date.</p></div>
+    </div>
+</div></section>
+<script src="/rsg.com/auth.js"></script>
+<script>
+(function () {
+    const hub = (window.RSG_SITE || {}).hub || {}, url = hub.rotahub_url || "";
+    const product = new URLSearchParams(location.search).get("product") || "";
+    if (product) {
+        document.getElementById("hub-step3").textContent = "3. Install " + product;
+        document.getElementById("hub-step3-text").textContent = "Find " + product + " in your library and press Install. RotaHub puts it in place, activates your licence key and keeps it up to date.";
+    }
+    if (!url) {
+        document.getElementById("hub-title").textContent = "RotaHub is not ready to download yet";
+        document.getElementById("hub-sub").textContent = "Check back soon, or see the Downloads page.";
+        document.getElementById("hub-dl").textContent = "Go to Downloads";
+        return;
+    }
+    document.getElementById("hub-dl").href = withBase(url);
+    setTimeout(() => { location.href = withBase(url); }, 600); // a file link downloads without leaving the page
+})();
+</script>
+</body>
+</html>
