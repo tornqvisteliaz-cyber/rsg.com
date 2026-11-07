@@ -261,7 +261,9 @@ document.getElementById("af-connect-btn").onclick = async () => {
     const r = await fetch("/api/account/affiliate/connect", { method: "POST", headers });
     const d = await r.json().catch(() => ({}));
     if (r.ok && d.url) { location.href = d.url; return; }
-    btn.disabled = false; msg.className = "msg error"; msg.textContent = d.error || "Could not open Stripe. Try again.";
+    btn.disabled = false; msg.className = "msg error";
+    // show Stripe's own reason when we have it; otherwise say which layer failed
+    msg.textContent = d.error || (r.status === 404 ? "Payouts aren't live on the site yet (deploy the latest version)." : r.status === 501 ? "Open this from the main site, not the preview." : `Could not reach Stripe (error ${r.status}).`);
     loadAffiliate();
 };
 

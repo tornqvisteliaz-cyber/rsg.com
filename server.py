@@ -2953,7 +2953,7 @@ def account_affiliate_connect():
     account, error = stripe_connect_account(aff)
     if error:
         return err(error, 502)
-    base = site_url()
+    base = re.sub(r"^http://", "https://", site_url())  # Stripe refuses non-https return URLs in live mode
     link, error = stripe_call("POST", "/v1/account_links", {
         "account": account, "type": "account_onboarding",
         "refresh_url": base + "/account?connect=refresh", "return_url": base + "/account?connect=done"})
