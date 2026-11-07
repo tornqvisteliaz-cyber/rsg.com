@@ -101,6 +101,7 @@ async function handleRequest(context) {
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/role$/.test(path)) return adminSetRole(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/licenses/import") return licensesImport(request, env);
     if (method === "GET" && path === "/api/licenses/jwks.json") return json({ keys: [await signingPublicJwk(env)] });
+    if (method === "GET" && path === "/api/heavypro/version") return heavyproVersion(env);
     if (method === "GET" && path === "/api/licenses/public-key") return licensePublicKeyPem(env);
     if (method === "POST" && path === "/api/licenses/activate") return licenseActivate(request, env);
     if (method === "POST" && path === "/api/licenses/validate") return licenseValidate(request, env);
@@ -400,6 +401,18 @@ async function products(request, env) {
   const viewer = await currentUser(request, env);
   const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
   return json({ products: (rows.results || []).map(r => publicProduct(r, staff, !!stripeKey(env))) });
+}
+
+async function heavyproVersion(env) {
+  // Public: the current HeavyPro version, for the app's "update available" reminder.
+  try {
+    const row = await env.DB.prepare(
+      "SELECT version FROM products WHERE lower(id) LIKE '%heavypro%' OR lower(name) LIKE '%heavypro%' ORDER BY version DESC LIMIT 1"
+    ).first();
+    return json({ version: (row && row.version) ? String(row.version) : "", url: "https://rotaidem.com/downloads" });
+  } catch (e) {
+    return json({ version: "" });
+  }
 }
 // Version history of a product: [{version, date, notes}], newest first, at most 50.
 function cleanChangelog(items) {

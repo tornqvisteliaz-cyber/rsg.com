@@ -605,6 +605,57 @@ class StratoCGITests:
         r = self.w.cgi("POST", "/api/licenses/import", {"licenses": [{"key": imported}]}, headers={"X-License-Api-Key": "wrong"})
         self.assertEqual(r.status, 403)
 
+    def test_licence_expiry_churn_and_forgotten_computers(self):
+        t = self.owner_token
+        key = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "max_activations": 1}, token=t))["keys"][0]
+        lic = [x for x in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if x["license_key"] == key][0]
+        req = lambda action, machine: self.w.cgi("POST", f"/api/licenses/{action}", {"key": key, "machine_id": machine,  # noqa: E731
+                                                                                      "machine_name": machine, "product": "heavypro"})
+        b64 = lambda text: base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))  # noqa: E731
+
+        # An end date caps the signed lease; once it has passed the key is refused as "expired".
+        self.assertEqual(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"expires_at": "not a date"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"expires_at": "2099-01-02"}, token=t))
+        claims = json.loads(b64(self.ok(req("activate", "PC-1"))["token"].split(".")[1]))
+        self.assertLessEqual(claims["exp"] - claims["iat"], 14 * 86400)
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"expires_at": "2001-01-01"}, token=t))
+        self.assertEqual(req("validate", "PC-1").json()["reason"], "expired")
+        self.assertNotIn("token", req("validate", "PC-1").json())
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"expires_at": ""}, token=t))
+        self.assertTrue(self.ok(req("validate", "PC-1"))["valid"], "clearing the end date makes it perpetual again")
+
+        # Activate/deactivate in turn (each PC keeping its signed lease) stops after limit + 3 new PCs in 30 days.
+        self.ok(req("deactivate", "PC-1"))
+        moved = []
+        for i in range(2, 8):
+            r = req("activate", f"PC-{i}")
+            moved.append(r.json().get("reason") or "ok")
+            self.ok(req("deactivate", f"PC-{i}"))
+        self.assertEqual(moved, ["ok", "ok", "ok", "activation_churn", "activation_churn", "activation_churn"])
+
+        # A computer that has not checked in for 30 days gives its slot to a new one (Windows reinstalled).
+        other = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "max_activations": 1}, token=t))["keys"][0]
+        call = lambda machine: self.w.cgi("POST", "/api/licenses/activate", {"key": other, "machine_id": machine,  # noqa: E731
+                                                                           "machine_name": machine, "product": "heavypro"})
+        self.ok(call("OLD-PC"))
+        self.assertEqual(call("NEW-PC").json()["reason"], "activation_limit", "still in use: no slot taken")
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("UPDATE license_activations SET last_seen = '2000-01-01 00:00:00' WHERE machine_id = 'OLD-PC'")
+            conn.execute("INSERT INTO license_failures (ip_address, created_at) VALUES ('192.0.2.1', '2000-01-01 00:00:00')")
+            conn.commit()
+            conn.close()
+            self.assertTrue(self.ok(call("NEW-PC"))["valid"])
+            self.assertEqual(self.w.cgi("POST", "/api/licenses/validate", {"key": other, "machine_id": "OLD-PC"}).json()["reason"],
+                             "not_activated")
+            self.w.cgi("POST", "/api/licenses/validate", {"key": "HPRO-AAAA-BBBB-CCCC", "machine_id": "x"})
+            conn = sqlite3.connect(db_file)
+            left = conn.execute("SELECT COUNT(*) FROM license_failures WHERE created_at < '2001-01-01'").fetchone()[0]
+            conn.close()
+            self.assertEqual(left, 0, "failed attempts older than a day are pruned")
+
     def test_signed_licence_answers(self):
         """HeavyPro trusts only answers signed by this server: a fake server cannot say "valid"."""
         import hashlib

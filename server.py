@@ -193,6 +193,8 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS campaigns (id {pk}, subject TEXT, product_id TEXT, audience TEXT, sent_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, admin_id INTEGER, created_at {ts})",
         f"CREATE TABLE IF NOT EXISTS shared_profiles (id {pk}, name_key {ident} UNIQUE, name TEXT, data TEXT, license_id INTEGER, downloads INTEGER DEFAULT 0, created_at {ts}, updated_at {ts})",
         f"CREATE TABLE IF NOT EXISTS license_failures (id {pk}, ip_address {ident}, created_at {word})",
+        # One row per new computer activated on a licence: limits activate/deactivate cycling.
+        f"CREATE TABLE IF NOT EXISTS license_activation_log (id {pk}, license_id INTEGER, machine_id {ident}, created_at {word})",
         # One row per logged-in browser; only a hash of the token is stored.
         f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
         f"user_agent TEXT, created_at {word}, last_seen {word})",
@@ -1915,9 +1917,13 @@ def admin_update_license(license_id):
     email = str(b.get("email", lic["email"]) or "").strip().lower()
     customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
     product_id = str(b.get("product_id") or lic["product_id"] or "heavypro").strip()[:60]
-    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ?, product_id = ? WHERE id = ?",
+    expires = str(b.get("expires_at", lic.get("expires_at")) or "").strip()
+    if expires and not license_expiry({"expires_at": expires}):
+        return err("expires_at must be a date like 2027-12-31 (or empty for a licence that never ends)", 400)
+    expires = license_expiry({"expires_at": expires}).strftime("%Y-%m-%d %H:%M:%S") if expires else None
+    db().run("UPDATE licenses SET status = ?, email = ?, customer_id = ?, max_activations = ?, note = ?, product_id = ?, expires_at = ? WHERE id = ?",
              status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
-             str(b.get("note", lic["note"]) or "")[:200], product_id, license_id)
+             str(b.get("note", lic["note"]) or "")[:200], product_id, expires, license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
     discord_sync_owners([(lic["customer_id"], lic["email"]), (customer["id"] if customer else None, email)])
     return jsonify({"ok": True})
@@ -1986,6 +1992,12 @@ def admin_reset_activation(license_id, activation_id):
 
 LICENSE_LEASE_DAYS = 14
 LICENSE_FAILURES_PER_HOUR = 30
+# A computer that has not checked in for this long gives its slot to a new one when the key is at its
+# limit (Windows reinstalled, PC replaced). Longer than any lease, so that computer has already stopped.
+LICENSE_STALE_DAYS = 30
+# New computers a key may activate per 30 days beyond its own limit. Stops one key serving many PCs by
+# activating and deactivating in turn (each keeps a signed lease for LICENSE_LEASE_DAYS).
+LICENSE_EXTRA_ACTIVATIONS_PER_30_DAYS = 3
 SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
@@ -2124,7 +2136,29 @@ def lease_days():
         return LICENSE_LEASE_DAYS
 
 
+def stale_days():
+    try:
+        return max(lease_days() + 1, int(os.environ.get("LICENSE_STALE_DAYS") or LICENSE_STALE_DAYS))
+    except ValueError:
+        return max(lease_days() + 1, LICENSE_STALE_DAYS)
+
+
+def license_expiry(lic):
+    """The licence's end as an aware datetime, or None when it never ends."""
+    text = str(lic.get("expires_at") or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+
 def license_failed(reply, status):
+    db().run("DELETE FROM license_failures WHERE created_at < ?", utc_stamp(86400))
     db().run("INSERT INTO license_failures (ip_address, created_at) VALUES (?, ?)", request.remote_addr or "",
              datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
     return reply, status
@@ -2162,6 +2196,10 @@ def license_for_request():
         return None, "", license_failed(jsonify({"valid": False, "reason": "not_found", "error": "This licence key does not exist."}), 404)
     if lic["status"] != "active":
         return None, "", (jsonify({"valid": False, "reason": "revoked", "error": "This licence key has been revoked."}), 403)
+    ends = license_expiry(lic)
+    if ends and datetime.now(timezone.utc) >= ends:
+        return None, "", (jsonify({"valid": False, "reason": "expired", "expires_at": ends.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                   "error": f"This licence ended on {ends.strftime('%Y-%m-%d')}. Renew it at rotaidem.com."}), 403)
     product = str(b.get("product") or "").strip()
     if product and not same_product(product, lic["product_id"]):
         return None, "", (jsonify({"valid": False, "reason": "wrong_product", "error": "This licence key is for another product."}), 403)
@@ -2174,6 +2212,9 @@ def license_for_request():
 def license_reply(lic, used, machine):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     until = now + timedelta(days=lease_days())
+    ends = license_expiry(lic)
+    if ends and ends < until:
+        until = ends
     claims = {"iss": site_url(), "sub": f"license:{lic['id']}", "aud": lic["product_id"], "key": lic["license_key"], "mid": machine,
               "iat": int(now.timestamp()), "exp": int(until.timestamp()), "activations_used": used, "max_activations": lic["max_activations"]}
     nonce = str(body().get("nonce") or "")[:128]
@@ -2191,16 +2232,46 @@ def license_activate():
         return error
     name = str(body().get("machine_name") or "")[:100]
     existing = db().first("SELECT id FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
-    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
     if existing:
         db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP, machine_name = ? WHERE id = ?", name, existing["id"])
-    elif used >= lic["max_activations"]:
-        return jsonify({"valid": False, "reason": "activation_limit", "activations_used": used, "max_activations": lic["max_activations"],
-                        "error": f"This key is already active on {used} computer(s). Deactivate one first or contact support."}), 403
-    else:
+        return license_reply(lic, activations_used(lic), machine)
+
+    limit = lic["max_activations"]
+    recent = (db().first("SELECT COUNT(*) AS n FROM license_activation_log WHERE license_id = ? AND created_at >= ?",
+                         lic["id"], utc_stamp(30 * 86400)) or {}).get("n", 0)
+    if recent >= limit + LICENSE_EXTRA_ACTIVATIONS_PER_30_DAYS:
+        return jsonify({"valid": False, "reason": "activation_churn", "activations_used": activations_used(lic), "max_activations": limit,
+                        "error": "This key has been moved to new computers too often this month. Contact support@rotaidem.com "
+                                 "and we will sort it out."}), 429
+    if activations_used(lic) >= limit:
+        # At the limit: a computer that has not checked in for LICENSE_STALE_DAYS (Windows reinstalled,
+        # PC replaced) gives up its slot. Its lease ran out long ago, so it is no longer running.
+        stale = db().first("SELECT id, machine_name FROM license_activations WHERE license_id = ? AND last_seen < ? "
+                           "ORDER BY last_seen LIMIT 1", lic["id"], utc_stamp(stale_days() * 86400))
+        if not stale:
+            used = activations_used(lic)
+            return jsonify({"valid": False, "reason": "activation_limit", "activations_used": used, "max_activations": limit,
+                            "error": f"This key is already active on {used} computer(s). In HeavyPro on the computer you no longer use, "
+                                     "choose Deactivate this PC, or contact support@rotaidem.com."}), 403
+        db().run("DELETE FROM license_activations WHERE id = ?", stale["id"])
+        db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_stale_slot_reused', ?, ?, ?)",
+                 None, f"{lic['license_key']} {stale['machine_name'] or ''}"[:200], request.remote_addr or "", utc_stamp())
+    try:
         db().run("INSERT INTO license_activations (license_id, machine_id, machine_name) VALUES (?, ?, ?)", lic["id"], machine, name)
-        used += 1
-    return license_reply(lic, used, machine)
+    except Exception:  # noqa: BLE001 - the same computer activated at the same moment: that one counts
+        return license_reply(lic, activations_used(lic), machine)
+    if activations_used(lic) > limit:
+        # Two new computers activated at the same moment: the later one gives its slot back.
+        db().run("DELETE FROM license_activations WHERE license_id = ? AND machine_id = ?", lic["id"], machine)
+        used = activations_used(lic)
+        return jsonify({"valid": False, "reason": "activation_limit", "activations_used": used, "max_activations": limit,
+                        "error": f"This key is already active on {used} computer(s)."}), 403
+    db().run("INSERT INTO license_activation_log (license_id, machine_id, created_at) VALUES (?, ?, ?)", lic["id"], machine, utc_stamp())
+    return license_reply(lic, activations_used(lic), machine)
+
+
+def activations_used(lic):
+    return (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
 
 
 @app.post("/api/licenses/validate")
@@ -2212,8 +2283,7 @@ def license_validate():
     if not existing:
         return jsonify({"valid": False, "reason": "not_activated", "error": "This computer has not been activated with this key."}), 403
     db().run("UPDATE license_activations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", existing["id"])
-    used = (db().first("SELECT COUNT(*) AS n FROM license_activations WHERE license_id = ?", lic["id"]) or {}).get("n", 0)
-    return license_reply(lic, used, machine)
+    return license_reply(lic, activations_used(lic), machine)
 
 
 @app.post("/api/licenses/deactivate")
@@ -2325,7 +2395,7 @@ def account_licenses():
     user = current_user()
     if not user:
         return err("Unauthorized", 401)
-    rows = db().all("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
+    rows = db().all("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, expires_at, "
                     "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                     "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY licenses.id DESC", user["id"], (user["email"] or "").lower())
     return jsonify({"licenses": rows})
