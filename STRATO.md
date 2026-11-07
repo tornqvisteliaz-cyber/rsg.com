@@ -230,9 +230,31 @@ visitor arrives with that link and buys (within 30 days), the affiliate earns th
   refer themselves (same account or email earns nothing).
 - The **To be paid** column is what you owe. Pay it however you like (bank transfer, PayPal, a free
   licence), then press **Mark paid** to clear it. Export CSV for your records.
-- If you set the affiliate's **account email**, they see their link and earnings on their own **My account**
-  page. You can pause an affiliate without deleting their history.
+- **Which orders?** Press **Orders** on a row to see every sale that affiliate brought — the date, the
+  buyer, the product, the sale and the commission — plus where they want to be paid and how many times
+  their link was opened (**Clicks**).
+- **Self-signup.** Customers can apply for a code themselves from **My account** (it arrives as
+  **Pending** with a Discord note). Press **Approve** to turn it on, or **Edit** to change the code or
+  percent first. An affiliate sees their link, their referred orders and their running total on My
+  account, and sets their own payout details there.
+- If you set an affiliate's **account email**, that person sees it on their My account page. You can
+  pause an affiliate without deleting their history.
 - This is separate from the Endorsely script; use either or both.
+
+**Automatic payouts (Stripe Connect).** Instead of paying each affiliate by hand, let the site do it:
+
+- The affiliate presses **Set up automatic payouts** on their My account page and completes Stripe's
+  onboarding (their name, bank or debit card — you never see it). This uses Stripe Connect, which your
+  account already supports; it adds no new service or monthly cost.
+- In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on and set a
+  **minimum** (e.g. $50). From then on, the site transfers each connected affiliate their pending
+  commissions once a week, as long as they are above the minimum, and marks those commissions paid.
+  **Run payouts now** sends everything that is due immediately.
+- You always receive the full sale first, so your Stripe balance covers the commission. Transfers carry
+  an idempotency key, so a retry can never pay twice. Affiliates who do not connect Stripe are still paid
+  by hand with **Mark paid** — nothing changes for them.
+- STRATO has no always-on cron, so the weekly run happens on the first visit after it is due (the same
+  way scheduled Discord posts work). A busy site runs it on time; a quiet one runs it on the next visit.
 
 ## Security
 

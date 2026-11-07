@@ -818,6 +818,19 @@
     </section>
 
     <section class="pane" id="pane-affiliates" data-title="Affiliates">
+        <form class="panel" id="af-pay-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Automatic payouts</h2><span class="muted" id="af-pay-last" style="font-size:13px"></span></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">Affiliates connect a Stripe account from their <strong>My account</strong> page. When this is on, the site sends each affiliate their commissions automatically (weekly), once they are above the minimum. You can also pay anyone by hand with <strong>Mark paid</strong>.</p>
+                <div id="af-pay-nostripe" class="muted" style="font-size:14px;display:none">Connect Stripe first (Admin → RotaHub → payments) to pay affiliates automatically.</div>
+                <div class="form-grid" style="grid-template-columns:auto 1fr auto;align-items:end;gap:16px">
+                    <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0;width:auto"><input type="checkbox" id="af-pay-on"> Pay affiliates automatically</label>
+                    <div class="field" style="max-width:220px"><label for="af-pay-min">Minimum payout ($)</label><input id="af-pay-min" type="number" min="0" step="1"></div>
+                    <div class="field" style="display:flex;gap:8px"><button class="btn" id="af-pay-save">Save</button><button class="btn btn-ghost" type="button" id="af-pay-run">Run payouts now</button></div>
+                </div>
+                <p class="msg" id="af-pay-msg" style="margin:10px 0 0"></p>
+            </div>
+        </form>
         <form class="panel" id="af-form" style="margin-bottom:24px">
             <div class="panel-head"><h2 id="af-form-title">Add an affiliate</h2><span class="muted" id="af-owed" style="font-size:13px"></span></div>
             <div class="panel-body">
@@ -830,14 +843,14 @@
                 </div>
                 <div class="form-grid" style="grid-template-columns:2fr 1fr auto;align-items:end">
                     <div class="field"><label for="af-note">Note (optional)</label><input id="af-note" maxlength="300" placeholder="Only you see this"></div>
-                    <div class="field"><label for="af-status">Status</label><select id="af-status"><option value="active">Active</option><option value="disabled">Paused</option></select></div>
+                    <div class="field"><label for="af-status">Status</label><select id="af-status"><option value="active">Active</option><option value="pending">Pending (awaiting approval)</option><option value="disabled">Paused</option></select></div>
                     <div class="field"><button class="btn" id="af-save">Save affiliate</button><button class="btn btn-ghost" type="button" id="af-cancel" style="display:none;margin-left:6px">Cancel</button></div>
                 </div>
             </div>
         </form>
         <div class="panel">
             <div class="panel-head"><h2>Affiliates</h2><button class="btn btn-ghost btn-sm" type="button" onclick="exportAffiliates()">Export CSV</button></div>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Code</th><th>Who</th><th>Percent</th><th>Referred sales</th><th>To be paid</th><th>Paid out</th><th>Status</th><th></th></tr></thead><tbody id="af-list"></tbody></table></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Code</th><th>Who</th><th>Percent</th><th>Clicks</th><th>Referred sales</th><th>To be paid</th><th>Paid out</th><th>Status</th><th></th></tr></thead><tbody id="af-list"></tbody></table></div>
         </div>
     </section>
 
@@ -1064,6 +1077,9 @@
     <div style="display:flex;gap:8px;align-items:flex-start"><textarea id="um-note" rows="2" maxlength="2000" placeholder="e.g. Beta tester, uses a Thrustmaster stick" style="flex:1"></textarea><button class="btn btn-ghost btn-sm" type="button" id="um-note-save">Save note</button></div>
     <div class="sub" style="margin-top:18px">Logged in on</div><div class="table-wrap"><table class="table"><tbody id="um-sessions"></tbody></table></div>
     <div class="actions" style="margin-top:20px;justify-content:space-between;align-items:center"><button class="btn btn-danger" type="button" id="um-delete">Delete user</button><span class="actions" style="margin:0"><a class="btn btn-ghost" id="um-mail">Email</a><button class="btn btn-ghost" type="button" id="um-resend">Resend confirmation</button><button class="btn btn-ghost" type="button" id="um-verify">Mark email as confirmed</button><button class="btn btn-ghost" type="button" id="um-reset">Send password reset</button><button class="btn btn-ghost" type="button" id="um-signout">Sign out everywhere</button><button class="btn" type="button" id="um-license">Create licence</button></span></div></div></div>
+<div class="modal-bg" id="af-modal"><div class="modal wide" style="max-width:760px"><div style="display:flex;justify-content:space-between;align-items:start;gap:12px"><div><h3 id="afm-name" style="margin:0"></h3><p class="muted" id="afm-meta" style="font-size:14px;margin:4px 0 0"></p></div><button class="x" type="button" onclick="$('af-modal').classList.remove('show')" aria-label="Close">×</button></div>
+    <div class="sub" style="margin-top:18px">Pay to</div><p id="afm-payout" style="margin:0;font-size:14px"></p>
+    <div class="sub" style="margin-top:18px">Referred orders</div><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Buyer</th><th>Product</th><th>Sale</th><th>Commission</th><th>Status</th></tr></thead><tbody id="afm-orders"></tbody></table></div></div></div>
 <input type="file" id="pick-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
 <div class="modal-bg" id="keys-modal"><div class="modal"><div style="display:flex;justify-content:space-between;align-items:start"><h3 style="margin:0">Keyboard shortcuts</h3><button class="x" type="button" onclick="$('keys-modal').classList.remove('show')" aria-label="Close">×</button></div>
     <div class="keys"><kbd>g</kbd><span>then a letter to go: <b>d</b>ashboard, <b>p</b>roducts, <b>n</b>ews, <b>e</b>mail, <b>u</b>sers, <b>l</b>icences, <b>m</b>essages, <b>s</b>ite settings, <b>a</b>ctivity, Rota<b>h</b>ub</span>
@@ -1753,18 +1769,28 @@ async function loadAffiliates() {
     if (!$("af-percent").value && !editingAffiliate) $("af-percent").value = "";
     $("af-owed").textContent = d.pending_total ? `${money(d.pending_total)} to be paid out` : "";
     $("af-example").textContent = (location.host || "rotaidem.com") + "/?ref=CODE";
+    // automatic-payout settings
+    const pay = d.payouts || { on: false, min: 50, last: "" };
+    $("af-pay-on").checked = !!pay.on;
+    if (document.activeElement !== $("af-pay-min")) $("af-pay-min").value = pay.min;
+    $("af-pay-last").textContent = pay.last ? "Last run " + date(pay.last) : "Not run yet";
+    $("af-pay-nostripe").style.display = d.stripe_ready ? "none" : "";
+    for (const el of ["af-pay-on", "af-pay-min", "af-pay-save", "af-pay-run"]) $(el).disabled = !d.stripe_ready;
+    const badge = s => s === "active" ? '<span class="badge published">Active</span>' : s === "pending" ? '<span class="badge warn">Pending</span>' : '<span class="badge">Paused</span>';
     $("af-list").innerHTML = affiliates.length ? affiliates.map(a => `<tr>
         <td><code>${esc(a.code)}</code></td>
         <td>${esc(a.name || a.email || "—")}${a.name && a.email ? `<div class="muted" style="font-size:13px">${esc(a.email)}</div>` : ""}</td>
-        <td>${a.percent}%</td><td>${a.orders}</td>
+        <td>${a.percent}%</td><td class="muted">${a.clicks || 0}</td><td>${a.orders}</td>
         <td>${a.pending.amount ? `<strong>${money(a.pending.amount)}</strong>` : "—"}</td>
         <td class="muted">${a.paid.amount ? money(a.paid.amount) : "—"}</td>
-        <td>${a.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Paused</span>'}</td>
+        <td>${badge(a.status)}${a.connected ? (a.payouts_ready ? ' <span class="badge published" title="Paid automatically via Stripe">Stripe</span>' : ' <span class="badge warn" title="Finishing Stripe setup">Stripe…</span>') : ""}</td>
         <td class="actions" style="white-space:nowrap">
+            ${a.status === "pending" ? `<button class="btn btn-sm" data-af-approve="${a.id}">Approve</button>` : ""}
+            ${a.orders ? `<button class="btn btn-ghost btn-sm" data-af-view="${a.id}">Orders</button>` : ""}
             ${a.pending.orders ? `<button class="btn btn-ghost btn-sm" data-af-pay="${a.id}">Mark ${money(a.pending.amount)} paid</button>` : ""}
             <button class="btn btn-ghost btn-sm" data-af-edit="${a.id}">Edit</button>
             <button class="btn btn-ghost btn-sm" data-af-del="${a.id}">Delete</button>
-        </td></tr>`).join("") : '<tr><td colspan="8" class="muted" style="padding:20px">No affiliates yet. Add one above, then share their link.</td></tr>';
+        </td></tr>`).join("") : '<tr><td colspan="9" class="muted" style="padding:20px">No affiliates yet. Add one above, then share their link.</td></tr>';
 }
 let editingAffiliate = null;
 function affiliateForm(a) {
@@ -1785,9 +1811,30 @@ $("af-form").onsubmit = async e => {
     } catch (err) { toast(err.message, true); }
 };
 $("af-cancel").onclick = () => affiliateForm(null);
+// Approve a self-applied affiliate: flip its status to active (it keeps the code and percent it asked for).
+async function viewAffiliate(id) {
+    const a = affiliates.find(x => x.id == id); if (!a) return;
+    const d = await api(`/api/admin/affiliates/${id}`).catch(() => null);
+    const aff = (d && d.affiliate) || a;
+    $("afm-name").textContent = aff.name || aff.code;
+    $("afm-meta").textContent = `${aff.code} · ${aff.percent}% · ${aff.email || "no account email"} · ${aff.clicks || 0} clicks`;
+    $("afm-payout").innerHTML = aff.payout ? esc(aff.payout) : '<span class="muted">Not set yet — ask the affiliate to add it on My account.</span>';
+    const rows = aff.orders_list || [];
+    $("afm-orders").innerHTML = rows.length ? rows.map(o =>
+        `<tr><td class="muted">${esc(o.date)}</td><td>${esc(o.buyer || "—")}</td><td>${esc(o.product)}</td><td>${o.sale.toFixed(2)} ${esc(o.currency)}</td><td>${o.commission.toFixed(2)} ${esc(o.currency)}</td><td>${o.status === "paid" ? '<span class="badge published">Paid</span>' : '<span class="badge">Pending</span>'}</td></tr>`
+    ).join("") : '<tr><td colspan="6" class="muted">No referred orders yet.</td></tr>';
+    $("af-modal").classList.add("show");
+}
 $("af-list").onclick = async e => {
     const edit = e.target.closest("[data-af-edit]"), pay = e.target.closest("[data-af-pay]"), del = e.target.closest("[data-af-del]");
+    const approve = e.target.closest("[data-af-approve]"), view = e.target.closest("[data-af-view]");
     if (edit) { affiliateForm(affiliates.find(a => a.id == edit.dataset.afEdit)); window.scrollTo(0, 0); return; }
+    if (view) { viewAffiliate(view.dataset.afView); return; }
+    if (approve) {
+        const a = affiliates.find(x => x.id == approve.dataset.afApprove);
+        try { await post("/api/admin/affiliates", { id: a.id, code: a.code, name: a.name, email: a.email, percent: a.percent, note: a.note, status: "active" }); toast(`${a.code} approved`); loadAffiliates(); } catch (err) { toast(err.message, true); }
+        return;
+    }
     if (pay) {
         const a = affiliates.find(x => x.id == pay.dataset.afPay);
         if (!await confirmBox("Mark paid?", `Confirm you have sent ${money(a.pending.amount)} to ${a.name || a.code}. This clears their To be paid.`, "Mark paid")) return;
@@ -1798,6 +1845,26 @@ $("af-list").onclick = async e => {
         if (!await confirmBox("Delete affiliate?", `Remove ${a.code} and its commission history. The orders stay.`, "Delete", true)) return;
         try { await api(`/api/admin/affiliates/${a.id}`, { method: "DELETE" }); toast("Deleted"); loadAffiliates(); } catch (err) { toast(err.message, true); }
     }
+};
+$("af-pay-form").onsubmit = async e => {
+    e.preventDefault();
+    const msg = $("af-pay-msg");
+    try {
+        const d = await post("/api/admin/affiliates/settings", { payouts_on: $("af-pay-on").checked, payout_min: $("af-pay-min").value });
+        msg.className = "msg ok"; msg.textContent = d.on ? `Automatic payouts on, minimum ${money(d.min)}.` : "Automatic payouts off.";
+        loadAffiliates();
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
+};
+$("af-pay-run").onclick = async () => {
+    const msg = $("af-pay-msg");
+    if (!await confirmBox("Run payouts now?", "Send every affiliate who is set up and above the minimum their pending commissions over Stripe.", "Send payouts")) return;
+    msg.className = "msg"; msg.textContent = "Sending…";
+    try {
+        const d = await post("/api/admin/affiliates/payout-run", {});
+        msg.className = "msg ok";
+        msg.textContent = d.paid.length ? "Paid " + d.paid.map(p => `${money(p.amount)} to ${p.code}`).join(", ") + "." : "Nobody was due a payout right now.";
+        loadAffiliates();
+    } catch (err) { msg.className = "msg error"; msg.textContent = err.message; }
 };
 function exportAffiliates() {
     downloadCsv("affiliates.csv", [["Code", "Name", "Email", "Percent", "Referred sales", "To be paid", "Paid out", "Status"],

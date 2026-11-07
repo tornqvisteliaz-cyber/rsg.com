@@ -15,7 +15,13 @@ function withBase(path) { return BASE && path.startsWith("/") && !path.startsWit
 (function () {
     try {
         const code = new URLSearchParams(location.search).get("ref");
-        if (code && /^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(code)) localStorage.setItem("rsg_ref", JSON.stringify({ code, at: Date.now() }));
+        if (!code || !/^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(code)) return;
+        localStorage.setItem("rsg_ref", JSON.stringify({ code, at: Date.now() }));
+        // Count the visit once per code, so affiliates see how often their link is opened.
+        if (localStorage.getItem("rsg_ref_hit") !== code) {
+            localStorage.setItem("rsg_ref_hit", code);
+            fetch(withBase("/api/affiliate/click"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).catch(() => {});
+        }
     } catch (err) {}
 })();
 function affiliateRef() {

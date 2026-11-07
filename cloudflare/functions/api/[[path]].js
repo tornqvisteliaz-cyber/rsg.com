@@ -60,6 +60,10 @@ async function handleRequest(context) {
     if (path.startsWith("/api/discord/") || path.startsWith("/api/admin/discord")) return json({ error: "Discord linking runs on the STRATO website.", unavailable: true }, 501);
     if (path.startsWith("/api/admin/affiliates")) return json({ error: "Affiliates are managed on the STRATO website.", unavailable: true }, 501);
     if (method === "GET" && path === "/api/account/affiliate") return accountAffiliate(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/apply") return accountAffiliateApply(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/payout") return accountAffiliatePayout(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/connect") return json({ error: "Automatic payouts run on the STRATO website.", unavailable: true }, 501);
+    if (method === "POST" && path === "/api/affiliate/click") return affiliateClick(request, env);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
     if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
     if (method === "POST" && path === "/api/admin/shop") return adminSaveShop(request, env);
@@ -162,7 +166,9 @@ async function ensure(env) {
                              ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
                              ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"],
                              ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"],
-                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"], ["orders", "affiliate_code TEXT"]]) {
+                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"], ["orders", "affiliate_code TEXT"],
+                             ["affiliates", "payout TEXT"], ["affiliates", "clicks INTEGER DEFAULT 0"],
+                             ["affiliates", "stripe_account TEXT"], ["affiliates", "payouts_ready INTEGER DEFAULT 0"], ["affiliate_commissions", "transfer_id TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS affiliates (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, user_id INTEGER, email TEXT, name TEXT, percent INTEGER DEFAULT 20, status TEXT DEFAULT 'active', note TEXT, created_at TEXT)").run();
@@ -955,6 +961,7 @@ async function fulfilCheckout(env, request, session) {
   return get();
 }
 const AFFILIATE_CODE = /^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/;
+const AFFILIATE_DEFAULT_PERCENT = 20;
 async function affiliateByCode(env, code) {
   code = String(code || "").trim();
   if (!AFFILIATE_CODE.test(code)) return null;
@@ -971,16 +978,56 @@ async function creditAffiliate(env, orderId, amount, currency, code, buyerId, bu
   } catch (err) { return null; }
   return aff;
 }
+async function affiliateTotals(env, affiliateId) {
+  const rows = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status").bind(affiliateId).all()).results || [];
+  const by = {}; for (const r of rows) by[r.status] = { orders: Number(r.n) || 0, amount: Math.round((Number(r.total) || 0) * 100) / 100 };
+  return { pending: by.pending || { orders: 0, amount: 0 }, paid: by.paid || { orders: 0, amount: 0 }, orders: Object.values(by).reduce((n, v) => n + v.orders, 0) };
+}
+async function affiliateOrders(env, affiliateId) {
+  const rows = (await env.DB.prepare("SELECT c.amount AS commission, c.currency, c.status, c.created_at, o.id AS order_id, o.amount AS sale, o.product_id, p.name AS product " +
+    "FROM affiliate_commissions c LEFT JOIN orders o ON o.id = c.order_id LEFT JOIN products p ON p.id = o.product_id WHERE c.affiliate_id = ? ORDER BY c.id DESC LIMIT 500").bind(affiliateId).all()).results || [];
+  return rows.map(r => ({ order_id: r.order_id, date: String(r.created_at || "").slice(0, 16), product: r.product || r.product_id || "",
+    sale: Math.round((Number(r.sale) || 0) * 100) / 100, commission: Math.round((Number(r.commission) || 0) * 100) / 100, currency: String(r.currency || "").toUpperCase(), status: r.status }));
+}
 async function accountAffiliate(request, env) {
   const user = await currentUser(request, env, { ignoreGate: true });
   if (!user) return json({ error: "Unauthorized" }, 401);
   const aff = await env.DB.prepare("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
-  if (!aff) return json({ affiliate: null });
-  const rows = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status").bind(aff.id).all()).results || [];
-  const by = {}; for (const r of rows) by[r.status] = { orders: Number(r.n) || 0, amount: Math.round((Number(r.total) || 0) * 100) / 100 };
+  if (!aff) return json({ affiliate: null, percent: AFFILIATE_DEFAULT_PERCENT });
   const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
-  return json({ affiliate: { code: aff.code, percent: aff.percent, status: aff.status, link: base + "/?ref=" + encodeURIComponent(aff.code),
-    pending: by.pending || { orders: 0, amount: 0 }, paid: by.paid || { orders: 0, amount: 0 }, orders: Object.values(by).reduce((n, v) => n + v.orders, 0) } });
+  return json({ affiliate: { code: aff.code, percent: aff.percent, status: aff.status, payout: aff.payout || "", clicks: Number(aff.clicks) || 0,
+    connected: !!aff.stripe_account, payouts_ready: !!aff.payouts_ready,
+    link: base + "/?ref=" + encodeURIComponent(aff.code), orders_list: await affiliateOrders(env, aff.id), ...(await affiliateTotals(env, aff.id)) },
+    percent: AFFILIATE_DEFAULT_PERCENT, payouts: { on: false, min: 50, last: "" } });
+}
+async function accountAffiliateApply(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Log in first" }, 401);
+  if (await env.DB.prepare("SELECT id FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null))
+    return json({ error: "You already have an affiliate account" }, 409);
+  const body = await request.json().catch(() => ({}));
+  const code = String(body.code || "").trim() || slug(user.name || "").slice(0, 31);
+  if (!AFFILIATE_CODE.test(code)) return json({ error: "Pick a code of 3 to 31 letters, digits, dashes or underscores" }, 400);
+  if (await env.DB.prepare("SELECT id FROM affiliates WHERE LOWER(code) = ?").bind(code.toLowerCase()).first().catch(() => null))
+    return json({ error: `The code "${code}" is taken. Try another one.` }, 409);
+  const why = String(body.about || "").trim().slice(0, 300);
+  await env.DB.prepare("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)")
+    .bind(code, String(user.email || "").toLowerCase(), user.id, String(user.name || "").slice(0, 100), AFFILIATE_DEFAULT_PERCENT, why ? "Applied: " + why : "Applied from My account", utcStamp()).run();
+  return json({ ok: true, status: "pending", code });
+}
+async function accountAffiliatePayout(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const aff = await env.DB.prepare("SELECT id FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
+  if (!aff) return json({ error: "You are not an affiliate" }, 404);
+  const payout = String((await request.json().catch(() => ({}))).payout || "").trim().slice(0, 300);
+  await env.DB.prepare("UPDATE affiliates SET payout = ? WHERE id = ?").bind(payout, aff.id).run();
+  return json({ ok: true, payout });
+}
+async function affiliateClick(request, env) {
+  const aff = await affiliateByCode(env, (await request.json().catch(() => ({}))).code);
+  if (aff) await env.DB.prepare("UPDATE affiliates SET clicks = COALESCE(clicks, 0) + 1 WHERE id = ?").bind(aff.id).run().catch(() => {});
+  return json({ ok: true });
 }
 async function checkout(request, env, pid) {
   const user = await currentUser(request, env, { ignoreGate: true });

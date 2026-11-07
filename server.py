@@ -157,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-11-07-affiliates"
+SCHEMA_VERSION = "2026-11-07-affiliate-payouts"
 
 
 def ensure_schema():
@@ -228,7 +228,13 @@ def ensure_schema():
                           # what happened the last time the role was given or taken (Admin -> Discord -> Linked members)
                           ("users", "discord_result TEXT"),
                           # the affiliate code that referred the order (Admin -> Affiliates)
-                          ("orders", f"affiliate_code {ident}")):
+                          ("orders", f"affiliate_code {ident}"),
+                          # affiliate accounts: where to send their money, and how often their link was opened
+                          ("affiliates", "payout TEXT"), ("affiliates", "clicks INTEGER DEFAULT 0"),
+                          # automatic payouts over Stripe Connect: the affiliate's connected account and whether Stripe can pay it
+                          ("affiliates", f"stripe_account {word}"), ("affiliates", "payouts_ready INTEGER DEFAULT 0"),
+                          # the Stripe transfer that settled a commission (empty when paid by hand)
+                          ("affiliate_commissions", f"transfer_id {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -2370,12 +2376,15 @@ def stripe_mode():
     return "" if not STRIPE_SECRET_KEY else ("test" if "_test_" in STRIPE_SECRET_KEY else "live")
 
 
-def stripe_call(method, path, fields=None):
-    """Stripe's API with the secret key from config.env. Returns (answer, error text)."""
+def stripe_call(method, path, fields=None, idempotency_key=""):
+    """Stripe's API with the secret key from config.env. Returns (answer, error text).
+    Pass idempotency_key on money-moving POSTs so a retry cannot pay twice."""
     data = urllib.parse.urlencode(fields or {}).encode() if method == "POST" else None
-    req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method,
-                                 headers={"Authorization": f"Bearer {STRIPE_SECRET_KEY}", "Content-Type": "application/x-www-form-urlencoded",
-                                          "User-Agent": "Rotaidem-Website/1.0"})
+    headers = {"Authorization": f"Bearer {STRIPE_SECRET_KEY}", "Content-Type": "application/x-www-form-urlencoded",
+               "User-Agent": "Rotaidem-Website/1.0"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode()), ""
@@ -2628,17 +2637,93 @@ def affiliate_totals(affiliate_id):
             "orders": sum(v["orders"] for v in by.values())}
 
 
+def affiliate_orders(affiliate_id, with_buyer=False):
+    """The referred orders behind an affiliate's commissions, newest first. Buyers are only named for staff."""
+    rows = db().all("SELECT c.id, c.amount AS commission, c.currency, c.rate, c.status, c.created_at, o.id AS order_id, o.amount AS sale, "
+                    "o.product_id, o.customer_id, o.payment_ref, p.name AS product FROM affiliate_commissions c "
+                    "LEFT JOIN orders o ON o.id = c.order_id LEFT JOIN products p ON p.id = o.product_id "
+                    "WHERE c.affiliate_id = ? ORDER BY c.id DESC LIMIT 500", affiliate_id)
+    out = []
+    for r in rows:
+        item = {"order_id": r["order_id"], "date": str(r["created_at"] or "")[:16], "product": r["product"] or r["product_id"] or "",
+                "sale": round(float(r["sale"] or 0), 2), "commission": round(float(r["commission"] or 0), 2),
+                "currency": (r["currency"] or "").upper(), "rate": r["rate"], "status": r["status"]}
+        if with_buyer:
+            buyer = db().first("SELECT name, email FROM users WHERE id = ?", r["customer_id"]) if r["customer_id"] else None
+            if not buyer and r["payment_ref"]:
+                buyer = db().first("SELECT email FROM stripe_payments WHERE session_id = ?", r["payment_ref"])
+            item["buyer"] = (buyer or {}).get("email") or ""
+        out.append(item)
+    return out
+
+
+def affiliate_public(aff, with_buyer=False):
+    return {"id": aff["id"], "code": aff["code"], "name": aff["name"] or "", "email": aff["email"] or "", "percent": aff["percent"],
+            "status": aff["status"], "note": aff["note"] or "", "payout": aff.get("payout") or "", "clicks": int(aff.get("clicks") or 0),
+            "connected": bool(aff.get("stripe_account")), "payouts_ready": bool(aff.get("payouts_ready")),
+            "created_at": aff["created_at"], "link": site_url() + "/?ref=" + urllib.parse.quote(aff["code"]),
+            "orders_list": affiliate_orders(aff["id"], with_buyer), **affiliate_totals(aff["id"])}
+
+
 @app.get("/api/account/affiliate")
 def account_affiliate():
-    """The logged-in user's own affiliate dashboard, if they are an affiliate."""
+    """The logged-in user's own affiliate dashboard, if they are an affiliate (or have applied)."""
     user = current_user()
     if not user:
         return err("Unauthorized", 401)
     aff = affiliate_for_user(user)
     if not aff:
-        return jsonify({"affiliate": None})
-    return jsonify({"affiliate": {"code": aff["code"], "percent": aff["percent"], "status": aff["status"],
-                                  "link": site_url() + "/?ref=" + urllib.parse.quote(aff["code"]), **affiliate_totals(aff["id"])}})
+        return jsonify({"affiliate": None, "percent": AFFILIATE_DEFAULT_PERCENT})
+    if aff.get("stripe_account") and not aff.get("payouts_ready") and stripe_connect_ready(aff):
+        aff = affiliate_for_user(user)  # they just finished Stripe onboarding
+    data = affiliate_public(aff)
+    data.pop("note", None)  # the admin's own note stays private
+    return jsonify({"affiliate": data, "percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings()})
+
+
+@app.post("/api/account/affiliate/apply")
+def account_affiliate_apply():
+    """Any customer can ask to become an affiliate; it starts as 'pending' until staff approve it."""
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    if affiliate_for_user(user):
+        return err("You already have an affiliate account", 409)
+    b = body()
+    code = str(b.get("code") or "").strip() or slug(user.get("name") or "")[:31]
+    if not AFFILIATE_CODE.match(code):
+        return err("Pick a code of 3 to 31 letters, digits, dashes or underscores", 400)
+    if db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower()):
+        return err(f'The code "{code}" is taken. Try another one.', 409)
+    why = str(b.get("about") or "").strip()[:300]
+    db().run("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)",
+             code, (user.get("email") or "").lower(), user["id"], str(user.get("name") or "")[:100], AFFILIATE_DEFAULT_PERCENT,
+             ("Applied: " + why) if why else "Applied from My account", utc_stamp())
+    discord_auto("sales", {"text": f"📝 New affiliate application: **{user.get('name') or code}** wants the code `{code}`. Approve it in Admin -> Affiliates."})
+    return jsonify({"ok": True, "status": "pending", "code": code})
+
+
+@app.post("/api/account/affiliate/payout")
+def account_affiliate_payout():
+    """Where the affiliate wants their money sent (PayPal email, IBAN, ...), shown to staff when paying."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    aff = affiliate_for_user(user)
+    if not aff:
+        return err("You are not an affiliate", 404)
+    payout = str(body().get("payout") or "").strip()[:300]
+    db().run("UPDATE affiliates SET payout = ? WHERE id = ?", payout, aff["id"])
+    return jsonify({"ok": True, "payout": payout})
+
+
+@app.post("/api/affiliate/click")
+def affiliate_click():
+    """Counts an arrival through an affiliate link (the browser sends it once per code)."""
+    aff = affiliate_by_code(body().get("code"))
+    if aff:
+        db().run("UPDATE affiliates SET clicks = COALESCE(clicks, 0) + 1 WHERE id = ?", aff["id"])
+    return jsonify({"ok": True})
 
 
 @app.get("/api/admin/affiliates")
@@ -2646,11 +2731,23 @@ def admin_affiliates():
     if not staff_user():
         return err("Admin only", 403)
     out = []
-    for aff in db().all("SELECT * FROM affiliates ORDER BY id DESC"):
-        out.append({"id": aff["id"], "code": aff["code"], "name": aff["name"] or "", "email": aff["email"] or "", "percent": aff["percent"],
-                    "status": aff["status"], "note": aff["note"] or "", "created_at": aff["created_at"], **affiliate_totals(aff["id"])})
-    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT,
+    for aff in db().all("SELECT * FROM affiliates ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, id DESC"):
+        item = affiliate_public(aff)
+        item.pop("orders_list")
+        out.append(item)
+    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings(), "stripe_ready": bool(STRIPE_SECRET_KEY),
                     "pending_total": round(float((db().first("SELECT SUM(amount) AS t FROM affiliate_commissions WHERE status = 'pending'") or {}).get("t") or 0), 2)})
+
+
+@app.get("/api/admin/affiliates/<int:affiliate_id>")
+def admin_affiliate_detail(affiliate_id):
+    """One affiliate with every referred order, including who bought."""
+    if not staff_user():
+        return err("Admin only", 403)
+    aff = db().first("SELECT * FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    return jsonify({"affiliate": affiliate_public(aff, with_buyer=True)})
 
 
 @app.post("/api/admin/affiliates")
@@ -2666,7 +2763,7 @@ def admin_save_affiliate():
     if email and not EMAIL_RE.match(email):
         return err("Enter a valid email address or leave it empty", 400)
     percent = clamp_int(b.get("percent"), AFFILIATE_DEFAULT_PERCENT, 1, 90)
-    status = b.get("status") if b.get("status") in ("active", "disabled") else "active"
+    status = b.get("status") if b.get("status") in ("active", "disabled", "pending") else "active"
     clash = db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower())
     edit_id = b.get("id")
     if clash and str(clash["id"]) != str(edit_id or ""):
@@ -2712,6 +2809,163 @@ def admin_delete_affiliate(affiliate_id):
     db().run("DELETE FROM affiliates WHERE id = ?", affiliate_id)
     audit(user, "delete_affiliate", aff["code"])
     return jsonify({"ok": True})
+
+
+# ---------- automatic affiliate payouts (Stripe Connect) ----------
+# Affiliates connect a Stripe account once (Express onboarding). When payouts are on, the website
+# transfers each affiliate's pending commissions to them, grouped by currency, above a minimum. STRATO
+# has no cron, so the weekly batch runs at the first request after it is due (like the scheduled posts).
+
+AFFILIATE_PAYOUT_MIN = 50       # dollars: the smallest pending total that triggers an automatic payout
+AFFILIATE_PAYOUT_DAYS = 7       # how often the automatic batch runs
+
+
+def money_or(value, default):
+    try:
+        return max(0.0, round(float(value), 2))
+    except (TypeError, ValueError):
+        return default
+
+
+def affiliate_payout_settings():
+    return {"on": bool(get_setting("affiliate.payouts_on", False)),
+            "min": money_or(get_setting("affiliate.payout_min", AFFILIATE_PAYOUT_MIN), AFFILIATE_PAYOUT_MIN),
+            "last": get_setting("affiliate.payout_last", "") or "", "every_days": AFFILIATE_PAYOUT_DAYS}
+
+
+def stripe_connect_account(aff):
+    """The affiliate's connected account id, creating an Express account the first time. Returns (id, error)."""
+    if aff.get("stripe_account"):
+        return aff["stripe_account"], ""
+    account, error = stripe_call("POST", "/v1/accounts", {
+        "type": "express", "email": aff.get("email") or "", "business_type": "individual",
+        "capabilities[transfers][requested]": "true", "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]})
+    if error:
+        return "", error
+    db().run("UPDATE affiliates SET stripe_account = ?, payouts_ready = 0 WHERE id = ?", account["id"], aff["id"])
+    return account["id"], ""
+
+
+def stripe_connect_ready(aff):
+    """Ask Stripe whether this affiliate can receive payouts, and cache a yes. Returns bool."""
+    if not aff.get("stripe_account"):
+        return False
+    if aff.get("payouts_ready"):
+        return True
+    account, error = stripe_call("GET", "/v1/accounts/" + urllib.parse.quote(aff["stripe_account"]))
+    ready = (not error) and bool(account and account.get("payouts_enabled"))
+    if ready:
+        db().run("UPDATE affiliates SET payouts_ready = 1 WHERE id = ?", aff["id"])
+    return ready
+
+
+def affiliate_pay_one(aff, minimum):
+    """Transfer an affiliate's pending commissions (grouped by currency) if a group clears the minimum.
+    Returns a list of {amount, currency, transfer}. The idempotency key covers the exact set, so a
+    retry after a crash cannot pay twice."""
+    paid = []
+    for g in db().all("SELECT currency, SUM(amount) AS total FROM affiliate_commissions "
+                      "WHERE affiliate_id = ? AND status = 'pending' GROUP BY currency", aff["id"]):
+        total = round(float(g["total"] or 0), 2)
+        if total < minimum or total <= 0:
+            continue
+        currency = (g["currency"] or "usd").lower()
+        ids = [r["id"] for r in db().all("SELECT id FROM affiliate_commissions WHERE affiliate_id = ? AND status = 'pending' AND currency = ?",
+                                         aff["id"], g["currency"])]
+        if not ids:
+            continue
+        key = f"aff-{aff['id']}-{currency}-{max(ids)}-{len(ids)}"
+        transfer, error = stripe_call("POST", "/v1/transfers", {
+            "amount": int(round(total * 100)), "currency": currency, "destination": aff["stripe_account"],
+            "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]}, idempotency_key=key)
+        if error or not transfer:
+            app.logger.error("Affiliate payout %s (%s %s): %s", aff["code"], total, currency, error)
+            continue
+        marks = ",".join("?" for _ in ids)
+        db().run(f"UPDATE affiliate_commissions SET status = 'paid', transfer_id = ? WHERE id IN ({marks})", transfer["id"], *ids)
+        paid.append({"amount": total, "currency": currency.upper(), "transfer": transfer["id"]})
+    return paid
+
+
+def affiliate_payout_run():
+    """Pay every active, ready affiliate whose pending total clears the minimum. Returns a summary."""
+    minimum = affiliate_payout_settings()["min"]
+    out = []
+    for aff in db().all("SELECT * FROM affiliates WHERE status = 'active' AND stripe_account IS NOT NULL AND stripe_account != ''"):
+        if not stripe_connect_ready(aff):
+            continue
+        out += [{"code": aff["code"], **row} for row in affiliate_pay_one(aff, minimum)]
+    set_setting("affiliate.payout_last", utc_stamp())
+    set_setting("affiliate.payout_last_ts", time.time())
+    if out:
+        lines = ", ".join(f"{p['amount']:.2f} {p['currency']} to {p['code']}" for p in out)
+        discord_auto("sales", {"text": f"💸 Affiliate payouts sent: {lines}."})
+    return {"paid": out, "min": minimum}
+
+
+def affiliate_payouts_due():
+    """Run the weekly batch at the first request after it is due (STRATO has no cron)."""
+    if not STRIPE_SECRET_KEY or not get_setting("affiliate.payouts_on", False):
+        return
+    now = time.time()
+    if now - float(get_setting("affiliate.payout_checked", 0) or 0) < 3600:   # look at most once an hour
+        return
+    set_setting("affiliate.payout_checked", now)
+    if now - float(get_setting("affiliate.payout_last_ts", 0) or 0) < AFFILIATE_PAYOUT_DAYS * 86400:
+        return
+    try:
+        affiliate_payout_run()
+    except Exception:  # noqa: BLE001 - visitors never see a payout problem
+        app.logger.exception("Automatic affiliate payouts failed")
+
+
+@app.post("/api/account/affiliate/connect")
+def account_affiliate_connect():
+    """Start or resume Stripe onboarding so the affiliate can be paid automatically. Returns a link."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    aff = affiliate_for_user(user)
+    if not aff or aff["status"] != "active":
+        return err("Your affiliate code is not active yet", 403)
+    account, error = stripe_connect_account(aff)
+    if error:
+        return err(error, 502)
+    base = site_url()
+    link, error = stripe_call("POST", "/v1/account_links", {
+        "account": account, "type": "account_onboarding",
+        "refresh_url": base + "/account?connect=refresh", "return_url": base + "/account?connect=done"})
+    if error:
+        return err(error, 502)
+    return jsonify({"ok": True, "url": link["url"]})
+
+
+@app.post("/api/admin/affiliates/settings")
+def admin_affiliate_settings():
+    """Turn automatic payouts on or off and set the minimum (Admin -> Affiliates)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    b = body()
+    set_setting("affiliate.payouts_on", bool(b.get("payouts_on")))
+    set_setting("affiliate.payout_min", money_or(b.get("payout_min"), AFFILIATE_PAYOUT_MIN))
+    audit(user, "affiliate_payout_settings", f"on={bool(b.get('payouts_on'))}, min={b.get('payout_min')}")
+    return jsonify({"ok": True, **affiliate_payout_settings()})
+
+
+@app.post("/api/admin/affiliates/payout-run")
+def admin_affiliate_payout_run():
+    """Send every due automatic payout now, instead of waiting for the weekly run."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    result = affiliate_payout_run()
+    audit(user, "affiliate_payout_run", f"{len(result['paid'])} transfer(s)")
+    return jsonify({"ok": True, **result})
 
 
 # ---------- Discord: a "Verified buyer" role for licence holders ----------
@@ -4834,6 +5088,7 @@ def due_discord_posts():
             discord_run_due()
         except Exception:  # noqa: BLE001 - visitors never see a Discord problem
             app.logger.exception("Due Discord posts failed")
+        affiliate_payouts_due()
 
 
 init_schema()

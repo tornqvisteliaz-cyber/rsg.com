@@ -71,6 +71,7 @@ class FakeStripe:
 
     def __init__(self):
         self.created, self.sessions = [], {}
+        self.accounts, self.transfers, self.idempotency = {}, [], {}  # Stripe Connect: accounts, Transfers made, idempotency keys seen
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -84,20 +85,43 @@ class FakeStripe:
 
             def do_POST(self):
                 form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()).items()}
-                if self.path != "/v1/checkout/sessions" or not self.headers.get("Authorization", "").startswith("Bearer sk_test_"):
+                if not self.headers.get("Authorization", "").startswith("Bearer sk_test_"):
                     return self.reply(400, {"error": {"message": "bad request"}})
-                outer.created.append(form)
-                sid = f"cs_test_{len(outer.created)}{os.urandom(6).hex()}"
-                outer.sessions[sid] = {"id": sid, "object": "checkout.session", "mode": form["mode"], "status": "open", "payment_status": "unpaid",
-                                       "amount_total": int(form["line_items[0][price_data][unit_amount]"]), "currency": form["line_items[0][price_data][currency]"],
-                                       "customer_email": form.get("customer_email"), "url": f"https://checkout.stripe.test/c/{sid}",
-                                       "metadata": {k[9:-1]: v for k, v in form.items() if k.startswith("metadata[")}}
-                self.reply(200, outer.sessions[sid])
+                if self.path == "/v1/checkout/sessions":
+                    outer.created.append(form)
+                    sid = f"cs_test_{len(outer.created)}{os.urandom(6).hex()}"
+                    outer.sessions[sid] = {"id": sid, "object": "checkout.session", "mode": form["mode"], "status": "open", "payment_status": "unpaid",
+                                           "amount_total": int(form["line_items[0][price_data][unit_amount]"]), "currency": form["line_items[0][price_data][currency]"],
+                                           "customer_email": form.get("customer_email"), "url": f"https://checkout.stripe.test/c/{sid}",
+                                           "metadata": {k[9:-1]: v for k, v in form.items() if k.startswith("metadata[")}}
+                    return self.reply(200, outer.sessions[sid])
+                if self.path == "/v1/accounts":  # Connect: a new Express account, payouts off until "onboarded"
+                    aid = f"acct_test_{len(outer.accounts) + 1}"
+                    outer.accounts[aid] = {"id": aid, "object": "account", "payouts_enabled": False, "email": form.get("email", "")}
+                    return self.reply(200, outer.accounts[aid])
+                if self.path == "/v1/account_links":  # the onboarding link we send the affiliate to
+                    return self.reply(200, {"object": "account_link", "url": f"https://connect.stripe.test/setup/{form.get('account', '')}"})
+                if self.path == "/v1/transfers":  # pay an affiliate; the idempotency key must not transfer twice
+                    key = self.headers.get("Idempotency-Key", "")
+                    if key and key in outer.idempotency:
+                        return self.reply(200, outer.idempotency[key])
+                    tr = {"id": f"tr_test_{len(outer.transfers) + 1}", "object": "transfer", "amount": int(form.get("amount", 0)),
+                          "currency": form.get("currency", ""), "destination": form.get("destination", "")}
+                    outer.transfers.append(tr)
+                    if key:
+                        outer.idempotency[key] = tr
+                    return self.reply(200, tr)
+                return self.reply(400, {"error": {"message": "bad request"}})
 
             def do_GET(self):
                 path = urllib.parse.urlparse(self.path).path
                 if path == "/v1/checkout/sessions":
                     return self.reply(200, {"object": "list", "data": []})
+                if path.startswith("/v1/accounts/"):
+                    acct = outer.accounts.get(path.rsplit("/", 1)[-1])
+                    return self.reply(200, acct) if acct else self.reply(404, {"error": {"message": "No such account"}})
+                if path == "/v1/accounts":
+                    return self.reply(200, {"object": "list", "data": list(outer.accounts.values())})
                 session = outer.sessions.get(path.rsplit("/", 1)[-1])
                 self.reply(200, session) if session else self.reply(404, {"error": {"message": "No such checkout.session"}})
 
@@ -1422,6 +1446,102 @@ class StratoCGITests:
         self.assertEqual((row["pending"]["amount"], row["paid"]["amount"]), (0, 25.0))
         self.ok(self.w.cgi("DELETE", f"/api/admin/affiliates/{afid}", token=t))
         self.assertFalse(any(a["code"] == "erik" for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"]))
+
+    def test_affiliate_accounts_apply_and_tracking(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Track App", "id": "track-app", "status": "published", "pay_amount": "80", "pay_currency": "usd"}, token=t))
+        joe, joe_email = self.customer("affjoe")
+        # a non-affiliate sees no account but learns the rate, so the apply form can show it
+        before = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))
+        self.assertEqual((before["affiliate"], before["percent"]), (None, 20))
+        # the customer applies; it starts pending and cannot be applied for twice
+        applied = self.ok(self.w.cgi("POST", "/api/account/affiliate/apply", {"about": "YouTube"}, token=joe))
+        self.assertEqual((applied["status"], applied["code"]), ("pending", "affjoe"))
+        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=joe).status, 409, "already applied")
+        mine = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"]
+        self.assertEqual(mine["status"], "pending")
+        # a pending code earns nothing and counts no clicks (only active codes do)
+        buyer, buyer_email = self.customer("trackbuyer")
+        self.ok(self.w.cgi("POST", "/api/affiliate/click", {"code": "affjoe"}))
+        self.ok(self.w.cgi("POST", "/api/checkout/track-app", {"ref": "affjoe"}, token=buyer))
+        sid = list(self.stripe.sessions)[-1]
+        self.assertNotIn("metadata[affiliate_code]", self.stripe.created[-1], "pending code is not an active referral")
+        self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "affjoe")
+        self.assertEqual((row["orders"], row["clicks"], row["status"]), (0, 0, "pending"))
+        afid = row["id"]
+        # staff approve it, keeping the code the applicant chose
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"id": afid, "code": "affjoe", "email": joe_email, "percent": "20", "status": "active"}, token=t))
+        # now the link counts clicks and a referred sale earns a tracked commission
+        buyer2, buyer2_email = self.customer("trackbuyer2")
+        self.ok(self.w.cgi("POST", "/api/affiliate/click", {"code": "affjoe"}))
+        self.ok(self.w.cgi("POST", "/api/checkout/track-app", {"ref": "affjoe"}, token=buyer2))
+        sid2 = list(self.stripe.sessions)[-1]
+        self.assertEqual(self.stripe.created[-1].get("metadata[affiliate_code]"), "affjoe")
+        self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer2, query="session_id=" + sid2))
+        # the affiliate sees the referred order on My account
+        mine = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"]
+        self.assertEqual((mine["orders"], mine["pending"]["amount"], mine["clicks"]), (1, 16.0, 1), "20% of 80.00, one click")
+        self.assertEqual(len(mine["orders_list"]), 1)
+        o = mine["orders_list"][0]
+        self.assertEqual((o["product"], o["sale"], o["commission"], o["status"]), ("Track App", 80.0, 16.0, "pending"))
+        self.assertNotIn("buyer", o, "customers never see who bought")
+        # the affiliate saves where to be paid; staff see it and the buyer in the detail view
+        self.ok(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "paypal@affjoe.test"}, token=joe))
+        detail = self.ok(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=t))["affiliate"]
+        self.assertEqual(detail["payout"], "paypal@affjoe.test")
+        self.assertEqual(detail["orders_list"][0]["buyer"], buyer2_email)
+        # a customer cannot reach the admin detail or apply endpoints as staff
+        self.assertEqual(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=buyer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "x"}, token=buyer).status, 404, "buyer is not an affiliate")
+
+    def test_affiliate_payouts_over_stripe_connect(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Pay App", "id": "pay-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        partner, partner_email = self.customer("partner")
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"code": "partner", "email": partner_email, "percent": "20", "status": "active"}, token=t))
+        payer, _ = self.customer("payer")
+        # a referred, paid sale -> a pending commission of 20.00
+        self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer))
+        sid = list(self.stripe.sessions)[-1]; self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer, query="session_id=" + sid))
+        # the affiliate starts Stripe onboarding; we get a link and an Express account is created
+        connect = self.ok(self.w.cgi("POST", "/api/account/affiliate/connect", {}, token=partner))
+        self.assertIn("connect.stripe.test/setup/acct_test_", connect["url"])
+        self.assertEqual(len(self.stripe.accounts), 1)
+        acct = list(self.stripe.accounts)[0]
+        # turn automatic payouts on with a 10.00 minimum
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "10"}, token=t))
+        # before onboarding finishes, Stripe cannot pay: a run sends nothing
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
+        self.assertEqual(self.stripe.transfers, [])
+        # the affiliate finishes onboarding (Stripe enables payouts); now a run pays the commission
+        self.stripe.accounts[acct]["payouts_enabled"] = True
+        run = self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))
+        self.assertEqual(run["paid"], [{"code": "partner", "amount": 20.0, "currency": "USD", "transfer": "tr_test_1"}])
+        self.assertEqual(len(self.stripe.transfers), 1)
+        self.assertEqual((self.stripe.transfers[0]["amount"], self.stripe.transfers[0]["destination"]), (2000, acct))
+        self.assertEqual(len(self.stripe.idempotency), 1, "the transfer carried an idempotency key")
+        # the commission is now paid, and the affiliate sees it on My account
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
+        self.assertEqual((me["pending"]["amount"], me["paid"]["amount"], me["payouts_ready"]), (0, 20.0, True))
+        self.assertEqual(me["orders_list"][0]["status"], "paid")
+        # a second run pays nothing and never double-transfers
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
+        self.assertEqual(len(self.stripe.transfers), 1)
+        # a new commission below the (raised) minimum waits
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "50"}, token=t))
+        payer2, _ = self.customer("payer2")
+        self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer2))
+        sid2 = list(self.stripe.sessions)[-1]; self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer2, query="session_id=" + sid2))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [], "20.00 is below the 50.00 minimum")
+        self.assertEqual(len(self.stripe.transfers), 1)
+        # customers cannot run payouts or change the settings
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=payer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": False}, token=payer).status, 403)
 
     def test_sale_price_and_the_shop(self):
         t = self.owner_token
