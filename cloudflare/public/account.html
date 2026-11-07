@@ -7,6 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <script src="/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
 </head>
 <body>
 <main class="section">
@@ -39,6 +40,39 @@
                     <div class="table-wrap"><table class="table"><thead><tr><th>Device</th><th>IP address</th><th style="white-space:nowrap">Last active</th><th></th></tr></thead><tbody id="sessions"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
                 </div>
             </div>
+            <div>
+            <div class="box" id="affiliate" hidden style="margin-bottom:24px">
+                <h3 style="margin-top:0">Affiliate</h3>
+                <p class="muted" id="af-text" style="font-size:15px"></p>
+                <!-- apply form: shown to accounts that are not affiliates yet -->
+                <form id="af-apply" style="display:none">
+                    <div class="field"><label for="af-code">Choose a referral code</label><input id="af-code" placeholder="e.g. your name" maxlength="31"></div>
+                    <div class="field"><label for="af-about">How will you share it? (optional)</label><input id="af-about" placeholder="YouTube, a sim group, friends…" maxlength="300"></div>
+                    <button class="btn" type="submit">Apply to join</button>
+                    <p class="msg" id="af-apply-msg"></p>
+                </form>
+                <!-- dashboard: shown to affiliates (active or pending) -->
+                <div id="af-dash" style="display:none">
+                    <div class="field" style="margin:0 0 14px"><label for="af-link">Your referral link</label><div style="display:flex;gap:8px"><input id="af-link" readonly style="font-family:ui-monospace,Consolas,monospace"><button class="btn btn-ghost" type="button" id="af-copy">Copy</button></div></div>
+                    <div class="grid grid-3" style="gap:12px;margin-bottom:16px"><div class="card"><label class="muted">Referred sales</label><div class="stat-num" id="af-orders" style="font-size:28px">0</div></div><div class="card"><label class="muted">To be paid</label><div class="stat-num" id="af-pending" style="font-size:28px">0</div></div><div class="card"><label class="muted">Paid out</label><div class="stat-num" id="af-paid" style="font-size:28px">0</div></div></div>
+                    <!-- automatic payouts over Stripe: connect once, then commissions arrive on their own -->
+                    <div id="af-connect" class="card" style="margin-bottom:16px;display:none">
+                        <strong>Get paid automatically</strong>
+                        <p class="muted" id="af-connect-text" style="font-size:14px;margin:6px 0 10px"></p>
+                        <button class="btn btn-sm" type="button" id="af-connect-btn" style="display:none"></button>
+                        <p class="msg" id="af-connect-msg" style="margin:6px 0 0"></p>
+                    </div>
+                    <form id="af-payout-form" class="field" style="margin:0 0 16px"><label for="af-payout">Or get paid by hand — where to send your money (PayPal email, IBAN…)</label><div style="display:flex;gap:8px"><input id="af-payout" placeholder="So we can pay you" maxlength="300"><button class="btn btn-ghost" type="submit">Save</button></div><p class="msg" id="af-payout-msg" style="margin:6px 0 0"></p></form>
+                    <label class="muted" style="display:block;margin-bottom:6px">Orders you referred</label>
+                    <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Product</th><th>Sale</th><th>Your cut</th><th>Status</th></tr></thead><tbody id="af-rows"><tr><td colspan="5" class="muted">None yet.</td></tr></tbody></table></div>
+                </div>
+            </div>
+            <div class="box" id="discord" hidden style="margin-bottom:24px">
+                <h3>Discord</h3>
+                <p class="muted" id="dc-text" style="font-size:15px"></p>
+                <p class="msg" id="dc-msg" style="margin:0 0 14px"></p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="button" id="dc-link">Link Discord</button><button class="btn btn-ghost" type="button" id="dc-unlink" style="display:none">Unlink</button></div>
+            </div>
             <form class="box" id="settings-form">
                 <h3>Settings</h3>
                 <div class="field"><label for="s-name">Name</label><input id="s-name" required></div>
@@ -47,6 +81,7 @@
                 <button class="btn">Save changes</button>
                 <p class="msg" id="s-msg"></p>
             </form>
+            </div>
         </div>
     </div>
 </main>
@@ -65,14 +100,18 @@ async function init() {
     document.getElementById("role").textContent = user.role;
     document.getElementById("order-count").textContent = user.orders_count;
     document.getElementById("s-name").value = user.name;
+    showDiscord(user.discord);
+    loadAffiliate();
 
     const licenses = (await (await fetch("/api/account/licenses", { headers })).json()).licenses || [];
     document.getElementById("licenses").innerHTML = licenses.length ? licenses.map(l =>
         `<tr><td style="font-family:ui-monospace,Consolas,monospace;letter-spacing:.04em;color:var(--ink);white-space:nowrap">${esc(l.license_key)}</td><td>${esc(l.product_id)}</td><td>${esc(l.activations)} / ${esc(l.max_activations)}</td><td>${l.status === "active" ? '<span class="badge published">Active</span>' : '<span class="badge">Revoked</span>'}</td><td><button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${esc(l.license_key)}');this.textContent='Copied'">Copy</button></td></tr>`
     ).join("") : '<tr><td colspan="5" class="muted">No licence keys yet. They appear here after you buy a product.</td></tr>';
+    if (licenses.some(l => l.status === "active") && !document.getElementById("review-ask")) // owners: ask for a Trustpilot review
+        document.getElementById("licenses").closest(".box").insertAdjacentHTML("beforeend", `<p id="review-ask" style="padding:0 24px 22px;margin:0;font-size:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span class="muted">Flying with it? Tell other simmers:</span>${trustpilotBadge(true)}</p>`);
     const orders = (await (await fetch("/api/account/orders", { headers })).json()).orders || [];
     document.getElementById("orders").innerHTML = orders.length ? orders.map(o =>
-        `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>$${Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`
+        `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>${o.currency ? Number(o.amount || 0).toFixed(2) + " " + esc(String(o.currency).toUpperCase()) : "$" + Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`
     ).join("") : '<tr><td colspan="5" class="muted">No orders yet.</td></tr>';
 }
 
@@ -107,6 +146,41 @@ document.getElementById("end-others").onclick = async () => {
     loadSessions();
 };
 
+// Discord: link the account to get the verified buyer role (and with it the buyer channels)
+const DC_RESULT = { linked: ["ok", "Done. Open Discord: the buyer channels are there now."],
+    "linked-no-licence": ["ok", "Done. You are in the Rotaidem server."],
+    cancelled: ["", "Linking was cancelled. Nothing changed."], expired: ["error", "That took too long. Press Link Discord again."],
+    error: ["error", "Discord did not let us link the account. Please try again, or contact us if it keeps happening."] };
+function showDiscord(dc) {
+    const box = document.getElementById("discord");
+    if (!dc || !dc.available) { box.hidden = true; return; }
+    box.hidden = false;
+    document.getElementById("dc-text").textContent = !dc.linked
+        ? "Link your Discord to join the Rotaidem server. Licence holders get the Verified buyer role and the buyer channels."
+        : `Linked as ${dc.name || "your Discord account"}. ` + (dc.buyer ? "You have the Verified buyer role." : "The buyer channels open once this account has a licence.");
+    document.getElementById("dc-link").textContent = dc.linked ? "Link again" : "Link Discord";
+    document.getElementById("dc-unlink").style.display = dc.linked ? "" : "none";
+    const result = DC_RESULT[new URLSearchParams(location.search).get("discord")];
+    if (result) {
+        const msg = document.getElementById("dc-msg");
+        msg.className = "msg " + result[0]; msg.textContent = result[1];
+        history.replaceState(null, "", location.pathname + "#discord");
+        box.scrollIntoView({ block: "center" });
+    }
+}
+document.getElementById("dc-link").onclick = async e => {
+    e.target.disabled = true;
+    const data = await (await fetch("/api/discord/start", { method: "POST", headers })).json().catch(() => ({}));
+    if (data.url) { location.href = data.url; return; }
+    e.target.disabled = false;
+    const msg = document.getElementById("dc-msg"); msg.className = "msg error"; msg.textContent = data.error || "Could not open Discord. Please try again.";
+};
+document.getElementById("dc-unlink").onclick = async () => {
+    if (!confirm("Unlink Discord? You lose the Verified buyer role; you stay in the server.")) return;
+    await fetch("/api/discord/unlink", { method: "POST", headers });
+    init();
+};
+
 document.getElementById("settings-form").onsubmit = async e => {
     e.preventDefault();
     const msg = document.getElementById("s-msg");
@@ -120,6 +194,79 @@ document.getElementById("settings-form").onsubmit = async e => {
     msg.textContent = res.ok ? (document.getElementById("s-new").value ? "Saved. Your other devices have been logged out." : "Saved.") : (data.error || "Could not save.");
     if (res.ok) { localStorage.setItem("rsg_name", data.name); document.getElementById("s-cur").value = ""; document.getElementById("s-new").value = ""; init(); paintAuth(); }
 };
+// Affiliate box: an apply form for everyone else, a dashboard for affiliates (Admin -> Affiliates)
+async function loadAffiliate() {
+    const d = await (await fetch("/api/account/affiliate", { headers })).json().catch(() => ({}));
+    const aff = d.affiliate;
+    const box = document.getElementById("affiliate");
+    const apply = document.getElementById("af-apply"), dash = document.getElementById("af-dash");
+    box.hidden = false;
+    if (!aff) {
+        document.getElementById("af-text").textContent = `Earn ${d.percent || 20}% of every sale you bring us. Apply for a referral link below.`;
+        apply.style.display = ""; dash.style.display = "none";
+        return;
+    }
+    apply.style.display = "none"; dash.style.display = "";
+    document.getElementById("af-text").textContent =
+        aff.status === "active" ? `Share your link. You earn ${aff.percent}% of every sale it brings.`
+        : aff.status === "pending" ? "Your application is being reviewed. Your link starts earning once we approve it."
+        : "Your affiliate code is paused. Contact us if you think this is a mistake.";
+    document.getElementById("af-link").value = aff.link;
+    document.getElementById("af-orders").textContent = aff.orders;
+    document.getElementById("af-pending").textContent = aff.pending.amount.toFixed(2);
+    document.getElementById("af-paid").textContent = aff.paid.amount.toFixed(2);
+    document.getElementById("af-payout").value = aff.payout || "";
+    // automatic payouts (Stripe Connect): shown only while the code is active
+    const cbox = document.getElementById("af-connect"), ctext = document.getElementById("af-connect-text"), cbtn = document.getElementById("af-connect-btn");
+    if (aff.status === "active") {
+        cbox.style.display = "";
+        const auto = d.payouts && d.payouts.on;
+        if (aff.connected && aff.payouts_ready) {
+            ctext.textContent = auto ? "Set up ✓ Every commission is sent straight to your Stripe account the moment your referred sale is paid." : "Set up ✓ You'll be paid straight to your Stripe account as soon as we switch automatic payouts on.";
+            cbtn.style.display = "none";
+        } else if (aff.connected) {
+            ctext.textContent = "Almost there — finish your Stripe details so we can pay you.";
+            cbtn.style.display = ""; cbtn.textContent = "Finish Stripe setup";
+        } else {
+            ctext.textContent = auto ? "Connect a Stripe account and each commission is paid straight to you, automatically, as soon as the sale is paid." : "Connect a Stripe account to get paid automatically once we switch payouts on.";
+            cbtn.style.display = ""; cbtn.textContent = "Set up automatic payouts";
+        }
+    } else { cbox.style.display = "none"; }
+    const rows = aff.orders_list || [];
+    document.getElementById("af-rows").innerHTML = rows.length ? rows.map(o =>
+        `<tr><td class="muted">${esc(o.date)}</td><td>${esc(o.product)}</td><td>${o.sale.toFixed(2)} ${esc(o.currency)}</td><td>${o.commission.toFixed(2)} ${esc(o.currency)}</td><td>${o.status === "paid" ? '<span class="badge published">Paid</span>' : '<span class="badge">Pending</span>'}</td></tr>`
+    ).join("") : '<tr><td colspan="5" class="muted">None yet.</td></tr>';
+}
+document.getElementById("af-copy").onclick = () => {
+    const f = document.getElementById("af-link"); f.select();
+    navigator.clipboard.writeText(f.value).then(() => { document.getElementById("af-copy").textContent = "Copied"; });
+};
+document.getElementById("af-apply").onsubmit = async e => {
+    e.preventDefault();
+    const msg = document.getElementById("af-apply-msg");
+    const r = await fetch("/api/account/affiliate/apply", { method: "POST", headers, body: JSON.stringify({ code: document.getElementById("af-code").value, about: document.getElementById("af-about").value }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.className = "msg error"; msg.textContent = d.error || "Could not apply."; return; }
+    loadAffiliate();
+};
+document.getElementById("af-payout-form").onsubmit = async e => {
+    e.preventDefault();
+    const msg = document.getElementById("af-payout-msg");
+    const r = await fetch("/api/account/affiliate/payout", { method: "POST", headers, body: JSON.stringify({ payout: document.getElementById("af-payout").value }) });
+    msg.className = r.ok ? "msg ok" : "msg error"; msg.textContent = r.ok ? "Saved." : "Could not save.";
+};
+document.getElementById("af-connect-btn").onclick = async () => {
+    const btn = document.getElementById("af-connect-btn"), msg = document.getElementById("af-connect-msg");
+    btn.disabled = true; btn.textContent = "Opening Stripe…";
+    const r = await fetch("/api/account/affiliate/connect", { method: "POST", headers });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.url) { location.href = d.url; return; }
+    btn.disabled = false; msg.className = "msg error";
+    // show Stripe's own reason when we have it; otherwise say which layer failed
+    msg.textContent = d.error || (r.status === 404 ? "Payouts aren't live on the site yet (deploy the latest version)." : r.status === 501 ? "Open this from the main site, not the preview." : `Could not reach Stripe (error ${r.status}).`);
+    loadAffiliate();
+};
+
 init();
 loadSessions();
 </script>

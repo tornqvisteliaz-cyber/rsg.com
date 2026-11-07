@@ -16,6 +16,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import time
@@ -24,10 +25,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
-from html import escape
+from html import escape, unescape as html_unescape
 from pathlib import Path
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, has_request_context, jsonify, redirect, request, send_from_directory
 
 PUBLIC = Path(__file__).resolve().parent / "cloudflare" / "public"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -41,6 +42,16 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_PASSWORD") or
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 RESEND_API_URL = os.environ.get("RESEND_API_URL", "https://api.resend.com").rstrip("/")  # override only for tests
 MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotaidem.com>"
+# Payments through Stripe Checkout (setup.py stripe writes these to config.env).
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_API_URL = os.environ.get("STRIPE_API_URL", "https://api.stripe.com").rstrip("/")  # override only for tests
+# Discord (Admin -> Discord): the application and its bot, from setup.py discord
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "").strip()
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "").strip()
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "").strip()
+DISCORD_API_URL = os.environ.get("DISCORD_API_URL", "https://discord.com/api/v10").rstrip("/")  # override only for tests
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUDIENCES = ("accounts", "buyers", "subscribers", "contacts")
 LICENSE_API_KEY = os.environ.get("LICENSE_API_KEY", "").strip()
@@ -146,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-10-26-replies"
+SCHEMA_VERSION = "2026-11-07-affiliate-payouts"
 
 
 def ensure_schema():
@@ -188,6 +199,15 @@ def ensure_schema():
         f"CREATE TABLE IF NOT EXISTS sessions (id {pk}, user_id INTEGER, token_hash {ident} UNIQUE, ip_address {word}, "
         f"user_agent TEXT, created_at {word}, last_seen {word})",
         f"CREATE TABLE IF NOT EXISTS downloads (id {pk}, product_id {ident}, user_id INTEGER, ip_address {word}, created_at {word})",
+        # One row per paid Stripe Checkout session: claimed first, so an order is never made twice.
+        f"CREATE TABLE IF NOT EXISTS stripe_payments (session_id {ident} PRIMARY KEY, product_id {word}, user_id INTEGER, email TEXT, "
+        f"order_id INTEGER, license_key {word}, created_at {word})",
+        # Affiliate program: people with a referral code earn a share of the sales they bring.
+        f"CREATE TABLE IF NOT EXISTS affiliates (id {pk}, code {ident} UNIQUE, user_id INTEGER, email {ident}, name TEXT, "
+        f"percent INTEGER DEFAULT 20, status {word} DEFAULT 'active', note TEXT, created_at {word})",
+        # One row per referred paid order: what the affiliate earned, and whether you have paid it out.
+        f"CREATE TABLE IF NOT EXISTS affiliate_commissions (id {pk}, affiliate_id INTEGER, order_id INTEGER UNIQUE, amount {money} DEFAULT 0, "
+        f"currency {word}, rate INTEGER DEFAULT 0, status {word} DEFAULT 'pending', created_at {word})",
     ):
         d.run(sql + tail)
     for table, column in (("products", "images TEXT"), ("products", "tagline TEXT"), ("products", "features TEXT"),
@@ -198,8 +218,25 @@ def ensure_schema():
                           ("products", f"download_gate {word} DEFAULT 'public'"), ("products", "changelog TEXT"),
                           ("users", "admin_note TEXT"), ("posts", f"publish_at {word}"),
                           ("messages", "reply TEXT"), ("messages", f"replied_at {word}"), ("messages", "replied_by TEXT"),
-                          # empty = perpetual; "YYYY-MM-DD HH:MM:SS" UTC = the licence stops then
-                          ("licenses", f"expires_at {word}")):
+                          # RotaHub updates: "everyone must update", and when the version or download last changed
+                          ("products", "update_required INTEGER DEFAULT 0"), ("products", f"updated_at {word}"),
+                          # Stripe: the price charged at checkout (smallest unit, e.g. ore/cents), and on orders the payment
+                          ("products", "pay_amount INTEGER DEFAULT 0"), ("products", f"pay_currency {word}"),
+                          ("orders", f"payment_ref {ident}"), ("orders", f"currency {word}"),
+                          # a sale: a lower price at checkout until a date (Admin -> Products)
+                          ("products", "sale_amount INTEGER DEFAULT 0"), ("products", f"sale_until {word}"),
+                          # the Discord account linked on My account (for the verified buyer role)
+                          ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}"),
+                          # what happened the last time the role was given or taken (Admin -> Discord -> Linked members)
+                          ("users", "discord_result TEXT"),
+                          # the affiliate code that referred the order (Admin -> Affiliates)
+                          ("orders", f"affiliate_code {ident}"),
+                          # affiliate accounts: where to send their money, and how often their link was opened
+                          ("affiliates", "payout TEXT"), ("affiliates", "clicks INTEGER DEFAULT 0"),
+                          # automatic payouts over Stripe Connect: the affiliate's connected account and whether Stripe can pay it
+                          ("affiliates", f"stripe_account {word}"), ("affiliates", "payouts_ready INTEGER DEFAULT 0"),
+                          # the Stripe transfer that settled a commission (empty when paid by hand)
+                          ("affiliate_commissions", f"transfer_id {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
@@ -574,7 +611,9 @@ def me():
         return err("Unauthorized", 401)
     count = db().first("SELECT COUNT(*) AS n FROM orders WHERE customer_id = ?", user["id"])
     return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"],
-                             "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0}})
+                             "is_admin": user["role"] in STAFF, "orders_count": count["n"] if count else 0,
+                             "discord": {"available": discord_ready(), "linked": bool(user.get("discord_id")), "name": user.get("discord_name") or "",
+                                         "buyer": bool(user.get("discord_id")) and has_buyer_licence(user)}}})
 
 
 # ---------- admin password ----------
@@ -863,17 +902,34 @@ def account_orders():
 # ---------- catalog ----------
 
 def public_product(row, staff=False):
-    """A product for the website. A "licence holders only" download keeps its link hidden from visitors."""
+    """A product for the website. Products are only downloaded through RotaHub, so the installer link
+    stays hidden from everyone but staff; has_download says there is one."""
     p = with_images(row)
     try:
         p["changelog"] = json.loads(p.get("changelog") or "[]")
     except ValueError:
         p["changelog"] = []
     p["download_gate"] = p.get("download_gate") or "public"
-    if p["download_gate"] == "licence" and not staff:
+    if not staff:
         p["has_download"] = bool(p.get("download_url"))
         p["download_url"] = ""
+    # Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
+    p["can_buy"] = bool(STRIPE_SECRET_KEY and (p.get("pay_amount") or 0) > 0 and p.get("status") == "published")
+    p["sale_active"] = sale_active(p)
+    p["price_now"] = price_now(p)
     return p
+
+
+def sale_active(product):
+    """A sale runs while its price is below the normal one, up to and including its last day (UTC)."""
+    sale, full = int(product.get("sale_amount") or 0), int(product.get("pay_amount") or 0)
+    until = str(product.get("sale_until") or "")
+    return bool(0 < sale < full and (not until or until >= datetime.now(timezone.utc).strftime("%Y-%m-%d")))
+
+
+def price_now(product):
+    """What Stripe Checkout charges right now, in the smallest unit (ore, cents)."""
+    return int(product.get("sale_amount") or 0) if sale_active(product) else int(product.get("pay_amount") or 0)
 
 
 @app.get("/api/products")
@@ -908,7 +964,9 @@ def download(pid):
     if not product or not (url.startswith("https://") or url.startswith("/files/")):
         return err("This product has no download yet", 404)
     user = current_user()
-    if (product.get("download_gate") or "public") == "licence":
+    # The website only hands out RotaHub; RotaHub itself (User-Agent RotaHub/...) gets the installer.
+    via_hub = not request.headers.get("User-Agent", "").startswith("RotaHub")
+    if (product.get("download_gate") or "public") == "licence" and not via_hub:
         if not user:
             return jsonify({"error": "Log in to download. The download is for licence holders.", "login": True}), 401
         if user["role"] not in STAFF:
@@ -921,6 +979,8 @@ def download(pid):
                       pid, ip, utc_stamp(DOWNLOAD_REPEAT_MINUTES * 60)):
         db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
                  pid, user["id"] if user else None, ip, utc_stamp())
+    if via_hub:
+        return jsonify({"hub": True, "url": hub_config()["downloads"]["rotahub_url"], "product": product["name"] or pid})
     return jsonify({"url": url})
 
 
@@ -1096,18 +1156,51 @@ def save_product():
         sort_order = int(b.get("sort_order") or 0)
     except (TypeError, ValueError):
         sort_order = 0
+    download_url = str(b.get("download_url") or "").strip()
+    if download_url and not (download_url.startswith("https://") or FILE_LINK.match(download_url)):
+        return err("The download link must start with https:// or be an uploaded file (/files/...)", 400)
+    version = str(b.get("version") or "0.1.0").strip()[:30]
+    try:
+        pay_amount = int(round(float(str(b.get("pay_amount") or 0).replace(",", ".")) * 100))
+    except (TypeError, ValueError):
+        return err("The price at checkout must be a number, like 299 or 29.99", 400)
+    pay_currency = str(b.get("pay_currency") or "sek").lower()
+    if pay_amount < 0 or pay_amount > 10_000_000 or pay_currency not in PAY_CURRENCIES:
+        return err("Check the price at checkout and its currency", 400)
+    try:
+        sale_amount = int(round(float(str(b.get("sale_amount") or 0).replace(",", ".")) * 100))
+    except (TypeError, ValueError):
+        return err("The sale price must be a number, like 5.99", 400)
+    sale_until = str(b.get("sale_until") or "").strip()
+    if sale_amount and not 0 < sale_amount < pay_amount:
+        return err("The sale price must be lower than the price at checkout", 400)
+    if sale_until and not DATE_RE.match(sale_until):
+        return err("The sale's last day must look like 2026-12-24", 400)
+    before = db().first("SELECT version, download_url, updated_at FROM products WHERE id = ?", pid)
+    # When the version or the file changes, RotaHub sees a new release from this time on.
+    changed = not before or before["version"] != version or (before["download_url"] or "") != download_url
+    updated_at = utc_stamp() if changed or not before["updated_at"] else before["updated_at"]
     db().run(
-        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
+        "INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency, sale_amount, sale_until) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, "
         "version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, "
         "images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, "
-        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog",
-        pid, name, b.get("simulator") or "MSFS 2024", b.get("version") or "0.1.0", b.get("folder_name") or f"rotaidem-{pid}",
-        b.get("download_url") or "", b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
+        "tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, "
+        "update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency, sale_amount=excluded.sale_amount, sale_until=excluded.sale_until",
+        pid, name, b.get("simulator") or "MSFS 2024", version, b.get("folder_name") or f"rotaidem-{pid}",
+        download_url, b.get("image_url") or "", json.dumps(list_images(b.get("images"))),
         b.get("price") or "", b.get("description") or "", b.get("buy_url") or "mailto:Eliaz@rotaidem.com",
         b.get("status") or "in_development", b.get("tagline") or "", json.dumps(list_images(b.get("features"))), sort_order,
-        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))))
-    audit(user, "save_product", pid)
+        "licence" if b.get("download_gate") == "licence" else "public", json.dumps(clean_changelog(b.get("changelog"))),
+        1 if b.get("update_required") else 0, updated_at, pay_amount, pay_currency, sale_amount, sale_until)
+    audit(user, "save_product", pid + (f" (update {version})" if before and changed else ""))
+    if before and before["version"] != version and (b.get("status") or "") == "published":
+        entry = next((c for c in clean_changelog(b.get("changelog")) if c.get("version") == version), {})
+        discord_auto("updates", {"ping": "buyers" if discord_settings()["updates_ping"] else "none",
+                                 "embed": {"title": f"{name} {version} is out", "description": (entry.get("notes") or b.get("tagline") or "")[:1500],
+                                           "url": "/addons/view?id=" + pid, "image": b.get("image_url") or ""},
+                                 "buttons": [{"label": "Update in RotaHub", "url": "/get-rotahub?product=" + urllib.parse.quote(name)},
+                                             {"label": "What's new", "url": "/addons/view?id=" + pid}]})
     return jsonify({"ok": True, "id": pid, "page": "/addons/view?id=" + pid})
 
 
@@ -1182,6 +1275,7 @@ def save_newsletter():
         db().run("INSERT INTO posts (title, content, image_url, date, status, publish_at) VALUES (?, ?, ?, ?, ?, ?)",
                  b["title"], b["content"], b.get("image_url") or "", post_date(b.get("date")), status, publish_at)
     audit(user, "save_post", ("draft: " if status == "draft" else "") + b["title"])
+    discord_announce_news()
     return jsonify({"ok": True})
 
 
@@ -1266,7 +1360,7 @@ def admin_overview():
                     "emails_sent": n("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns"),
                     "media": n("SELECT COUNT(*) AS n FROM media"),
                     "staff_online": staff_online(),
-                    "email_ready": bool(RESEND_API_KEY),
+                    "email_ready": bool(RESEND_API_KEY), "payments_ready": bool(STRIPE_SECRET_KEY),
                     "revenue": float(revenue["n"] if revenue else 0)})
 
 
@@ -1608,7 +1702,8 @@ def admin_system():
                     "site_url": site_url(), "email_ready": bool(RESEND_API_KEY), "mail_from": MAIL_FROM,
                     "admin_password": bool(gate_hash()), "tables": tables,
                     "media_bytes": int(n("SELECT COALESCE(SUM(size), 0) AS n FROM media")),
-                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist())})
+                    "last_backup": str((last_backup or {}).get("at") or ""), "blocked": len(blocklist()),
+                    "stripe": stripe_mode(), "stripe_webhook": bool(STRIPE_WEBHOOK_SECRET)})
 
 
 @app.get("/api/admin/audit")
@@ -1779,6 +1874,8 @@ def admin_generate_licenses():
                           clamp_int(b.get("max_activations"), 2, 1, 100), str(b.get("note") or "")[:200], user["name"]):
             keys.append(key)
     audit(user, "create_licenses", f"{count} x {prefix}" + (f" for {email}" if email else ""))
+    if email:
+        discord_sync_owners([(customer["id"] if customer else None, email)])
     error = email_license_keys(email, keys, str(b.get("product_id") or "heavypro")[:60]) if email and b.get("send_email", True) else ""
     if email and b.get("send_email", True) and not error:
         audit(user, "email_licenses", email)
@@ -1828,6 +1925,7 @@ def admin_update_license(license_id):
              status, email, customer["id"] if customer else None, clamp_int(b.get("max_activations"), lic["max_activations"], 1, 100),
              str(b.get("note", lic["note"]) or "")[:200], product_id, expires, license_id)
     audit(user, "update_license", f"{lic['license_key']} ({status})")
+    discord_sync_owners([(lic["customer_id"], lic["email"]), (customer["id"] if customer else None, email)])
     return jsonify({"ok": True})
 
 
@@ -1844,13 +1942,15 @@ def admin_bulk_licenses():
     ids = sorted({int(i) for i in (b.get("ids") or []) if str(i).isdigit()})[:1000]
     if not ids:
         return err("Select at least one licence", 400)
-    changed = 0
+    changed, owners = 0, []
     for license_id in ids:
-        lic = db().first("SELECT id, status FROM licenses WHERE id = ?", license_id)
+        lic = db().first("SELECT id, status, customer_id, email FROM licenses WHERE id = ?", license_id)
         if lic and lic["status"] != status:
             db().run("UPDATE licenses SET status = ? WHERE id = ?", status, license_id)
             changed += 1
+            owners.append((lic["customer_id"], lic["email"]))
     audit(user, "bulk_licenses", f"{changed} {status}")
+    discord_sync_owners(owners)
     return jsonify({"ok": True, "changed": changed})
 
 
@@ -2324,10 +2424,1683 @@ def account_claim_license():
         db().run("UPDATE licenses SET customer_id = ? WHERE id = ?", user["id"], lic["id"])
         db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'license_claimed', ?, ?, ?)",
                  user["id"], key, request.remote_addr or "", utc_stamp())
+        discord_sync_owners([(user["id"], user["email"])])
     row = db().first("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, "
                      "(SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations "
                      "FROM licenses WHERE id = ?", lic["id"])
     return jsonify({"license": row})
+
+
+# ---------- payments: Stripe Checkout ----------
+# Buy -> /api/checkout/<id> makes a Checkout session -> the customer pays on Stripe's page ->
+# /checkout-done asks /api/checkout/status (and Stripe calls /api/stripe/webhook): one order and
+# one licence key, emailed. The price comes from the product (Admin -> Products -> Price at checkout).
+
+PAY_CURRENCIES = ("sek", "eur", "usd", "gbp", "nok", "dkk")
+CHECKOUT_SESSION = re.compile(r"^cs_[A-Za-z0-9_]{10,250}$")
+REFERRAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")  # window.endorsely_referral from the buyer's browser
+AFFILIATE_DEFAULT_PERCENT = 20  # a new affiliate earns this share of each referred sale (Admin -> Affiliates)
+
+
+def stripe_mode():
+    return "" if not STRIPE_SECRET_KEY else ("test" if "_test_" in STRIPE_SECRET_KEY else "live")
+
+
+def stripe_call(method, path, fields=None, idempotency_key=""):
+    """Stripe's API with the secret key from config.env. Returns (answer, error text).
+    Pass idempotency_key on money-moving POSTs so a retry cannot pay twice."""
+    data = urllib.parse.urlencode(fields or {}).encode() if method == "POST" else None
+    headers = {"Authorization": f"Bearer {STRIPE_SECRET_KEY}", "Content-Type": "application/x-www-form-urlencoded",
+               "User-Agent": "Rotaidem-Website/1.0"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), ""
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(raw)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = raw[:200]
+        app.logger.error("Stripe %s %s -> %s: %s", method, path, exc.code, message)
+        return None, f"Stripe said ({exc.code}): {message}"
+    except (OSError, ValueError) as exc:
+        app.logger.error("Stripe %s %s: %s", method, path, exc)
+        return None, "Could not reach Stripe. Try again in a minute."
+
+
+def key_prefix_for(product_id):
+    """The prefix of a product's licence keys: Admin -> RotaHub -> Install settings, HPRO for HeavyPro, else from the id."""
+    settings = next((p for p in hub_config()["products"] if p["id"] == product_id), None)
+    if settings and settings.get("key_prefix"):
+        return settings["key_prefix"]
+    if product_id in ("heavypro", "rotaidem-heavypro"):
+        return "HPRO"
+    return (re.sub(r"[^A-Z0-9]", "", product_id.upper()) or "ROTA")[:4].ljust(2, "X")
+
+
+def fulfil_checkout(session):
+    """A paid Checkout session -> one order and one licence key, emailed. Safe to call twice
+    (from the success page and the webhook): the stripe_payments row is claimed first."""
+    if session.get("payment_status") != "paid" or session.get("mode") != "payment" or not CHECKOUT_SESSION.match(str(session.get("id") or "")):
+        return None
+    sid = session["id"]
+    done = db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+    if done:
+        return done
+    meta = session.get("metadata") or {}
+    product_id = str(meta.get("product_id") or "")
+    try:
+        user_id = int(meta.get("user_id") or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    user = db().first("SELECT * FROM users WHERE id = ?", user_id) if user_id else None
+    email = ((user or {}).get("email") or (session.get("customer_details") or {}).get("email") or session.get("customer_email") or "").lower()
+    try:
+        db().run("INSERT INTO stripe_payments (session_id, product_id, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)",
+                 sid, product_id, user_id or None, email, utc_stamp())
+    except Exception:  # noqa: BLE001 - the other request (page or webhook) claimed it a moment ago
+        return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+    amount = (session.get("amount_total") or 0) / 100
+    currency = str(session.get("currency") or "").lower()
+    affiliate_code = str(meta.get("affiliate_code") or "")
+    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?)",
+             user_id or None, product_id, amount, sid, currency, affiliate_code)
+    order = db().first("SELECT id FROM orders WHERE payment_ref = ?", sid)
+    referred_by = credit_affiliate(order["id"], amount, currency, affiliate_code, user_id, email) if order else None
+    if referred_by:
+        affiliate_autopay(referred_by)  # pay their cut straight away if automatic payouts are on and they are set up
+    key = ""
+    while not key:
+        candidate = generate_key(key_prefix_for(product_id))
+        if insert_license(candidate, product_id, email, user_id or None, order["id"] if order else None, 2, "Bought on rotaidem.com (Stripe)", "Stripe"):
+            key = candidate
+    db().run("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?", order["id"] if order else None, key, sid)
+    discord_sync_owners([(user_id or None, email)])
+    error = email_license_keys(email, [key], product_id)
+    if error:
+        app.logger.error("Licence e-mail after payment %s failed: %s", sid, error)
+    if user:
+        audit(user, "stripe_order", f"{product_id} {amount:.2f} {str(session.get('currency') or '').upper()}")
+    product = db().first("SELECT name FROM products WHERE id = ?", product_id) or {}
+    today_count = db().first("SELECT COUNT(*) AS n FROM stripe_payments WHERE created_at >= ?", utc_stamp()[:10] + " 00:00:00") or {}
+    discord_auto("sales", {"text": f"🎉 New sale: **{product.get('name') or product_id}** for {amount:.2f} {str(session.get('currency') or '').upper()}"
+                                   f" ({today_count.get('n') or 1} today)" + (f" · referred by {referred_by['code']}" if referred_by else "")})
+    return db().first("SELECT * FROM stripe_payments WHERE session_id = ?", sid)
+
+
+@app.post("/api/checkout/<pid>")
+def checkout(pid):
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Log in to buy. Your licence key is linked to your account.", "login": True}), 401
+    product = db().first("SELECT * FROM products WHERE id = ?", pid)
+    if not product or not (product.get("pay_amount") or 0) > 0 or product.get("status") != "published":
+        return err("This product cannot be bought on the website yet", 404)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet. Please try again later or contact us.", 503)
+    owned = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)", user["id"], (user["email"] or "").lower())
+    if any(same_product(pid, r["product_id"]) for r in owned):
+        return jsonify({"error": f"You already have a licence for {product['name']}. It is under My account.", "owned": True}), 409
+    base = site_url()
+    fields = {"mode": "payment", "line_items[0][quantity]": "1",
+              "line_items[0][price_data][currency]": product.get("pay_currency") or "sek",
+              "line_items[0][price_data][unit_amount]": str(price_now(product)),
+              "line_items[0][price_data][product_data][name]": product["name"] or pid,
+              "customer_email": user["email"], "client_reference_id": str(user["id"]),
+              "metadata[product_id]": pid, "metadata[user_id]": str(user["id"]),
+              "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": str(user["id"]),
+              "success_url": f"{base}/checkout-done?session_id={{CHECKOUT_SESSION_ID}}",
+              "cancel_url": f"{base}/addons/view?id={urllib.parse.quote(pid)}&cancelled=1"}
+    if product.get("tagline"):
+        fields["line_items[0][price_data][product_data][description]"] = product["tagline"][:300]
+    if shop_settings()["promo_codes"]:
+        fields["allow_promotion_codes"] = "true"  # codes made in the Stripe dashboard
+    referral = str(body().get("referral") or "").strip()
+    if REFERRAL_ID.match(referral):
+        fields["metadata[endorsely_referral]"] = referral  # Endorsely (affiliates) credits the sale from this
+    if affiliate_by_code(body().get("ref")):  # our own affiliate program
+        fields["metadata[affiliate_code]"] = str(body().get("ref")).strip()
+    session, error = stripe_call("POST", "/v1/checkout/sessions", fields)
+    if error or not (session or {}).get("url"):
+        return err(error or "Stripe did not open a checkout page", 502)
+    return jsonify({"url": session["url"]})
+
+
+@app.get("/api/checkout/status")
+def checkout_status():
+    """The page after paying asks this: makes the order and key at once if Stripe says it is paid."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    sid = request.args.get("session_id", "")
+    if not CHECKOUT_SESSION.match(sid):
+        return err("Order not found", 404)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    session, error = stripe_call("GET", f"/v1/checkout/sessions/{urllib.parse.quote(sid)}")
+    if error:
+        return err(error, 502)
+    meta = session.get("metadata") or {}
+    if str(meta.get("user_id")) != str(user["id"]):
+        return err("Order not found", 404)
+    product = db().first("SELECT name FROM products WHERE id = ?", meta.get("product_id") or "")
+    answer = {"paid": session.get("payment_status") == "paid", "status": session.get("status") or "",
+              "product_id": meta.get("product_id") or "", "product": (product or {}).get("name") or meta.get("product_id") or ""}
+    if answer["paid"]:
+        done = fulfil_checkout(session) or {}
+        answer.update({"license_key": done.get("license_key") or "", "email": done.get("email") or ""})
+    return jsonify(answer)
+
+
+@app.post("/api/stripe/webhook")
+def stripe_webhook():
+    """Stripe tells about paid checkouts here, also when the customer closed the page after paying."""
+    if not STRIPE_WEBHOOK_SECRET:
+        return err("The webhook is not set up", 503)
+    payload = request.get_data()
+    parts = [p.split("=", 1) for p in request.headers.get("Stripe-Signature", "").split(",") if "=" in p]
+    stamp = next((v for k, v in parts if k == "t"), "")
+    signatures = [v for k, v in parts if k == "v1"]
+    try:
+        fresh = abs(time.time() - int(stamp)) <= 300
+    except ValueError:
+        fresh = False
+    expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), stamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    if not fresh or not any(hmac.compare_digest(expected, v) for v in signatures):
+        return err("Bad signature", 400)
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        return err("Bad payload", 400)
+    if event.get("type") in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        fulfil_checkout((event.get("data") or {}).get("object") or {})
+    return jsonify({"received": True})
+
+
+# ---------- Admin -> Shop: payments set-up, discount codes, sales per product ----------
+
+SHOP_DEFAULT = {"promo_codes": False}
+
+
+def shop_settings():
+    saved = get_setting("shop.settings", {}) or {}
+    return {**SHOP_DEFAULT, **{k: saved[k] for k in SHOP_DEFAULT if k in saved}}
+
+
+@app.get("/api/admin/shop")
+def admin_shop():
+    if not staff_user():
+        return err("Admin only", 403)
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    sales = {}
+    for row in db().all("SELECT product_id, currency, COUNT(*) AS n, SUM(amount) AS total, "
+                        "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS recent FROM orders "
+                        "WHERE payment_status = 'Paid' GROUP BY product_id, currency", since):
+        sales.setdefault(row["product_id"] or "", []).append({"currency": (row["currency"] or "").lower(), "orders": int(row["n"] or 0),
+                                                              "total": round(float(row["total"] or 0), 2), "last_30_days": int(row["recent"] or 0)})
+    items = []
+    for p in db().all("SELECT * FROM products ORDER BY sort_order, name"):
+        items.append({"id": p["id"], "name": p["name"], "status": p["status"], "pay_amount": int(p.get("pay_amount") or 0),
+                      "pay_currency": p.get("pay_currency") or "sek", "sale_amount": int(p.get("sale_amount") or 0),
+                      "sale_until": p.get("sale_until") or "", "sale_active": sale_active(p), "price_now": price_now(p),
+                      "can_buy": bool(STRIPE_SECRET_KEY and (p.get("pay_amount") or 0) > 0 and p.get("status") == "published"),
+                      "sales": sales.pop(p["id"], [])})
+    return jsonify({"stripe": {"connected": bool(STRIPE_SECRET_KEY), "mode": stripe_mode(), "webhook": bool(STRIPE_WEBHOOK_SECRET),
+                               "webhook_url": site_url() + "/api/stripe/webhook"},
+                    "settings": shop_settings(), "products": items,
+                    "other_sales": [{"product_id": k, **v} for k, rows in sales.items() for v in rows]})
+
+
+@app.post("/api/admin/shop")
+def admin_save_shop():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change the shop", 403)
+    b = body()
+    settings = {**shop_settings(), "promo_codes": bool(b.get("promo_codes"))}
+    set_setting("shop.settings", settings)
+    audit(user, "save_shop", "discount codes " + ("on" if settings["promo_codes"] else "off"))
+    return jsonify({"ok": True, "settings": settings})
+
+
+# ---------- affiliate program ----------
+# People with a referral code earn a share of the sales they bring. A visitor arriving with ?ref=CODE
+# keeps the code (auth.js), it travels to Stripe Checkout as metadata, and a paid order credits the
+# affiliate a commission (their percent of the amount). You mark commissions paid in Admin -> Affiliates.
+
+AFFILIATE_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$")
+
+
+def affiliate_by_code(code):
+    code = str(code or "").strip()
+    if not AFFILIATE_CODE.match(code):
+        return None
+    return db().first("SELECT * FROM affiliates WHERE LOWER(code) = ? AND status = 'active'", code.lower())
+
+
+def affiliate_for_user(user):
+    """The affiliate account tied to a logged-in user, by account id or by email."""
+    return db().first("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?", user["id"], (user.get("email") or "").lower())
+
+
+def credit_affiliate(order_id, amount, currency, affiliate_code, buyer_id, buyer_email):
+    """One commission for a referred order. Skips self-referral and does nothing without a valid code."""
+    aff = affiliate_by_code(affiliate_code)
+    if not aff:
+        return None
+    if (aff["user_id"] and buyer_id and int(aff["user_id"]) == int(buyer_id)) or (aff["email"] and aff["email"].lower() == (buyer_email or "").lower()):
+        return None  # you cannot refer yourself
+    commission = round((float(amount or 0) * int(aff["percent"] or 0)) / 100, 2)
+    try:
+        db().run("INSERT INTO affiliate_commissions (affiliate_id, order_id, amount, currency, rate, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                 aff["id"], order_id, commission, (currency or "").lower(), int(aff["percent"] or 0), utc_stamp())
+    except Exception:  # noqa: BLE001 - already credited (order_id is unique)
+        return None
+    return aff
+
+
+def affiliate_totals(affiliate_id):
+    rows = db().all("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status", affiliate_id)
+    by = {r["status"]: {"orders": int(r["n"] or 0), "amount": round(float(r["total"] or 0), 2)} for r in rows}
+    return {"pending": by.get("pending", {"orders": 0, "amount": 0}), "paid": by.get("paid", {"orders": 0, "amount": 0}),
+            "orders": sum(v["orders"] for v in by.values())}
+
+
+def affiliate_orders(affiliate_id, with_buyer=False):
+    """The referred orders behind an affiliate's commissions, newest first. Buyers are only named for staff."""
+    rows = db().all("SELECT c.id, c.amount AS commission, c.currency, c.rate, c.status, c.created_at, o.id AS order_id, o.amount AS sale, "
+                    "o.product_id, o.customer_id, o.payment_ref, p.name AS product FROM affiliate_commissions c "
+                    "LEFT JOIN orders o ON o.id = c.order_id LEFT JOIN products p ON p.id = o.product_id "
+                    "WHERE c.affiliate_id = ? ORDER BY c.id DESC LIMIT 500", affiliate_id)
+    out = []
+    for r in rows:
+        item = {"order_id": r["order_id"], "date": str(r["created_at"] or "")[:16], "product": r["product"] or r["product_id"] or "",
+                "sale": round(float(r["sale"] or 0), 2), "commission": round(float(r["commission"] or 0), 2),
+                "currency": (r["currency"] or "").upper(), "rate": r["rate"], "status": r["status"]}
+        if with_buyer:
+            buyer = db().first("SELECT name, email FROM users WHERE id = ?", r["customer_id"]) if r["customer_id"] else None
+            if not buyer and r["payment_ref"]:
+                buyer = db().first("SELECT email FROM stripe_payments WHERE session_id = ?", r["payment_ref"])
+            item["buyer"] = (buyer or {}).get("email") or ""
+        out.append(item)
+    return out
+
+
+def affiliate_public(aff, with_buyer=False):
+    return {"id": aff["id"], "code": aff["code"], "name": aff["name"] or "", "email": aff["email"] or "", "percent": aff["percent"],
+            "status": aff["status"], "note": aff["note"] or "", "payout": aff.get("payout") or "", "clicks": int(aff.get("clicks") or 0),
+            "connected": bool(aff.get("stripe_account")), "payouts_ready": bool(aff.get("payouts_ready")),
+            "created_at": aff["created_at"], "link": site_url() + "/?ref=" + urllib.parse.quote(aff["code"]),
+            "orders_list": affiliate_orders(aff["id"], with_buyer), **affiliate_totals(aff["id"])}
+
+
+@app.get("/api/account/affiliate")
+def account_affiliate():
+    """The logged-in user's own affiliate dashboard, if they are an affiliate (or have applied)."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    aff = affiliate_for_user(user)
+    if not aff:
+        return jsonify({"affiliate": None, "percent": AFFILIATE_DEFAULT_PERCENT})
+    if aff.get("stripe_account"):
+        stripe_connect_ready(aff)   # refresh the cached flag for the dashboard
+        affiliate_autopay(aff)      # and pay anything still pending, directly, now they are set up
+        aff = affiliate_for_user(user) or aff
+    data = affiliate_public(aff)
+    data.pop("note", None)  # the admin's own note stays private
+    return jsonify({"affiliate": data, "percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings()})
+
+
+@app.post("/api/account/affiliate/apply")
+def account_affiliate_apply():
+    """Any customer can ask to become an affiliate; it starts as 'pending' until staff approve it."""
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    if affiliate_for_user(user):
+        return err("You already have an affiliate account", 409)
+    b = body()
+    code = str(b.get("code") or "").strip() or slug(user.get("name") or "")[:31]
+    if not AFFILIATE_CODE.match(code):
+        return err("Pick a code of 3 to 31 letters, digits, dashes or underscores", 400)
+    if db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower()):
+        return err(f'The code "{code}" is taken. Try another one.', 409)
+    why = str(b.get("about") or "").strip()[:300]
+    db().run("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)",
+             code, (user.get("email") or "").lower(), user["id"], str(user.get("name") or "")[:100], AFFILIATE_DEFAULT_PERCENT,
+             ("Applied: " + why) if why else "Applied from My account", utc_stamp())
+    discord_auto("sales", {"text": f"📝 New affiliate application: **{user.get('name') or code}** wants the code `{code}`. Approve it in Admin -> Affiliates."})
+    return jsonify({"ok": True, "status": "pending", "code": code})
+
+
+@app.post("/api/account/affiliate/payout")
+def account_affiliate_payout():
+    """Where the affiliate wants their money sent (PayPal email, IBAN, ...), shown to staff when paying."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    aff = affiliate_for_user(user)
+    if not aff:
+        return err("You are not an affiliate", 404)
+    payout = str(body().get("payout") or "").strip()[:300]
+    db().run("UPDATE affiliates SET payout = ? WHERE id = ?", payout, aff["id"])
+    return jsonify({"ok": True, "payout": payout})
+
+
+@app.post("/api/affiliate/click")
+def affiliate_click():
+    """Counts an arrival through an affiliate link (the browser sends it once per code)."""
+    aff = affiliate_by_code(body().get("code"))
+    if aff:
+        db().run("UPDATE affiliates SET clicks = COALESCE(clicks, 0) + 1 WHERE id = ?", aff["id"])
+    return jsonify({"ok": True})
+
+
+@app.get("/api/admin/affiliates")
+def admin_affiliates():
+    if not staff_user():
+        return err("Admin only", 403)
+    out = []
+    for aff in db().all("SELECT * FROM affiliates ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, id DESC"):
+        item = affiliate_public(aff)
+        item.pop("orders_list")
+        out.append(item)
+    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings(), "stripe_ready": bool(STRIPE_SECRET_KEY),
+                    "pending_total": round(float((db().first("SELECT SUM(amount) AS t FROM affiliate_commissions WHERE status = 'pending'") or {}).get("t") or 0), 2)})
+
+
+@app.get("/api/admin/affiliates/<int:affiliate_id>")
+def admin_affiliate_detail(affiliate_id):
+    """One affiliate with every referred order, including who bought."""
+    if not staff_user():
+        return err("Admin only", 403)
+    aff = db().first("SELECT * FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    return jsonify({"affiliate": affiliate_public(aff, with_buyer=True)})
+
+
+@app.post("/api/admin/affiliates")
+def admin_save_affiliate():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    b = body()
+    code = str(b.get("code") or "").strip()
+    if not AFFILIATE_CODE.match(code):
+        return err("The code is 3 to 31 letters, digits, dashes or underscores, starting with a letter or digit", 400)
+    email = str(b.get("email") or "").strip().lower()
+    if email and not EMAIL_RE.match(email):
+        return err("Enter a valid email address or leave it empty", 400)
+    percent = clamp_int(b.get("percent"), AFFILIATE_DEFAULT_PERCENT, 1, 90)
+    status = b.get("status") if b.get("status") in ("active", "disabled", "pending") else "active"
+    clash = db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower())
+    edit_id = b.get("id")
+    if clash and str(clash["id"]) != str(edit_id or ""):
+        return err(f'The code "{code}" is already used by another affiliate', 409)
+    customer = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email) if email else None
+    if edit_id:
+        if not db().first("SELECT id FROM affiliates WHERE id = ?", int(edit_id)):
+            return err("Affiliate not found", 404)
+        db().run("UPDATE affiliates SET code = ?, email = ?, user_id = ?, name = ?, percent = ?, status = ?, note = ? WHERE id = ?",
+                 code, email, customer["id"] if customer else None, str(b.get("name") or "")[:100], percent, status, str(b.get("note") or "")[:300], int(edit_id))
+        audit(user, "save_affiliate", f"{code} ({percent}%, {status})")
+    else:
+        db().run("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 code, email, customer["id"] if customer else None, str(b.get("name") or "")[:100], percent, status, str(b.get("note") or "")[:300], utc_stamp())
+        audit(user, "add_affiliate", f"{code} ({percent}%)")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/affiliates/<int:affiliate_id>/pay")
+def admin_pay_affiliate(affiliate_id):
+    """Mark this affiliate's pending commissions as paid (after you have sent the money)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    aff = db().first("SELECT * FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    pending = affiliate_totals(affiliate_id)["pending"]
+    db().run("UPDATE affiliate_commissions SET status = 'paid' WHERE affiliate_id = ? AND status = 'pending'", affiliate_id)
+    audit(user, "pay_affiliate", f"{aff['code']} ({pending['orders']} orders)")
+    return jsonify({"ok": True, "paid": pending})
+
+
+@app.delete("/api/admin/affiliates/<int:affiliate_id>")
+def admin_delete_affiliate(affiliate_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    aff = db().first("SELECT code FROM affiliates WHERE id = ?", affiliate_id)
+    if not aff:
+        return err("Affiliate not found", 404)
+    db().run("DELETE FROM affiliate_commissions WHERE affiliate_id = ?", affiliate_id)
+    db().run("DELETE FROM affiliates WHERE id = ?", affiliate_id)
+    audit(user, "delete_affiliate", aff["code"])
+    return jsonify({"ok": True})
+
+
+# ---------- automatic affiliate payouts (Stripe Connect) ----------
+# Affiliates connect a Stripe account once (Express onboarding). When payouts are on, the website
+# transfers each affiliate's pending commissions to them, grouped by currency, above a minimum. STRATO
+# has no cron, so the weekly batch runs at the first request after it is due (like the scheduled posts).
+
+AFFILIATE_PAYOUT_MIN = 50       # dollars: the smallest pending total that triggers an automatic payout
+AFFILIATE_PAYOUT_DAYS = 7       # how often the automatic batch runs
+
+
+def money_or(value, default):
+    try:
+        return max(0.0, round(float(value), 2))
+    except (TypeError, ValueError):
+        return default
+
+
+def affiliate_payout_settings():
+    return {"on": bool(get_setting("affiliate.payouts_on", False)),
+            "min": money_or(get_setting("affiliate.payout_min", AFFILIATE_PAYOUT_MIN), AFFILIATE_PAYOUT_MIN),
+            "last": get_setting("affiliate.payout_last", "") or "", "every_days": AFFILIATE_PAYOUT_DAYS}
+
+
+def stripe_connect_account(aff):
+    """The affiliate's connected account id, creating an Express account the first time. Returns (id, error)."""
+    if aff.get("stripe_account"):
+        return aff["stripe_account"], ""
+    account, error = stripe_call("POST", "/v1/accounts", {
+        "type": "express", "email": aff.get("email") or "", "business_type": "individual",
+        "capabilities[transfers][requested]": "true", "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]})
+    if error:
+        return "", error
+    db().run("UPDATE affiliates SET stripe_account = ?, payouts_ready = 0 WHERE id = ?", account["id"], aff["id"])
+    return account["id"], ""
+
+
+def stripe_connect_ready(aff):
+    """Ask Stripe whether this affiliate can receive payouts, and cache a yes. Returns bool."""
+    if not aff.get("stripe_account"):
+        return False
+    if aff.get("payouts_ready"):
+        return True
+    account, error = stripe_call("GET", "/v1/accounts/" + urllib.parse.quote(aff["stripe_account"]))
+    ready = (not error) and bool(account and account.get("payouts_enabled"))
+    if ready:
+        db().run("UPDATE affiliates SET payouts_ready = 1 WHERE id = ?", aff["id"])
+    return ready
+
+
+def affiliate_pay_one(aff, minimum):
+    """Transfer an affiliate's pending commissions (grouped by currency) if a group clears the minimum.
+    Returns a list of {amount, currency, transfer}. The idempotency key covers the exact set, so a
+    retry after a crash cannot pay twice."""
+    paid = []
+    for g in db().all("SELECT currency, SUM(amount) AS total FROM affiliate_commissions "
+                      "WHERE affiliate_id = ? AND status = 'pending' GROUP BY currency", aff["id"]):
+        total = round(float(g["total"] or 0), 2)
+        if total < minimum or total <= 0:
+            continue
+        currency = (g["currency"] or "usd").lower()
+        ids = [r["id"] for r in db().all("SELECT id FROM affiliate_commissions WHERE affiliate_id = ? AND status = 'pending' AND currency = ?",
+                                         aff["id"], g["currency"])]
+        if not ids:
+            continue
+        key = f"aff-{aff['id']}-{currency}-{max(ids)}-{len(ids)}"
+        transfer, error = stripe_call("POST", "/v1/transfers", {
+            "amount": int(round(total * 100)), "currency": currency, "destination": aff["stripe_account"],
+            "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]}, idempotency_key=key)
+        if error or not transfer:
+            app.logger.error("Affiliate payout %s (%s %s): %s", aff["code"], total, currency, error)
+            continue
+        marks = ",".join("?" for _ in ids)
+        db().run(f"UPDATE affiliate_commissions SET status = 'paid', transfer_id = ? WHERE id IN ({marks})", transfer["id"], *ids)
+        paid.append({"amount": total, "currency": currency.upper(), "transfer": transfer["id"]})
+    return paid
+
+
+def affiliate_payout_run():
+    """Pay every active, ready affiliate whose pending total clears the minimum. Returns a summary."""
+    minimum = affiliate_payout_settings()["min"]
+    out = []
+    for aff in db().all("SELECT * FROM affiliates WHERE status = 'active' AND stripe_account IS NOT NULL AND stripe_account != ''"):
+        if not stripe_connect_ready(aff):
+            continue
+        out += [{"code": aff["code"], **row} for row in affiliate_pay_one(aff, minimum)]
+    set_setting("affiliate.payout_last", utc_stamp())
+    set_setting("affiliate.payout_last_ts", time.time())
+    if out:
+        lines = ", ".join(f"{p['amount']:.2f} {p['currency']} to {p['code']}" for p in out)
+        discord_auto("sales", {"text": f"💸 Affiliate payouts sent: {lines}."})
+    return {"paid": out, "min": minimum}
+
+
+def affiliate_autopay(aff):
+    """Pay a connected, ready affiliate their pending commissions right now, straight to their account.
+    Used the moment a referred sale is paid (and when they finish onboarding) so money is auto and direct.
+    Ignores the minimum — that only guards the weekly catch-up. Never raises: on failure the commission
+    stays pending and the weekly run settles it."""
+    if not STRIPE_SECRET_KEY or not aff or not get_setting("affiliate.payouts_on", False):
+        return []
+    try:
+        if not stripe_connect_ready(aff):
+            return []
+        return affiliate_pay_one(aff, 0)
+    except Exception:  # noqa: BLE001 - a buyer's success page never fails over a payout
+        app.logger.exception("Instant affiliate payout failed for %s", (aff or {}).get("code"))
+        return []
+
+
+def affiliate_payouts_due():
+    """Run the weekly catch-up at the first request after it is due (STRATO has no cron)."""
+    if not STRIPE_SECRET_KEY or not get_setting("affiliate.payouts_on", False):
+        return
+    now = time.time()
+    if now - float(get_setting("affiliate.payout_checked", 0) or 0) < 3600:   # look at most once an hour
+        return
+    set_setting("affiliate.payout_checked", now)
+    if now - float(get_setting("affiliate.payout_last_ts", 0) or 0) < AFFILIATE_PAYOUT_DAYS * 86400:
+        return
+    try:
+        affiliate_payout_run()
+    except Exception:  # noqa: BLE001 - visitors never see a payout problem
+        app.logger.exception("Automatic affiliate payouts failed")
+
+
+@app.post("/api/account/affiliate/connect")
+def account_affiliate_connect():
+    """Start or resume Stripe onboarding so the affiliate can be paid automatically. Returns a link."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    aff = affiliate_for_user(user)
+    if not aff or aff["status"] != "active":
+        return err("Your affiliate code is not active yet", 403)
+    account, error = stripe_connect_account(aff)
+    if error:
+        return err(error, 502)
+    base = re.sub(r"^http://", "https://", site_url())  # Stripe refuses non-https return URLs in live mode
+    link, error = stripe_call("POST", "/v1/account_links", {
+        "account": account, "type": "account_onboarding",
+        "refresh_url": base + "/account?connect=refresh", "return_url": base + "/account?connect=done"})
+    if error:
+        return err(error, 502)
+    return jsonify({"ok": True, "url": link["url"]})
+
+
+@app.post("/api/admin/affiliates/settings")
+def admin_affiliate_settings():
+    """Turn automatic payouts on or off and set the minimum (Admin -> Affiliates)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    b = body()
+    set_setting("affiliate.payouts_on", bool(b.get("payouts_on")))
+    set_setting("affiliate.payout_min", money_or(b.get("payout_min"), AFFILIATE_PAYOUT_MIN))
+    audit(user, "affiliate_payout_settings", f"on={bool(b.get('payouts_on'))}, min={b.get('payout_min')}")
+    return jsonify({"ok": True, **affiliate_payout_settings()})
+
+
+@app.post("/api/admin/affiliates/payout-run")
+def admin_affiliate_payout_run():
+    """Send every due automatic payout now, instead of waiting for the weekly run."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change affiliates", 403)
+    if not STRIPE_SECRET_KEY:
+        return err("Payments are not set up yet", 503)
+    result = affiliate_payout_run()
+    audit(user, "affiliate_payout_run", f"{len(result['paid'])} transfer(s)")
+    return jsonify({"ok": True, **result})
+
+
+# ---------- Discord: a "Verified buyer" role for licence holders ----------
+# No bot runs all the time (STRATO cannot keep one running): everything is a call to Discord's API.
+# On My account a customer links Discord (OAuth2, scopes identify + guilds.join): the website adds
+# them to the server and gives the buyer role when they have an active licence. The role follows
+# the licence (bought, revoked, restored, claimed). Channels are locked to the role in Discord.
+# /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
+
+DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": ""}
+SNOWFLAKE = re.compile(r"^\d{15,22}$")
+DISCORD_STATE_MINUTES = 15
+# Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
+# Add Reactions, Manage Messages (pins), Read Message History, Send Polls
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49))
+
+
+def discord_settings():
+    saved = get_setting("discord.settings", {}) or {}
+    return {**DISCORD_DEFAULT, **{k: saved[k] for k in DISCORD_DEFAULT if k in saved}}
+
+
+def discord_ready():
+    cfg = discord_settings()
+    return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
+
+
+def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20):
+    """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
+    if form is not None:
+        data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
+    elif payload is not None:
+        data, kind = json.dumps(payload).encode(), "application/json"
+    else:
+        data, kind = (b"" if method in ("PUT", "POST") else None), "application/json"
+    auth = f"Bearer {bearer}" if bearer else f"Bot {DISCORD_BOT_TOKEN}"
+    req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method,
+                                 headers={"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return (json.loads(raw) if raw else {}), "", resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(raw).get("message") or raw[:200]
+        except ValueError:
+            message = raw[:200]
+        app.logger.warning("Discord %s %s -> %s: %s", method, path.split("?")[0], exc.code, message)
+        return None, f"Discord said ({exc.code}): {message}", exc.code
+    except (OSError, ValueError) as exc:
+        app.logger.warning("Discord %s %s: %s", method, path.split("?")[0], exc)
+        return None, "Could not reach Discord. Try again in a minute.", 0
+
+
+def has_buyer_licence(user):
+    """An active licence on this account (by account or email) for one of the products that count (none chosen: any)."""
+    rows = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)",
+                    user["id"], (user.get("email") or "").lower())
+    products = discord_settings()["products"]
+    return any(not products or any(same_product(p, r["product_id"]) for p in products) for r in rows)
+
+
+def discord_sync_user(user):
+    """Gives or takes the buyer role to match the licences: 'given', 'removed', 'not in server', 'off' or an error."""
+    if not discord_ready() or not user.get("discord_id"):
+        return "off"
+    cfg = discord_settings()
+    wanted = has_buyer_licence(user)
+    _, error, status = discord_call("PUT" if wanted else "DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+    result = "not in server" if status == 404 else error or ("given" if wanted else "removed")
+    shown = {"given": "Role given", "removed": "No licence on this account: no role", "not in server": "Not in the server (left it, or could not be added)"}
+    if status == 403:
+        shown[result] = "Discord refused: the bot's role must be ABOVE the buyer role, with Manage Roles (press Check set-up)"
+    try:
+        db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: {shown.get(result, result)}"[:300], user["id"])
+    except Exception:  # noqa: BLE001 - only a note for the admin
+        pass
+    return result
+
+
+def discord_sync_owners(owners):
+    """After a licence changed: (customer_id, email) pairs -> the linked accounts get the right role. Never fails the caller."""
+    if not discord_ready():
+        return
+    seen = set()
+    for customer_id, email in owners:
+        try:
+            for user in db().all("SELECT * FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' AND (id = ? OR LOWER(email) = ?)",
+                                 customer_id or 0, (email or "").lower() or "-"):
+                if user["id"] not in seen:
+                    seen.add(user["id"])
+                    discord_sync_user(user)
+        except Exception:  # noqa: BLE001 - a licence change must never fail because of Discord
+            app.logger.exception("Discord role update failed")
+
+
+def discord_state(user_id, expires=None, nonce=None):
+    expires = expires or int(time.time()) + DISCORD_STATE_MINUTES * 60
+    nonce = nonce or secrets.token_hex(8)
+    sig = hmac.new(SECRET_KEY.encode(), f"discord:{user_id}:{expires}:{nonce}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{user_id}.{expires}.{nonce}.{sig}"
+
+
+def discord_state_user(state):
+    try:
+        user_id, expires, nonce, _sig = str(state).split(".")
+        if int(expires) < time.time() or not hmac.compare_digest(discord_state(int(user_id), int(expires), nonce), str(state)):
+            return None
+        return db().first("SELECT * FROM users WHERE id = ?", int(user_id))
+    except ValueError:
+        return None
+
+
+def discord_redirect_uri():
+    return site_url() + "/api/discord/callback"
+
+
+@app.post("/api/discord/start")
+def discord_start():
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    query = urllib.parse.urlencode({"client_id": DISCORD_CLIENT_ID, "response_type": "code", "scope": "identify guilds.join",
+                                    "redirect_uri": discord_redirect_uri(), "state": discord_state(user["id"]), "prompt": "consent"})
+    return jsonify({"url": "https://discord.com/oauth2/authorize?" + query})
+
+
+@app.get("/api/discord/callback")
+def discord_callback():
+    """Discord sends the customer back here after they agreed: link the account, join the server, the role."""
+    back = lambda result: redirect(site_url() + "/account?discord=" + result + "#discord")  # noqa: E731
+    if request.args.get("error"):
+        return back("cancelled")
+    user = discord_state_user(request.args.get("state", ""))
+    if not user or not discord_ready():
+        return back("expired")
+    token, error, _ = discord_call("POST", "/oauth2/token", form={
+        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET, "grant_type": "authorization_code",
+        "code": request.args.get("code", ""), "redirect_uri": discord_redirect_uri()})
+    access = (token or {}).get("access_token")
+    me, error2, _ = discord_call("GET", "/users/@me", bearer=access) if access else (None, error, 0)
+    if not access or not me or not SNOWFLAKE.match(str(me.get("id") or "")):
+        app.logger.warning("Discord link failed: %s", error or error2)
+        return back("error")
+    discord_id, name = str(me["id"]), str(me.get("global_name") or me.get("username") or "")[:100]
+    db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE discord_id = ? AND id <> ?", discord_id, user["id"])
+    db().run("UPDATE users SET discord_id = ?, discord_name = ?, discord_linked_at = ? WHERE id = ?", discord_id, name, utc_stamp(), user["id"])
+    user = db().first("SELECT * FROM users WHERE id = ?", user["id"])
+    cfg, buyer = discord_settings(), has_buyer_licence(user)
+    # into the server (already in: nothing changes), then the role to match the licence
+    _, join_error, _ = discord_call("PUT", f"/guilds/{cfg['guild_id']}/members/{discord_id}", payload={"access_token": access, "roles": [cfg["role_id"]] if buyer else []})
+    result = discord_sync_user(user)
+    if result == "not in server" and join_error:
+        db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: could not add them to the server: {join_error}"[:300], user["id"])
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'discord_linked', ?, ?, ?)",
+             user["id"], f"{name} ({result})", request.remote_addr or "", utc_stamp())
+    return back("linked" if buyer else "linked-no-licence")
+
+
+@app.post("/api/discord/unlink")
+def discord_unlink():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if user.get("discord_id") and discord_ready():
+        cfg = discord_settings()
+        discord_call("DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+    db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE id = ?", user["id"])
+    return jsonify({"ok": True})
+
+
+_P = 2 ** 255 - 19
+_L = 2 ** 252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+_I = pow(2, (_P - 1) // 4, _P)
+
+
+def _recover_x(y, sign):
+    if y >= _P:
+        return None
+    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P) % _P
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P:
+        x = x * _I % _P
+    if (x * x - x2) % _P:
+        return None
+    return _P - x if (x & 1) != sign else x
+
+
+def _add(a, b):
+    A = (a[1] - a[0]) * (b[1] - b[0]) % _P
+    B = (a[1] + a[0]) * (b[1] + b[0]) % _P
+    C = 2 * a[3] * b[3] * _D % _P
+    D = 2 * a[2] * b[2] % _P
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % _P, G * H % _P, F * G % _P, E * H % _P)
+
+
+def _mul(s, point):
+    q = (0, 1, 1, 0)
+    while s:
+        if s & 1:
+            q = _add(q, point)
+        point, s = _add(point, point), s >> 1
+    return q
+
+
+def _point(raw):
+    y = int.from_bytes(raw, "little")
+    sign, y = y >> 255, y & ((1 << 255) - 1)
+    x = _recover_x(y, sign)
+    return None if x is None else (x, y, 1, x * y % _P)
+
+
+_GY = 4 * pow(5, _P - 2, _P) % _P
+_G = (_recover_x(_GY, 0), _GY, 1, _recover_x(_GY, 0) * _GY % _P)
+
+
+def ed25519_verify(public_key, message, signature):
+    """RFC 8032 Ed25519 signature check."""
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a, r = _point(public_key), _point(signature[:32])
+    s = int.from_bytes(signature[32:], "little")
+    if a is None or r is None or s >= _L:
+        return False
+    h = int.from_bytes(hashlib.sha512(signature[:32] + public_key + message).digest(), "little") % _L
+    left, right = _mul(s, _G), _add(r, _mul(h, a))
+    return (left[0] * right[2] - right[0] * left[2]) % _P == 0 and (left[1] * right[2] - right[1] * left[2]) % _P == 0
+
+
+@app.post("/api/discord/interactions")
+def discord_interactions():
+    """Discord's calls for slash commands. Only /verify: link button, or the role at once when already linked."""
+    try:
+        key, sig = bytes.fromhex(DISCORD_PUBLIC_KEY), bytes.fromhex(request.headers.get("X-Signature-Ed25519", ""))
+    except ValueError:
+        key, sig = b"", b""
+    raw = request.get_data()
+    if not ed25519_verify(key, request.headers.get("X-Signature-Timestamp", "").encode() + raw, sig):
+        return err("invalid request signature", 401)
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        return err("Bad request", 400)
+    if event.get("type") == 1:  # Discord checking the address
+        return jsonify({"type": 1})
+    if event.get("type") != 2 or (event.get("data") or {}).get("name") != "verify":
+        return jsonify({"type": 4, "data": {"content": "I only know /verify.", "flags": 64}})
+    discord_id = str(((event.get("member") or {}).get("user") or event.get("user") or {}).get("id") or "")
+    user = db().first("SELECT * FROM users WHERE discord_id = ?", discord_id) if SNOWFLAKE.match(discord_id) else None
+    link = {"type": 1, "components": [{"type": 2, "style": 5, "label": "Verify on rotaidem.com", "url": site_url() + "/account#discord"}]}
+    if not user:
+        text = "Link your Discord on your Rotaidem account (My account, Discord) to get the buyer channels."
+        return jsonify({"type": 4, "data": {"content": text, "flags": 64, "components": [link]}})
+    result = discord_sync_user(user)
+    if result == "given":
+        text = "You are verified: the buyer channels are open. Welcome aboard!"
+    elif result == "removed":
+        text = f"Your Discord is linked to {user['email']}, but that account has no active licence. Bought with another email? Add the key under My account."
+    else:
+        text = "Something went wrong giving you the role. Please try again in a minute or ask the team."
+    return jsonify({"type": 4, "data": {"content": text, "flags": 64, "components": [] if result == "given" else [link]}})
+
+
+@app.get("/api/admin/discord")
+def admin_discord():
+    if not staff_user():
+        return err("Admin only", 403)
+    members = []
+    for u in db().all("SELECT id, name, email, discord_id, discord_name, discord_linked_at, discord_result FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' ORDER BY discord_linked_at DESC"):
+        members.append({**u, "buyer": has_buyer_licence(u)})
+    invite = ("https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
+        {"client_id": DISCORD_CLIENT_ID, "scope": "bot applications.commands", "permissions": DISCORD_BOT_PERMISSIONS})) if DISCORD_CLIENT_ID else ""
+    server = {}
+    if discord_ready():
+        guild, _, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}?with_counts=true", timeout=8)
+        if guild:
+            server = {"name": guild.get("name", ""), "members": guild.get("approximate_member_count"), "online": guild.get("approximate_presence_count")}
+    return jsonify({"server": server, "setup": {"client_id": bool(DISCORD_CLIENT_ID), "client_secret": bool(DISCORD_CLIENT_SECRET),
+                              "bot_token": bool(DISCORD_BOT_TOKEN), "public_key": bool(DISCORD_PUBLIC_KEY)},
+                    "ready": discord_ready(), "settings": discord_settings(), "invite_url": invite,
+                    "redirect_url": discord_redirect_uri(), "interactions_url": site_url() + "/api/discord/interactions", "members": members})
+
+
+DISCORD_MANAGE_ROLES, DISCORD_ADMINISTRATOR = 1 << 28, 1 << 3
+
+
+@app.get("/api/admin/discord/check")
+def admin_discord_check():
+    """Asks Discord why roles might not be given: keys, bot in the server, Manage Roles, role order."""
+    if not staff_user():
+        return err("Admin only", 403)
+    checks = []
+    def add(ok, text):
+        checks.append({"ok": bool(ok), "text": text})
+    cfg = discord_settings()
+    missing = [n for n, v in (("Application ID", DISCORD_CLIENT_ID), ("Client Secret", DISCORD_CLIENT_SECRET), ("Bot token", DISCORD_BOT_TOKEN)) if not v]
+    add(not missing, "Application keys are set" if not missing else "Missing: " + ", ".join(missing) + ". Run python3 rotaidem/strato/setup.py discord over SSH.")
+    add(cfg["guild_id"] and cfg["role_id"], "Server ID and buyer role ID are saved" if cfg["guild_id"] and cfg["role_id"] else "Paste the Server ID and the Buyer role ID below and save.")
+    if missing or not (cfg["guild_id"] and cfg["role_id"]):
+        return jsonify({"checks": checks, "ok": False})
+    bot, error, _ = discord_call("GET", "/users/@me", timeout=10)
+    add(bot, f"The bot token works ({bot.get('username')})" if bot else f"Discord does not accept the bot token: {error}. Run setup.py discord again with a new token (Bot, Reset Token).")
+    if not bot:
+        return jsonify({"checks": checks, "ok": False})
+    roles, error, status = discord_call("GET", f"/guilds/{cfg['guild_id']}/roles", timeout=10)
+    if not roles:
+        add(False, "The bot cannot see the server: invite it with Invite the bot (and check the Server ID)." if status in (403, 404) else f"Could not read the server's roles: {error}")
+        return jsonify({"checks": checks, "ok": False})
+    by_id = {r["id"]: r for r in roles}
+    buyer = by_id.get(cfg["role_id"])
+    add(buyer, f"The buyer role is @{buyer['name']}" if buyer else "The Buyer role ID is not a role in this server: copy it again (right-click the role, Copy Role ID).")
+    me, error, status = discord_call("GET", f"/guilds/{cfg['guild_id']}/members/{bot['id']}", timeout=10)
+    add(me, "The bot is in the server" if me else "The bot is not in the server: press Invite the bot.")
+    if not (buyer and me):
+        return jsonify({"checks": checks, "ok": False})
+    mine = [by_id[r] for r in me.get("roles", []) if r in by_id] + [by_id[cfg["guild_id"]]] if cfg["guild_id"] in by_id else [by_id[r] for r in me.get("roles", []) if r in by_id]
+    perms = 0
+    for r in mine:
+        perms |= int(r.get("permissions") or 0)
+    add(perms & (DISCORD_MANAGE_ROLES | DISCORD_ADMINISTRATOR), "The bot has Manage Roles" if perms & (DISCORD_MANAGE_ROLES | DISCORD_ADMINISTRATOR)
+        else "The bot's role does not have Manage Roles: Server Settings, Roles, the bot's role, turn on Manage Roles (or invite it again).")
+    top = max([r.get("position", 0) for r in mine] or [0])
+    top_name = next((r["name"] for r in mine if r.get("position", 0) == top), "its role")
+    add(top > buyer.get("position", 0), f"The bot's role @{top_name} is above @{buyer['name']}" if top > buyer.get("position", 0)
+        else f"The bot's role @{top_name} is BELOW (or level with) @{buyer['name']}: in Server Settings, Roles, drag @{top_name} above @{buyer['name']}. This is the usual reason the role is not given.")
+    add(not buyer.get("managed"), "The buyer role can be given by bots" if not buyer.get("managed") else f"@{buyer['name']} belongs to an integration and cannot be given: make a normal role.")
+    add(perms & (1 | DISCORD_ADMINISTRATOR), "The bot may add people to the server (Create Invite)" if perms & (1 | DISCORD_ADMINISTRATOR)
+        else "The bot lacks Create Invite, so it cannot add people who are not in the server yet: turn it on for the bot's role.")
+    return jsonify({"checks": checks, "ok": all(c["ok"] for c in checks)})
+
+
+@app.post("/api/admin/discord")
+def admin_save_discord():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change Discord settings", 403)
+    b = body()
+    guild, role = str(b.get("guild_id") or "").strip(), str(b.get("role_id") or "").strip()
+    if (guild and not SNOWFLAKE.match(guild)) or (role and not SNOWFLAKE.match(role)):
+        return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
+    products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
+    old = discord_settings()
+    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel")}
+    if any(v and not SNOWFLAKE.match(v) for v in channels.values()):
+        return err("Choose the channels from the list", 400)
+    if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
+        # from now on: news posts that are already up are not announced again
+        set_setting("discord.announced_posts", [r["id"] for r in visible_posts()])
+    set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products, **channels,
+                                     "updates_ping": bool(b.get("updates_ping", old["updates_ping"]))})
+    audit(user, "save_discord", f"server {guild or '-'}, role {role or '-'}")
+    return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready()})
+
+
+@app.post("/api/admin/discord/sync")
+def admin_discord_sync():
+    """Check every linked member again: role on for licence holders, off for the rest."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    counts, problems = {}, []
+    for member in db().all("SELECT * FROM users WHERE discord_id IS NOT NULL AND discord_id <> ''"):
+        result = discord_sync_user(member)
+        key = result if result in ("given", "removed", "not in server") else "failed"
+        counts[key] = counts.get(key, 0) + 1
+        if key == "failed" and len(problems) < 5:
+            problems.append(f"{member['discord_name'] or member['discord_id']}: {result}")
+    audit(user, "discord_sync", ", ".join(f"{n} {k}" for k, n in counts.items()) or "nobody linked")
+    return jsonify({"ok": True, "counts": counts, "problems": problems})
+
+
+@app.post("/api/admin/discord/command")
+def admin_discord_command():
+    """Adds /verify to the server (Discord then sends it to /api/discord/interactions)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    commands = [{"name": "verify", "type": 1, "description": "Get the buyer channels: checks your Rotaidem licence"}]
+    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=commands)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_command", "/verify")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/discord/post")
+def admin_discord_post():
+    """The bot posts a message with a Verify button (to rotaidem.com/account) in a channel."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel, text = str(b.get("channel_id") or "").strip(), str(b.get("text") or "").strip()[:1800]
+    if not SNOWFLAKE.match(channel):
+        return err("Paste the channel's ID: right-click the channel in Discord, Copy Channel ID", 400)
+    if not text:
+        return err("Write the message", 400)
+    message = {"content": text, "components": [{"type": 1, "components": [
+        {"type": 2, "style": 5, "label": "Verify on rotaidem.com", "url": site_url() + "/account#discord"}]}]}
+    _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_post", channel)
+    return jsonify({"ok": True})
+
+
+# Posting with the bot (Admin -> Discord -> Post to Discord): a message, an optional card (embed) with
+# a picture, link buttons, and who to ping. What the bot posted is listed so it can be edited or deleted.
+
+DISCORD_PINGS = ("none", "buyers", "here", "everyone")
+
+
+def discord_absolute(url):
+    url = str(url or "").strip()
+    return site_url() + url if url.startswith("/") and not url.startswith("//") else url
+
+
+def discord_channel_names():
+    """{channel name: id} for the server's text channels, so #name in a post becomes a channel link."""
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/channels", timeout=8)
+    return {} if error else {c.get("name", "").lower(): c["id"] for c in rows or [] if c.get("type") in (0, 2, 5, 13, 15)}
+
+
+def link_channels(text, names):
+    return re.sub(r"(?<![<\w&])#([a-z0-9_\-]{1,100})", lambda m: f"<#{names[m.group(1).lower()]}>" if m.group(1).lower() in names else m.group(0), text)
+
+
+def discord_poll(b):
+    """A poll from the admin: question, 2-10 answers, how many hours it stays open."""
+    p = b.get("poll") if isinstance(b.get("poll"), dict) else {}
+    question = str(p.get("question") or "").strip()
+    if not question:
+        return None
+    answers = [str(a).strip() for a in (p.get("answers") or []) if str(a).strip()]
+    if len(question) > 300 or not 2 <= len(answers) <= 10 or any(len(a) > 55 for a in answers):
+        raise ValueError("A poll needs a question (300 characters) and 2 to 10 answers (55 characters each)")
+    try:
+        hours = max(1, min(768, int(p.get("hours") or 24)))
+    except (TypeError, ValueError):
+        hours = 24
+    return {"question": {"text": question}, "answers": [{"poll_media": {"text": a}} for a in answers], "duration": hours,
+            "allow_multiselect": bool(p.get("multiple")), "layout_type": 1}
+
+
+def discord_message(b, names=None):
+    """The message Discord gets from what the admin wrote. Raises ValueError with a message for the admin."""
+    names = names or {}
+    text = link_channels(str(b.get("text") or "").replace("\r\n", "\n").strip(), names)
+    embed_in = b.get("embed") if isinstance(b.get("embed"), dict) else {}
+    embed = {}
+    title, desc = str(embed_in.get("title") or "").strip(), link_channels(str(embed_in.get("description") or "").replace("\r\n", "\n").strip(), names)
+    link, image = str(embed_in.get("url") or "").strip(), str(embed_in.get("image") or "").strip()
+    if len(title) > 256 or len(desc) > 4000:
+        raise ValueError("The card's title can have 256 characters and its text 4000")
+    if link and not (link.startswith("https://") or (link.startswith("/") and not link.startswith("//"))):
+        raise ValueError("The card's link must start with https:// or be a page like /heavypro")
+    if image and not valid_image_url(image):
+        raise ValueError("The card's picture must be an uploaded picture or an https:// link")
+    if title or desc or image:
+        embed = {k: v for k, v in {"title": title, "description": desc, "url": discord_absolute(link)}.items() if v}
+        color = str(embed_in.get("color") or "#aab6c2").strip()
+        embed["color"] = int(color[1:], 16) if re.match(r"^#[0-9a-fA-F]{6}$", color) else 0xAAB6C2
+        if image:
+            embed["image"] = {"url": discord_absolute(image)}
+    buttons = []
+    for btn in (b.get("buttons") or [])[:5]:
+        label, url = str((btn or {}).get("label") or "").strip(), str((btn or {}).get("url") or "").strip()
+        if not label and not url:
+            continue
+        if not label or len(label) > 80 or not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//"))):
+            raise ValueError("Each button needs a short label and a link (https:// or a page like /downloads)")
+        buttons.append({"type": 2, "style": 5, "label": label, "url": discord_absolute(url)})
+    poll = discord_poll(b)
+    if not text and not embed and not poll:
+        raise ValueError("Write a message, fill in the card or add a poll")
+    ping = b.get("ping") if b.get("ping") in DISCORD_PINGS else "none"
+    role = discord_settings()["role_id"]
+    prefix = {"buyers": f"<@&{role}>" if role else "", "here": "@here", "everyone": "@everyone"}.get(ping, "")
+    content = (prefix + "\n" + text).strip() if prefix else text
+    if len(content) > 2000:
+        raise ValueError("A Discord message can have 2000 characters")
+    allowed = {"parse": ["everyone"] if ping in ("here", "everyone") else [], "roles": [role] if ping == "buyers" and role else []}
+    message = {"content": content, "embeds": [embed] if embed else [], "components": [{"type": 1, "components": buttons}] if buttons else [],
+               "allowed_mentions": allowed}
+    if poll:
+        message["poll"] = poll
+    return message
+
+
+DISCORD_EMOJI = re.compile(r"^[^\s<>:/\\]{1,16}$")
+
+
+def discord_send(channel, b, by="Rotaidem"):
+    """Posts one message (and its reactions, pin and publishing). Returns (message id, error, published)."""
+    message = discord_message(b, discord_channel_names())
+    sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    if error:
+        return None, error, False
+    mid = sent["id"]
+    for emoji in [e for e in str(b.get("reactions") or "").split() if DISCORD_EMOJI.match(e)][:5]:
+        discord_call("PUT", f"/channels/{channel}/messages/{mid}/reactions/{urllib.parse.quote(emoji)}/@me")
+    if b.get("pin"):
+        discord_call("PUT", f"/channels/{channel}/pins/{mid}")
+    published = False
+    if b.get("publish"):
+        _, perror, _ = discord_call("POST", f"/channels/{channel}/messages/{mid}/crosspost")
+        published = not perror
+    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or (message.get("poll") or {}).get("question", {}).get("text")
+               or b.get("text") or "")[:120]
+    posts = [{"id": mid, "channel_id": channel, "channel": str(b.get("channel_name") or "")[:100], "summary": summary, "at": utc_stamp(), "by": by,
+              "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}] + discord_posts()
+    set_setting("discord.posts", posts[:50])
+    return mid, "", published
+
+
+def discord_posts():
+    return get_setting("discord.posts", []) or []
+
+
+DISCORD_POST_FIELDS = ("channel_name", "text", "embed", "buttons", "ping", "poll", "reactions", "pin", "publish")
+
+
+def discord_scheduled():
+    return get_setting("discord.scheduled", []) or []
+
+
+def discord_claim(key):
+    """True for exactly one caller per key (two visits at the same moment must not post twice)."""
+    try:
+        db().run("INSERT INTO meta (key, value) VALUES (?, ?)", "discord.claim." + key, utc_stamp())
+        return True
+    except Exception:  # noqa: BLE001 - the key exists: someone else took it
+        return False
+
+
+def visible_posts():
+    return db().all("SELECT * FROM posts WHERE status IS NULL OR status = 'published' OR (status = 'scheduled' AND publish_at <= ?) ORDER BY id", utc_stamp())
+
+
+def discord_auto(kind, b):
+    """An automatic post (product update, news, sale) in its chosen channel. Never fails the caller."""
+    channel = discord_settings().get(kind + "_channel") if discord_ready() else ""
+    if not channel:
+        return
+    try:
+        _, error, _ = discord_send(channel, b, "Automatic")
+        if error:
+            app.logger.warning("Automatic Discord post (%s): %s", kind, error)
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Automatic Discord post (%s) failed", kind)
+
+
+def discord_announce_news():
+    """News posts that are up and not announced yet go to the news channel (a few at a time)."""
+    if not discord_ready() or not discord_settings()["news_channel"]:
+        return
+    done = set(get_setting("discord.announced_posts", []) or [])
+    for post in [p for p in visible_posts() if p["id"] not in done][:3]:
+        if not discord_claim(f"news.{post['id']}"):
+            continue
+        set_setting("discord.announced_posts", sorted(done | {post["id"]}))
+        done.add(post["id"])
+        discord_auto("news", {"embed": {"title": post["title"], "description": str(post["content"] or "")[:600], "url": "/newsletter",
+                                        "image": post.get("image_url") or ""}, "buttons": [{"label": "Read on rotaidem.com", "url": "/newsletter"}]})
+
+
+def discord_run_due():
+    """Scheduled Discord posts and scheduled news run at the first request after their time (no cron on STRATO)."""
+    if not DISCORD_BOT_TOKEN:
+        return
+    now = time.time()
+    last = get_setting("discord.checked", 0) or 0
+    if now - float(last) < 60:
+        return
+    set_setting("discord.checked", now)
+    if not discord_ready():
+        return
+    stamp = utc_stamp()
+    for item in [i for i in discord_scheduled() if i["at"] <= stamp]:
+        set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item["id"]])
+        if not discord_claim("post." + item["id"]):
+            continue
+        try:
+            post = item["post"]
+            _, error, _ = discord_send(post["channel_id"], post, item.get("by") or "Scheduled")
+            if error:
+                app.logger.warning("Scheduled Discord post %s: %s", item["id"], error)
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Scheduled Discord post %s failed", item["id"])
+    discord_announce_news()
+
+
+@app.get("/api/admin/discord/channels")
+def admin_discord_channels():
+    """The server's text and announcement channels, for the channel list when posting."""
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/channels")
+    if error:
+        return err(error, 502)
+    categories = {c["id"]: c.get("name", "") for c in rows or [] if c.get("type") == 4}
+    channels = [{"id": c["id"], "name": c.get("name", ""), "announcement": c.get("type") == 5, "category": categories.get(c.get("parent_id"), ""),
+                 "position": c.get("position", 0)} for c in rows or [] if c.get("type") in (0, 5)]
+    channels.sort(key=lambda c: (c["category"], c["position"]))
+    return jsonify({"channels": channels})
+
+
+@app.get("/api/admin/discord/messages")
+def admin_discord_messages():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"messages": discord_posts(), "scheduled": discord_scheduled()})
+
+
+@app.post("/api/admin/discord/scheduled/<item_id>/now")
+def admin_discord_post_now(item_id):
+    """A scheduled post, sent straight away."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can post in Discord", 403)
+    item = next((i for i in discord_scheduled() if i["id"] == item_id), None)
+    if not item or not discord_claim("post." + item_id):
+        return err("That post is not waiting any more", 404)
+    set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item_id])
+    try:
+        mid, error, _ = discord_send(item["post"]["channel_id"], item["post"], user["name"])
+    except ValueError as exc:
+        return err(str(exc), 400)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_message", "scheduled post sent now")
+    return jsonify({"ok": True, "id": mid})
+
+
+@app.delete("/api/admin/discord/scheduled/<item_id>")
+def admin_discord_unschedule(item_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    set_setting("discord.scheduled", [i for i in discord_scheduled() if i["id"] != item_id])
+    audit(user, "discord_unschedule", item_id)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/discord/message")
+def admin_discord_send():
+    """Post a message with the bot (and publish it to following servers in an announcement channel)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can post in Discord", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel = str(b.get("channel_id") or "").strip()
+    if not SNOWFLAKE.match(channel):
+        return err("Choose the channel to post in", 400)
+    try:
+        discord_message(b)  # check it now, also when it is sent later
+    except ValueError as exc:
+        return err(str(exc), 400)
+    at = str(b.get("at") or "").strip()
+    if at:  # post later: from the admin as an ISO time in UTC
+        try:
+            when = datetime.strptime(at[:16], "%Y-%m-%dT%H:%M").strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return err("Pick the date and time to post it", 400)
+        if when <= utc_stamp():
+            return err("Pick a time in the future, or post it now", 400)
+        item = {"id": secrets.token_hex(6), "at": when, "by": user["name"], "post": {**{k: b.get(k) for k in DISCORD_POST_FIELDS}, "channel_id": channel}}
+        set_setting("discord.scheduled", sorted(discord_scheduled() + [item], key=lambda i: i["at"])[:50])
+        audit(user, "discord_schedule", f"#{b.get('channel_name') or channel} at {when} UTC")
+        return jsonify({"ok": True, "scheduled": item["id"], "at": when})
+    try:
+        mid, error, published = discord_send(channel, b, user["name"])
+    except ValueError as exc:
+        return err(str(exc), 400)
+    if error:
+        return err(error, 502)
+    audit(user, "discord_message", f"#{b.get('channel_name') or channel}: {discord_posts()[0]['summary'][:60]}")
+    return jsonify({"ok": True, "id": mid, "published": published})
+
+
+@app.post("/api/admin/discord/message/<channel>/<message_id>")
+def admin_discord_edit(channel, message_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change Discord posts", 403)
+    if not discord_ready() or not SNOWFLAKE.match(channel) or not SNOWFLAKE.match(message_id):
+        return err("Message not found", 404)
+    b = body()
+    try:
+        message = discord_message(b, discord_channel_names())
+    except ValueError as exc:
+        return err(str(exc), 400)
+    message.pop("poll", None)  # a poll cannot be changed once it is posted
+    _, error, status = discord_call("PATCH", f"/channels/{channel}/messages/{message_id}", payload=message)
+    if error:
+        return err("That message is gone from Discord" if status == 404 else error, 404 if status == 404 else 502)
+    summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or b.get("text") or "")[:120]
+    set_setting("discord.posts", [{**p, "summary": summary, "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}
+                                  if p["id"] == message_id else p for p in discord_posts()])
+    audit(user, "discord_edit", summary[:60])
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/discord/message/<channel>/<message_id>")
+def admin_discord_delete(channel, message_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete Discord posts", 403)
+    if not discord_ready() or not SNOWFLAKE.match(channel) or not SNOWFLAKE.match(message_id):
+        return err("Message not found", 404)
+    _, error, status = discord_call("DELETE", f"/channels/{channel}/messages/{message_id}")
+    if error and status != 404:  # already gone from Discord: just forget it here
+        return err(error, 502)
+    set_setting("discord.posts", [p for p in discord_posts() if p["id"] != message_id])
+    audit(user, "discord_delete", message_id)
+    return jsonify({"ok": True})
+
+
+# ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
+
+HUB_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
+HUB_PREFIX = re.compile(r"^[A-Z0-9]{2,8}$")
+HUB_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
+HUB_LEVELS = ("info", "warning")
+HUB_PRODUCT_FIELDS = ("hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix", "image")
+HUB_TEXTS = {"login_title": 60, "login_text": 300, "library_title": 40, "library_text": 300}
+HUB_IMAGES = ("login_image", "library_image", "product_image")
+
+
+def hub_image(value, what):
+    v = str(value or "").strip()
+    if v and not valid_image_url(v):
+        raise ValueError(f"The {what} must be an uploaded picture or an https:// link")
+    return v
+
+
+def hub_link(value, what):
+    """An https:// address or a page on the site (/downloads); '' for none."""
+    v = str(value or "").strip()
+    if v and (len(v) > 400 or not (v.startswith("https://") or (v.startswith("/") and not v.startswith("//")))):
+        raise ValueError(f"The {what} must start with https:// or / (a page on the site)")
+    return v
+
+
+def clean_hub(b):
+    """RotaHub settings from the admin, checked; raises ValueError with a message for the admin."""
+    m = b.get("message") or {}
+    text = str(m.get("text") or "").strip()
+    if len(text) > 300:
+        raise ValueError("The message in the app can be at most 300 characters")
+    if m.get("enabled") and not text:
+        raise ValueError("Write the message before switching it on")
+    level = m.get("level") if m.get("level") in HUB_LEVELS else "info"
+    min_version = str(b.get("min_version") or "").strip()
+    if min_version and not HUB_VERSION.match(min_version):
+        raise ValueError("The lowest version looks like 0.2.0")
+    products, seen = [], set()
+    for p in (b.get("products") or [])[:60]:
+        pid = str((p or {}).get("id") or "").strip().lower()
+        if not HUB_ID.match(pid) or pid in seen:
+            continue
+        seen.add(pid)
+        ids = p.get("licence_ids") or []
+        ids = [x.strip().lower() for x in (ids.split(",") if isinstance(ids, str) else ids) if str(x).strip()]
+        if len(ids) > 5 or not all(HUB_ID.match(x) for x in ids):
+            raise ValueError(f"{pid}: licence product ids are short ids like heavypro, separated by commas (at most 5)")
+        store = str(p.get("licence_store") or "").strip().lower()
+        if store and not HUB_ID.match(store):
+            raise ValueError(f"{pid}: the licence folder is one short name like heavypro, no slashes")
+        prefix = str(p.get("key_prefix") or "").strip().upper()
+        if prefix and not HUB_PREFIX.match(prefix):
+            raise ValueError(f"{pid}: the key prefix is 2 to 8 letters or digits, like HPRO")
+        manifest = str(p.get("manifest_url") or "").strip()
+        if manifest and (not manifest.startswith("https://") or len(manifest) > 400):
+            raise ValueError(f"{pid}: the release file must be an https:// address")
+        entry = {"id": pid, "hidden": bool(p.get("hidden")), "featured": bool(p.get("featured")), "manifest_url": manifest,
+                 "licence_ids": ids, "licence_store": store, "key_prefix": prefix, "image": hub_image(p.get("image"), f"{pid} picture")}
+        if any(entry[k] for k in HUB_PRODUCT_FIELDS):
+            products.append(entry)
+    look_in = b.get("look") or {}
+    accent = look_in.get("accent") if look_in.get("accent") in ACCENTS else ""
+    look = {"accent": accent, "accent_color": ACCENTS[accent][0] if accent else ""}
+    for key in HUB_IMAGES:
+        look[key] = hub_image(look_in.get(key), key.replace("_", " "))
+    for key, limit in HUB_TEXTS.items():
+        text_value = str(look_in.get(key) or "").strip()
+        if len(text_value) > limit:
+            raise ValueError(f"The {key.replace('_', ' ')} can be at most {limit} characters")
+        look[key] = text_value
+    d = b.get("downloads") or {}
+    rotahub_url = str(d.get("rotahub_url") or "").strip()
+    if rotahub_url and (len(rotahub_url) > 400 or not (rotahub_url.startswith("https://") or re.match(r"^/files/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$", rotahub_url))):
+        raise ValueError("The RotaHub download link must start with https:// or be an uploaded file (/files/...)")
+    return {"message": {"enabled": bool(m.get("enabled")), "text": text, "level": level, "link": hub_link(m.get("link"), "message link")},
+            "min_version": min_version, "help_url": hub_link(b.get("help_url"), "help link"), "products": products, "look": look,
+            "downloads": {"rotahub_url": rotahub_url},
+            # RotaHub's own version history: shown in the app when it updates, and on the Downloads page
+            "changelog": clean_changelog(b.get("changelog"))}
+
+
+def hub_config():
+    saved = get_setting("hub.config", {}) or {}
+    try:
+        return clean_hub(saved)
+    except ValueError:  # saved by an older version with other rules: show nothing rather than fail
+        return clean_hub({})
+
+
+def version_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def hub_stats(min_version=""):
+    """Who uses RotaHub, from the website logins it makes (User-Agent RotaHub/0.2.0 ...)."""
+    rows = db().all("SELECT user_id, user_agent, last_seen FROM sessions WHERE user_agent LIKE ?", "RotaHub%")
+    week = utc_stamp(7 * 86400)
+    versions = {}
+    for r in rows:
+        m = re.match(r"RotaHub/(\d{1,4}\.\d{1,4}\.\d{1,4})", str(r["user_agent"] or ""))
+        v = m.group(1) if m else "older"
+        versions.setdefault(v, set()).add(r["user_id"])
+    listed = sorted(versions.items(), key=lambda kv: version_key(kv[0]) if kv[0] != "older" else (-1,), reverse=True)
+    outdated = {u for v, users in versions.items() if min_version and (v == "older" or version_key(v) < version_key(min_version)) for u in users}
+    return {"people": len({r["user_id"] for r in rows}), "logins": len(rows),
+            "active_7d": len({r["user_id"] for r in rows if str(r["last_seen"] or "") >= week}),
+            "versions": [{"version": v, "people": len(users)} for v, users in listed], "outdated": len(outdated)}
+
+
+# ---------- download files (Admin -> RotaHub -> Files) ----------
+# Uploaded in pieces from the browser (the host refuses big requests) into the website's files/
+# folder, where Apache sends them directly; elsewhere into the data folder, sent by /files/<name>.
+
+FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.(exe|msi|zip|7z|pdf)$")
+FILE_MAGIC = {".exe": b"MZ", ".zip": b"PK", ".msi": bytes.fromhex("d0cf11e0"), ".7z": b"7z", ".pdf": b"%PDF"}
+FILE_CHUNK_MAX = 1024 * 1024
+FILE_MAX = 300 * 1024 * 1024
+
+
+def files_dir():
+    public = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
+    folder = os.path.join(public, "files") if public and os.path.isdir(public) else os.path.join(str(DATA_DIR), "files")
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, 0o755)
+    return folder
+
+
+def file_row(name):
+    path = os.path.join(files_dir(), name)
+    st = os.stat(path)
+    return {"name": name, "size": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "url": f"/files/{name}?v={int(st.st_mtime):x}"}
+
+
+@app.get("/api/admin/files")
+def admin_files():
+    if not manager_user():
+        return err("Only the Owner or an Admin can see the files", 403)
+    names = sorted(n for n in os.listdir(files_dir()) if FILE_NAME.match(n))
+    return jsonify({"files": [file_row(n) for n in names]})
+
+
+@app.post("/api/admin/files")
+def admin_upload_file():
+    """One piece of a file: {name, upload_id, index, total, data (base64)}. The last piece puts the file in place."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can upload files", 403)
+    b = body()
+    name, upload_id = str(b.get("name") or "").strip(), str(b.get("upload_id") or "")
+    if not FILE_NAME.match(name):
+        return err("Use a file name without spaces that ends in .exe, .msi, .zip, .7z or .pdf, like MyProductSetup.exe", 400)
+    if not re.match(r"^[a-f0-9]{16,40}$", upload_id):
+        return err("Bad upload", 400)
+    try:
+        index, total = int(b.get("index")), int(b.get("total"))
+        piece = base64.b64decode(str(b.get("data") or ""), validate=True)
+    except (TypeError, ValueError):
+        return err("Bad upload", 400)
+    if not (0 <= index < total <= FILE_MAX // 1024) or len(piece) > FILE_CHUNK_MAX:
+        return err("Bad upload", 400)
+    uploads = os.path.join(str(DATA_DIR), "uploads")
+    os.makedirs(uploads, exist_ok=True)
+    part = os.path.join(uploads, upload_id + ".part")
+    done = os.path.getsize(part) if index and os.path.exists(part) else 0
+    if index and not os.path.exists(part):
+        return err("The upload was interrupted. Start it again.", 409)
+    if done + len(piece) > FILE_MAX:
+        os.remove(part)
+        return err("Files can be at most 300 MB", 400)
+    with open(part, "ab" if index else "wb") as fh:
+        fh.write(piece)
+    if index < total - 1:
+        return jsonify({"ok": True, "received": done + len(piece)})
+    with open(part, "rb") as fh:
+        head = fh.read(4)
+    magic = FILE_MAGIC[os.path.splitext(name)[1].lower()]
+    if not head.startswith(magic):
+        os.remove(part)
+        return err(f"That does not look like a real {os.path.splitext(name)[1]} file. Nothing was saved.", 400)
+    target = os.path.join(files_dir(), name)
+    digest = hashlib.sha256()
+    with open(part, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    os.chmod(part, 0o644)
+    shutil.move(part, target)
+    write_sha256(target, digest.hexdigest())  # RotaHub checks downloads against it
+    audit(user, "upload_file", name)
+    return jsonify({"ok": True, "file": file_row(name)})
+
+
+@app.delete("/api/admin/files/<name>")
+def admin_delete_file(name):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete files", 403)
+    path = os.path.join(files_dir(), name)
+    if not FILE_NAME.match(name) or not os.path.isfile(path):
+        return err("File not found", 404)
+    os.remove(path)
+    if os.path.exists(path + ".sha256"):
+        os.remove(path + ".sha256")
+    audit(user, "delete_file", name)
+    return jsonify({"ok": True})
+
+
+@app.get("/files/<name>")
+def download_file(name):
+    """Uploaded files when no web server sends them (local copies; on STRATO, Apache does)."""
+    if not FILE_NAME.match(name) or not os.path.isfile(os.path.join(files_dir(), name)):
+        abort(404)
+    return send_from_directory(files_dir(), name, as_attachment=True)
+
+
+FILE_LINK = re.compile(r"^/files/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$")
+
+
+def write_sha256(path, sha):
+    """NAME.sha256 next to a download, in the format of sha256sum (as setup.py fetch-installer writes it)."""
+    temp = f"{path}.sha256.{os.getpid()}.tmp"
+    with open(temp, "w") as fh:
+        fh.write(f"{sha}  {os.path.basename(path)}\n")
+    os.chmod(temp, 0o644)
+    os.replace(temp, path + ".sha256")
+
+
+def download_facts(url):
+    """SHA-256 and size of a product's installer when it is a file on this site (/files/...); else empty."""
+    path = urllib.parse.urlparse(str(url or "")).path
+    base = urllib.parse.urlparse(site_url()).netloc
+    host = urllib.parse.urlparse(str(url or "")).netloc
+    name = path[len("/files/"):] if path.startswith("/files/") and (not host or host == base) else ""
+    if not FILE_NAME.match(name):
+        return "", 0
+    file = os.path.join(files_dir(), name)
+    if not os.path.isfile(file):
+        return "", 0
+    sha = ""
+    try:
+        with open(file + ".sha256") as fh:
+            m = re.search(r"\b[0-9a-f]{64}\b", fh.read(200))
+            sha = m.group(0) if m else ""
+    except OSError:
+        pass
+    return sha, os.path.getsize(file)
+
+
+VERSION_NUMBER = re.compile(r"^v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?")
+
+
+def version_number(text):
+    """"1.2" -> "1.2.0", "v0.6.1-beta" -> "0.6.1"; "" when the version is not a number."""
+    m = VERSION_NUMBER.match(str(text or "").strip())
+    return f"{int(m.group(1))}.{int(m.group(2))}.{int(m.group(3) or 0)}" if m else ""
+
+
+@app.get("/api/hub/products")
+def hub_products():
+    """RotaHub's update feed: every product's current version and installer, as set in Admin -> Products.
+    Ask with ?since=<revision> to get just {"revision", "unchanged": true} when nothing changed.
+    The installer link itself comes from POST /api/download/<id> (RotaHub only)."""
+    items = []
+    for r in db().all("SELECT * FROM products ORDER BY sort_order, name"):
+        p = public_product(r)
+        url = str(r["download_url"] or "")
+        available = url.startswith("https://") or bool(FILE_LINK.match(url))
+        sha, size = download_facts(url) if available else ("", 0)
+        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower().lstrip(".")
+        latest = (p["changelog"] or [{}])[0]
+        items.append({"id": r["id"], "name": r["name"] or r["id"], "status": r["status"] or "", "version": r["version"] or "",
+                      "version_number": version_number(r["version"]), "updated_at": str(r["updated_at"] or ""),
+                      "required": bool(r["update_required"]), "licence_only": p["download_gate"] == "licence",
+                      "notes": latest.get("notes", "") if latest.get("version") == r["version"] else "", "changelog": p["changelog"],
+                      "download": {"available": available, "kind": ext if ext in ("exe", "msi", "zip", "7z") else "other",
+                                   "id": hashlib.sha256(url.encode()).hexdigest()[:12] if available else "", "sha256": sha, "size": size}})
+    revision = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()[:16]
+    if request.args.get("since") == revision:
+        return jsonify({"revision": revision, "unchanged": True})
+    return jsonify({"revision": revision, "products": items})
+
+
+@app.get("/api/hub")
+def hub_public():
+    """Read by RotaHub at start and on refresh. Nothing secret: the same for everyone."""
+    return jsonify(hub_config())
+
+
+@app.get("/api/admin/hub")
+def admin_hub():
+    if not staff_user():
+        return err("Admin only", 403)
+    config = hub_config()
+    return jsonify({**config, "stats": hub_stats(config["min_version"])})
+
+
+@app.post("/api/admin/hub")
+def admin_save_hub():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can change RotaHub", 403)
+    try:
+        cleaned = clean_hub(body())
+    except ValueError as exc:
+        return err(str(exc), 400)
+    set_setting("hub.config", cleaned)
+    publish_site_settings()  # the website's Download buttons follow "downloads"
+    audit(user, "save_hub", "message " + ("on" if cleaned["message"]["enabled"] else "off") + (f", lowest version {cleaned['min_version']}" if cleaned["min_version"] else ""))
+    return jsonify({**cleaned, "stats": hub_stats(cleaned["min_version"])})
 
 
 # ---------- site settings & media ----------
@@ -2416,6 +4189,39 @@ def clean_roadmap(items):
     return out
 
 
+def clean_aircraft(items):
+    """Supported aircraft (Admin -> Aircraft): the home page, Compatibility and HeavyPro pages.
+    [{name, profile, note, home, home_text}], at most 30. Empty: the pages keep their own list."""
+    if not isinstance(items, list) or len(items) > 30:
+        raise ValueError("At most 30 aircraft")
+    out = []
+    for i in items:
+        i = i if isinstance(i, dict) else {}
+        name = str(i.get("name") or "").strip()[:80]
+        if name:
+            out.append({"name": name, "profile": str(i.get("profile") or "").strip()[:80], "note": str(i.get("note") or "").strip()[:200],
+                        "home": bool(i.get("home")), "home_text": str(i.get("home_text") or "").strip()[:120]})
+    return out
+
+
+def clean_testimonials(items):
+    """Pilot quotes (Admin -> Pilot quotes): [{name, about, text, image}], at most 20, shown under "What pilots say"."""
+    if not isinstance(items, list) or len(items) > 20:
+        raise ValueError("At most 20 quotes")
+    out = []
+    for i in items:
+        i = i if isinstance(i, dict) else {}
+        name, text = str(i.get("name") or "").strip()[:60], str(i.get("text") or "").replace("\r\n", "\n").strip()[:800]
+        if not (name and text):
+            continue
+        raw = str(i.get("image") or "").strip()
+        image = valid_image_url(raw)
+        if raw and not image:
+            raise ValueError(f"The picture for {name} must be an uploaded picture or an https:// link")
+        out.append({"name": name, "about": str(i.get("about") or "").strip()[:80], "text": text, "image": image})
+    return out
+
+
 def clean_faq(items):
     """The questions on the Support page: [{q, a}], at most 60."""
     if not isinstance(items, list) or len(items) > 60:
@@ -2439,7 +4245,7 @@ def clean_links(links):
             continue
         if not LINK_SLUG.match(slug):
             raise ValueError(f"Short link /{slug}: use lowercase letters, digits and dashes")
-        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health"):
+        if (PUBLIC / f"{slug}.html").exists() or (PUBLIC / slug).is_dir() or slug in ("api", "media", "img", "admin", "health", "files"):
             raise ValueError(f"/{slug} is already a page on the site")
         if not (target.startswith("https://") or (target.startswith("/") and not target.startswith("//"))) or len(target) > 500:
             raise ValueError(f"Short link /{slug} must point to an https:// address or a page like /downloads")
@@ -2505,7 +4311,9 @@ def site_settings():
             "announcement": {"enabled": bool(banner.get("enabled")), "text": str(banner.get("text") or ""), "link": str(banner.get("link") or ""),
                              "from": str(banner.get("from") or ""), "until": str(banner.get("until") or "")},
             "roadmap": get_setting("site.roadmap", []) or [], "faq": get_setting("site.faq", []) or [],
-            "links": get_setting("site.links", {}) or {}, "extras": site_extras()}
+            "aircraft": get_setting("site.aircraft", []) or [], "share": share_settings(),
+            "testimonials": get_setting("site.testimonials", []) or [],
+            "links": get_setting("site.links", {}) or {}, "extras": site_extras(), "hub": hub_config()["downloads"]}
 
 
 # Page texts: elements with data-text="page.key" in the HTML show the saved text instead of their
@@ -2563,6 +4371,12 @@ def admin_save_settings():
             set_setting("site.roadmap", clean_roadmap(b.get("roadmap")))
         if "faq" in b:
             set_setting("site.faq", clean_faq(b.get("faq")))
+        if "aircraft" in b:
+            set_setting("site.aircraft", clean_aircraft(b.get("aircraft")))
+        if "share" in b:
+            set_setting("site.share", clean_share(b.get("share")))
+        if "testimonials" in b:
+            set_setting("site.testimonials", clean_testimonials(b.get("testimonials")))
         if "links" in b:
             set_setting("site.links", clean_links(b.get("links")))
         if "extras" in b:
@@ -2589,7 +4403,7 @@ def admin_save_settings():
             return err("Too many changed texts", 400)
         set_setting("site.texts", texts)
     publish_site_settings()
-    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts") if k in b)
+    audit(user, "save_settings", ", ".join(k for k in ("images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "testimonials", "links", "extras", "texts") if k in b)
           + (": " + ", ".join(list(b["texts"])[:5]) if isinstance(b.get("texts"), dict) else ""))
     return jsonify({"ok": True, **site_settings()})
 
@@ -2665,7 +4479,7 @@ def media_file(media_id, ext):
 
 def public_path(name):
     folder = os.environ.get("ROTAIDEM_PUBLIC_DIR", "")
-    if not folder or not os.path.isdir(folder) or not re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name):
+    if not folder or not os.path.isdir(folder) or not (re.match(r"^(media/\d+\.(jpg|png|webp|gif)|site-settings\.js)$", name) or name in SHARE_FILES):
         return ""
     return os.path.join(folder, name)
 
@@ -2716,6 +4530,90 @@ def site_settings_js():
 
 def publish_site_settings():
     write_public("site-settings.js", site_settings_js().encode())
+    publish_share_tags()
+
+
+# ---------- link previews (Admin -> Site settings -> Link previews) ----------
+# The picture, title and text that Discord, Messenger, iMessage and others show for a link. Those
+# apps never run the page's scripts, so the tags are written into the page itself: into the copies
+# in the website folder on STRATO (on every save and deploy), and on the way out everywhere else.
+
+SHARE_PAGES = (  # address, file, name in the admin, picture slot used when nothing else is set
+    ("/", "index.html", "Home", "hero"), ("/heavypro", "heavypro.html", "HeavyPro", "heavypro"),
+    ("/addons/", "addons/index.html", "Products", "product"), ("/addons/view", "addons/view.html", "Product page", "product"),
+    ("/downloads", "downloads.html", "Downloads", "header"), ("/get-rotahub", "get-rotahub.html", "Get RotaHub", "header"),
+    ("/compatibility", "compatibility.html", "Compatibility", "header"), ("/installation", "installation.html", "Installation guide", "header"),
+    ("/support", "support.html", "Help and FAQ", "header"), ("/roadmap", "roadmap.html", "Roadmap", "header"),
+    ("/newsletter", "newsletter.html", "News", "header"), ("/about", "about.html", "About", "about"),
+    ("/contact", "contact.html", "Contact", "header"), ("/work-at-rsg", "work-at-rsg.html", "Careers", "header"))
+SHARE_FILES = {f: (path, slot) for path, f, _name, slot in SHARE_PAGES}
+SHARE_BLOCK = re.compile(r"\s*<!-- share -->.*?<!-- /share -->", re.S)
+
+
+def clean_share(data):
+    """{"default": {"image"}, "pages": {"/heavypro": {"image", "title", "description"}}}: only known pages, nothing empty."""
+    if not isinstance(data, dict):
+        raise ValueError("Link previews must be an object")
+    def one(item, name):
+        item = item if isinstance(item, dict) else {}
+        raw = str(item.get("image") or "").strip()
+        image = valid_image_url(raw)
+        if raw and not image:
+            raise ValueError(f"The {name} picture must be an uploaded picture or an https:// link")
+        return {k: v for k, v in {"image": image, "title": str(item.get("title") or "").strip()[:90],
+                                  "description": str(item.get("description") or "").strip()[:200]}.items() if v}
+    pages = {}
+    for path, _f, name, _slot in SHARE_PAGES:
+        item = one((data.get("pages") or {}).get(path), name.lower() + " page")
+        if item:
+            pages[path] = item
+    return {"default": {k: v for k, v in one(data.get("default"), "default").items() if k == "image"}, "pages": pages}
+
+
+def share_settings():
+    saved = get_setting("site.share", {}) or {}
+    return {"default": saved.get("default") or {}, "pages": saved.get("pages") or {}}
+
+
+def share_base():
+    base = os.environ.get("SITE_URL", "").strip() or (request.host_url if has_request_context() else "")
+    base = base.rstrip("/")
+    return "" if not base else (base if "://" in base else "https://" + base.lower())
+
+
+def with_share_tags(page_html, file):
+    """The page with its link-preview tags (replacing any from before)."""
+    path, slot = SHARE_FILES[file]
+    share = share_settings()
+    own = share["pages"].get(path) or {}
+    title = re.search(r"<title>(.*?)</title>", page_html, re.S)
+    description = re.search(r'<meta name="description" content="([^"]*)"', page_html)
+    title = own.get("title") or html_unescape(title.group(1).strip() if title else "Rotaidem")
+    description = own.get("description") or html_unescape(description.group(1) if description else "")
+    image = own.get("image") or share["default"].get("image") or site_settings()["images"].get(slot) or IMAGE_SLOTS["hero"]
+    base = share_base()
+    absolute = lambda u: base + u if u.startswith("/") else u  # noqa: E731 - apps need full addresses
+    tags = [("og:type", "website"), ("og:site_name", "Rotaidem"), ("og:title", title), ("og:description", description),
+            ("og:url", absolute(path)), ("og:image", absolute(image))]
+    block = "\n    <!-- share -->\n" + "".join(f'    <meta property="{k}" content="{escape(v, quote=True)}">\n' for k, v in tags if v) + \
+        f'    <meta name="twitter:card" content="summary_large_image">\n    <meta name="twitter:image" content="{escape(absolute(image), quote=True)}">\n    <!-- /share -->'
+    page_html = SHARE_BLOCK.sub("", page_html)
+    return page_html.replace("\n</head>", block + "\n</head>", 1) if "\n</head>" in page_html else page_html.replace("</head>", block + "</head>", 1)
+
+
+def publish_share_tags():
+    for file in SHARE_FILES:
+        target = public_path(file)
+        if not target or not os.path.isfile(target):
+            continue
+        try:
+            with open(target, encoding="utf-8") as fh:
+                current = fh.read()
+            updated = with_share_tags(current, file)
+            if updated != current:
+                write_public(file, updated.encode("utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            app.logger.warning("Link preview for %s: %s", file, exc)
 
 
 @app.get("/site-settings.js")
@@ -2730,7 +4628,7 @@ def site_settings_script():
 # ---------- backup ----------
 
 BACKUP_TABLES = ("users", "products", "liveries", "posts", "messages", "orders", "audit_logs", "meta", "subscribers",
-                 "licenses", "license_activations", "media", "campaigns", "shared_profiles")
+                 "licenses", "license_activations", "media", "campaigns", "shared_profiles", "stripe_payments")
 
 
 def table_columns(d, table):
@@ -3223,6 +5121,10 @@ def site(path=""):
     path = path.strip("/")
     for candidate in (path, f"{path}.html", f"{path}/index.html", "index.html" if not path else None):
         if candidate and (PUBLIC / candidate).is_file():
+            if candidate in SHARE_FILES:  # with its link-preview tags
+                resp = app.response_class(with_share_tags((PUBLIC / candidate).read_text(encoding="utf-8"), candidate), mimetype="text/html")
+                resp.headers["Cache-Control"] = "no-cache"
+                return resp
             return send_from_directory(PUBLIC, candidate)
     abort(404)
 
@@ -3267,6 +5169,16 @@ def init_schema():
 def schema_guard():
     if request.path.startswith("/api/") and not init_schema():
         return err("Database is not reachable right now. Try again in a minute.", 503)
+
+
+@app.before_request
+def due_discord_posts():
+    if request.path.startswith("/api/") and request.path != "/api/discord/interactions":
+        try:
+            discord_run_due()
+        except Exception:  # noqa: BLE001 - visitors never see a Discord problem
+            app.logger.exception("Due Discord posts failed")
+        affiliate_payouts_due()
 
 
 init_schema()

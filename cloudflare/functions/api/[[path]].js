@@ -49,6 +49,25 @@ async function handleRequest(context) {
     if (method === "GET" && path === "/api/admin/goals") return adminGoals(request, env);
     if (method === "POST" && path === "/api/admin/goals") return adminSaveGoals(request, env);
     if (method === "GET" && path === "/api/admin/leaderboard") return adminLeaderboard(request, env);
+    if (method === "GET" && path === "/api/hub") return json(await hubConfig(env));
+    if (method === "GET" && path === "/api/hub/products") return hubProducts(request, env);
+    if (method === "POST" && /^\/api\/checkout\/[\w.-]+$/.test(path)) return checkout(request, env, decodeURIComponent(path.split("/").pop()));
+    if (method === "GET" && path === "/api/checkout/status") return checkoutStatus(request, env);
+    if (method === "POST" && path === "/api/stripe/webhook") return stripeWebhook(request, env);
+    if (method === "GET" && path === "/api/admin/files") return adminFilesUnavailable(request, env, true);
+    if (method === "POST" && path === "/api/admin/files") return adminFilesUnavailable(request, env, false);
+    // Discord linking (verified buyer role) runs on the STRATO website (server.py), like file uploads.
+    if (path.startsWith("/api/discord/") || path.startsWith("/api/admin/discord")) return json({ error: "Discord linking runs on the STRATO website.", unavailable: true }, 501);
+    if (path.startsWith("/api/admin/affiliates")) return json({ error: "Affiliates are managed on the STRATO website.", unavailable: true }, 501);
+    if (method === "GET" && path === "/api/account/affiliate") return accountAffiliate(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/apply") return accountAffiliateApply(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/payout") return accountAffiliatePayout(request, env);
+    if (method === "POST" && path === "/api/account/affiliate/connect") return json({ error: "Automatic payouts run on the STRATO website.", unavailable: true }, 501);
+    if (method === "POST" && path === "/api/affiliate/click") return affiliateClick(request, env);
+    if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
+    if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
+    if (method === "POST" && path === "/api/admin/shop") return adminSaveShop(request, env);
+    if (method === "POST" && path === "/api/admin/hub") return adminSaveHub(request, env);
     if (method === "POST" && /^\/api\/admin\/users\/\d+\/note$/.test(path)) return adminUserNote(request, env, Number(path.split("/")[4]));
     if (method === "POST" && path === "/api/account/sessions/others") return accountEndOtherSessions(request, env);
     if (method === "DELETE" && /^\/api\/account\/sessions\/\d+$/.test(path)) return accountEndSession(request, env, Number(path.split("/").pop()));
@@ -142,10 +161,19 @@ async function ensure(env) {
   // One row per logged-in browser; only a hash of the token is stored.
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, token_hash TEXT UNIQUE, ip_address TEXT, user_agent TEXT, created_at TEXT, last_seen TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, user_id INTEGER, ip_address TEXT, created_at TEXT)").run();
+  // One row per paid Stripe Checkout session: claimed first, so an order is never made twice.
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS stripe_payments (session_id TEXT PRIMARY KEY, product_id TEXT, user_id INTEGER, email TEXT, order_id INTEGER, license_key TEXT, created_at TEXT)").run();
   for (const [table, col] of [["products", "download_gate TEXT DEFAULT 'public'"], ["products", "changelog TEXT"], ["users", "admin_note TEXT"], ["posts", "publish_at TEXT"],
-                             ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"]]) {
+                             ["messages", "reply TEXT"], ["messages", "replied_at TEXT"], ["messages", "replied_by TEXT"],
+                             ["products", "update_required INTEGER DEFAULT 0"], ["products", "updated_at TEXT"],
+                             ["products", "pay_amount INTEGER DEFAULT 0"], ["products", "pay_currency TEXT"], ["orders", "payment_ref TEXT"], ["orders", "currency TEXT"],
+                             ["products", "sale_amount INTEGER DEFAULT 0"], ["products", "sale_until TEXT"], ["orders", "affiliate_code TEXT"],
+                             ["affiliates", "payout TEXT"], ["affiliates", "clicks INTEGER DEFAULT 0"],
+                             ["affiliates", "stripe_account TEXT"], ["affiliates", "payouts_ready INTEGER DEFAULT 0"], ["affiliate_commissions", "transfer_id TEXT"]]) {
     try { await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run(); } catch (err) {}
   }
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS affiliates (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, user_id INTEGER, email TEXT, name TEXT, percent INTEGER DEFAULT 20, status TEXT DEFAULT 'active', note TEXT, created_at TEXT)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS affiliate_commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, affiliate_id INTEGER, order_id INTEGER UNIQUE, amount NUMERIC DEFAULT 0, currency TEXT, rate INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', created_at TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (id INTEGER PRIMARY KEY AUTOINCREMENT, license_key TEXT UNIQUE, product_id TEXT, email TEXT, customer_id INTEGER, order_id INTEGER, status TEXT DEFAULT 'active', max_activations INTEGER DEFAULT 2, note TEXT, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").run();
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS license_activations (id INTEGER PRIMARY KEY AUTOINCREMENT, license_id INTEGER, machine_id TEXT, machine_name TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (license_id, machine_id))").run();
@@ -349,18 +377,30 @@ async function customerOrders(request, env) {
 }
 
 // A product for the website. A "licence holders only" download keeps its link hidden from visitors.
-function publicProduct(row, staff) {
+// Products are only downloaded through RotaHub, so the installer link stays hidden from everyone but staff.
+function publicProduct(row, staff, canSell = false) {
   const p = withImages(row);
   try { p.changelog = JSON.parse(p.changelog || "[]"); } catch (err) { p.changelog = []; }
   p.download_gate = p.download_gate || "public";
-  if (p.download_gate === "licence" && !staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  if (!staff) { p.has_download = !!p.download_url; p.download_url = ""; }
+  // Bought on the website through Stripe Checkout (Admin -> Products -> Price at checkout)
+  p.can_buy = !!(canSell && Number(p.pay_amount) > 0 && p.status === "published");
+  p.sale_active = saleActive(p);
+  p.price_now = priceNow(p);
   return p;
 }
+// A sale runs while its price is below the normal one, up to and including its last day (UTC).
+function saleActive(p) {
+  const sale = Number(p.sale_amount) || 0, full = Number(p.pay_amount) || 0, until = String(p.sale_until || "");
+  return 0 < sale && sale < full && (!until || until >= new Date().toISOString().slice(0, 10));
+}
+// What Stripe Checkout charges right now, in the smallest unit (ore, cents).
+const priceNow = p => saleActive(p) ? Number(p.sale_amount) || 0 : Number(p.pay_amount) || 0;
 async function products(request, env) {
   const rows = await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all();
   const viewer = await currentUser(request, env);
   const staff = !!(viewer && STAFF_ROLES.includes(viewer.role));
-  return json({ products: (rows.results || []).map(r => publicProduct(r, staff)) });
+  return json({ products: (rows.results || []).map(r => publicProduct(r, staff, !!stripeKey(env))) });
 }
 
 async function heavyproVersion(env) {
@@ -385,7 +425,9 @@ async function download(request, env, pid) {
   const url = String((product || {}).download_url || "");
   if (!product || !(url.startsWith("https://") || url.startsWith("/files/"))) return json({ error: "This product has no download yet" }, 404);
   const user = await currentUser(request, env, { ignoreGate: true });
-  if ((product.download_gate || "public") === "licence") {
+  // The website only hands out RotaHub; RotaHub itself (User-Agent RotaHub/...) gets the installer.
+  const viaHub = !(request.headers.get("User-Agent") || "").startsWith("RotaHub");
+  if ((product.download_gate || "public") === "licence" && !viaHub) {
     if (!user) return json({ error: "Log in to download. The download is for licence holders.", login: true }, 401);
     if (!STAFF_ROLES.includes(user.role)) {
       const rows = (await env.DB.prepare("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)").bind(user.id, String(user.email || "").toLowerCase()).all()).results || [];
@@ -396,6 +438,7 @@ async function download(request, env, pid) {
   if (!(await env.DB.prepare("SELECT id FROM downloads WHERE product_id = ? AND ip_address = ? AND created_at >= ?").bind(pid, ip, utcStamp(600)).first())) {
     await env.DB.prepare("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)").bind(pid, user ? user.id : null, ip, utcStamp()).run();
   }
+  if (viaHub) return json({ hub: true, url: (await hubConfig(env)).downloads.rotahub_url, product: product.name || pid });
   return json({ url });
 }
 // ---------- the fun part of the dashboard ----------
@@ -473,11 +516,24 @@ async function saveProduct(request, env) {
   if (!name) return json({ error: "Name is required" }, 400);
   const id = slug(body.id || name);
   const images = JSON.stringify(listImages(body.images));
-  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog").bind(
-    id, name, body.simulator || "MSFS 2024", body.version || "0.1.0", body.folder_name || `rotaidem-${id}`, body.download_url || "", body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
-    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog))
+  const downloadUrl = String(body.download_url || "").trim(), version = String(body.version || "0.1.0").trim().slice(0, 30);
+  if (downloadUrl && !(downloadUrl.startsWith("https://") || FILE_LINK.test(downloadUrl))) return json({ error: "The download link must start with https:// or be an uploaded file (/files/...)" }, 400);
+  const payAmount = Math.round(Number(String(body.pay_amount || 0).replace(",", ".")) * 100), payCurrency = String(body.pay_currency || "sek").toLowerCase();
+  if (!Number.isFinite(payAmount)) return json({ error: "The price at checkout must be a number, like 299 or 29.99" }, 400);
+  if (payAmount < 0 || payAmount > 10000000 || !PAY_CURRENCIES.includes(payCurrency)) return json({ error: "Check the price at checkout and its currency" }, 400);
+  const saleAmount = Math.round(Number(String(body.sale_amount || 0).replace(",", ".")) * 100), saleUntil = String(body.sale_until || "").trim();
+  if (!Number.isFinite(saleAmount)) return json({ error: "The sale price must be a number, like 5.99" }, 400);
+  if (saleAmount && !(saleAmount > 0 && saleAmount < payAmount)) return json({ error: "The sale price must be lower than the price at checkout" }, 400);
+  if (saleUntil && !/^\d{4}-\d{2}-\d{2}$/.test(saleUntil)) return json({ error: "The sale's last day must look like 2026-12-24" }, 400);
+  const before = await env.DB.prepare("SELECT version, download_url, updated_at FROM products WHERE id = ?").bind(id).first();
+  // When the version or the file changes, RotaHub sees a new release from this time on.
+  const changed = !before || before.version !== version || (before.download_url || "") !== downloadUrl;
+  const updatedAt = changed || !before.updated_at ? utcStamp() : before.updated_at;
+  await env.DB.prepare("INSERT INTO products (id, name, simulator, version, folder_name, download_url, image_url, images, price, description, buy_url, status, tagline, features, sort_order, download_gate, changelog, update_required, updated_at, pay_amount, pay_currency, sale_amount, sale_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, simulator=excluded.simulator, version=excluded.version, folder_name=excluded.folder_name, download_url=excluded.download_url, image_url=excluded.image_url, images=excluded.images, price=excluded.price, description=excluded.description, buy_url=excluded.buy_url, status=excluded.status, tagline=excluded.tagline, features=excluded.features, sort_order=excluded.sort_order, download_gate=excluded.download_gate, changelog=excluded.changelog, update_required=excluded.update_required, updated_at=excluded.updated_at, pay_amount=excluded.pay_amount, pay_currency=excluded.pay_currency, sale_amount=excluded.sale_amount, sale_until=excluded.sale_until").bind(
+    id, name, body.simulator || "MSFS 2024", version, body.folder_name || `rotaidem-${id}`, downloadUrl, body.image_url || "", images, body.price || "", body.description || "", body.buy_url || "mailto:Eliaz@rotaidem.com", body.status || "in_development", body.tagline || "", JSON.stringify(listImages(body.features)), Number(body.sort_order) || 0,
+    body.download_gate === "licence" ? "licence" : "public", JSON.stringify(cleanChangelog(body.changelog)), body.update_required ? 1 : 0, updatedAt, payAmount, payCurrency, saleAmount, saleUntil
   ).run();
-  await audit(env, user, "save_product", id);
+  await audit(env, user, "save_product", id + (before && changed ? ` (update ${version})` : ""));
   return json({ ok: true, id, page: "/addons/view?id=" + id });
 }
 
@@ -583,7 +639,7 @@ async function adminOverview(request, env) {
   const dlCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM downloads").first();
   const mailCount = await env.DB.prepare("SELECT COALESCE(SUM(sent_count), 0) AS n FROM campaigns").first();
   const mediaCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM media").first();
-  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, staff_online: await staffOnline(env), revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env) });
+  return json({ id: user.id, name: user.name, role: user.role, products: prodCount?.n || 0, customers: custCount?.n || 0, new_users_7d: newUsers?.n || 0, orders: orderCount?.n || 0, posts: postCount?.n || 0, drafts: draftCount?.n || 0, messages: msgCount?.n || 0, open_messages: openCount?.n || 0, subscribers: subCount?.n || 0, licenses: licCount?.n || 0, downloads: dlCount?.n || 0, emails_sent: mailCount?.n || 0, media: mediaCount?.n || 0, staff_online: await staffOnline(env), revenue: Number(revenue?.n || 0), email_ready: !!resendKey(env), payments_ready: !!stripeKey(env) });
 }
 
 async function adminCustomers(request, env) {
@@ -836,6 +892,214 @@ async function adminLeaderboard(request, env) {
   return json({ since: since.slice(0, 10), rows: rows.map(r => ({ name: r.name, action: r.action, n: Number(r.n || 0) })) });
 }
 
+// ---------- RotaHub's update feed (same as server.py; no files here, so no SHA-256 or size) ----------
+const FILE_LINK = /^\/files\/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$/;
+function versionNumber(text) {
+  const m = /^v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?/.exec(String(text || "").trim());
+  return m ? `${Number(m[1])}.${Number(m[2])}.${Number(m[3] || 0)}` : "";
+}
+async function sha256Hex(text) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+// Every product's current version and installer, as set in Admin -> Products. ?since=<revision> answers
+// {"revision", "unchanged": true} when nothing changed. The link itself comes from POST /api/download/<id> (RotaHub only).
+async function hubProducts(request, env) {
+  const rows = (await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all()).results || [];
+  const items = [];
+  for (const r of rows) {
+    const p = publicProduct(r, false), url = String(r.download_url || "");
+    const available = url.startsWith("https://") || FILE_LINK.test(url);
+    let ext = "";
+    try { ext = (new URL(url, "https://x.invalid").pathname.match(/\.([a-z0-9]+)$/i) || ["", ""])[1].toLowerCase(); } catch (err) {}
+    const latest = (p.changelog || [])[0] || {};
+    items.push({ id: r.id, name: r.name || r.id, status: r.status || "", version: r.version || "", version_number: versionNumber(r.version), updated_at: String(r.updated_at || ""),
+      required: !!Number(r.update_required), licence_only: p.download_gate === "licence", notes: latest.version === r.version ? latest.notes || "" : "", changelog: p.changelog,
+      download: { available, kind: ["exe", "msi", "zip", "7z"].includes(ext) ? ext : "other", id: available ? (await sha256Hex(url)).slice(0, 12) : "", sha256: "", size: 0 } });
+  }
+  const revision = (await sha256Hex(JSON.stringify(items))).slice(0, 16);
+  if (new URL(request.url).searchParams.get("since") === revision) return json({ revision, unchanged: true });
+  return json({ revision, products: items });
+}
+
+// ---------- payments: Stripe Checkout (same as server.py) ----------
+const PAY_CURRENCIES = ["sek", "eur", "usd", "gbp", "nok", "dkk"];
+const CHECKOUT_SESSION = /^cs_[A-Za-z0-9_]{10,250}$/;
+const stripeKey = env => String(env.STRIPE_SECRET_KEY || "").trim();
+const stripeWebhookSecret = env => String(env.STRIPE_WEBHOOK_SECRET || "").trim();
+const stripeMode = env => !stripeKey(env) ? "" : stripeKey(env).includes("_test_") ? "test" : "live";
+// Stripe's API with the secret key. Returns [answer, error text].
+async function stripeCall(env, method, path, fields = null) {
+  try {
+    const res = await fetch((env.STRIPE_API_URL || "https://api.stripe.com").replace(/\/$/, "") + path, {
+      method, headers: { Authorization: `Bearer ${stripeKey(env)}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: method === "POST" ? new URLSearchParams(fields || {}).toString() : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return [null, `Stripe said (${res.status}): ${(data.error || {}).message || ""}`];
+    return [data, ""];
+  } catch (err) { return [null, "Could not reach Stripe. Try again in a minute."]; }
+}
+async function keyPrefixFor(env, productId) {
+  const settings = (await hubConfig(env)).products.find(p => p.id === productId);
+  if (settings && settings.key_prefix) return settings.key_prefix;
+  if (["heavypro", "rotaidem-heavypro"].includes(productId)) return "HPRO";
+  return ((productId.toUpperCase().replace(/[^A-Z0-9]/g, "") || "ROTA").slice(0, 4)).padEnd(2, "X");
+}
+// A paid Checkout session -> one order and one licence key, emailed. Safe to call twice: the row is claimed first.
+async function fulfilCheckout(env, request, session) {
+  if (session.payment_status !== "paid" || session.mode !== "payment" || !CHECKOUT_SESSION.test(String(session.id || ""))) return null;
+  const sid = session.id, get = () => env.DB.prepare("SELECT * FROM stripe_payments WHERE session_id = ?").bind(sid).first();
+  const done = await get();
+  if (done) return done;
+  const meta = session.metadata || {}, productId = String(meta.product_id || ""), userId = Number(meta.user_id) || 0;
+  const user = userId ? await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first() : null;
+  const email = String((user && user.email) || (session.customer_details || {}).email || session.customer_email || "").toLowerCase();
+  try {
+    await env.DB.prepare("INSERT INTO stripe_payments (session_id, product_id, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)").bind(sid, productId, userId || null, email, utcStamp()).run();
+  } catch (err) { return get(); } // the other request (page or webhook) claimed it a moment ago
+  const amount = (Number(session.amount_total) || 0) / 100;
+  const currency = String(session.currency || "").toLowerCase();
+  const affiliateCode = String((session.metadata || {}).affiliate_code || "");
+  await env.DB.prepare("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?)").bind(userId || null, productId, amount, sid, currency, affiliateCode).run();
+  const order = await env.DB.prepare("SELECT id FROM orders WHERE payment_ref = ?").bind(sid).first();
+  if (order) await creditAffiliate(env, order.id, amount, currency, affiliateCode, userId, email);
+  let key = "";
+  while (!key) {
+    const candidate = generateKey(await keyPrefixFor(env, productId));
+    if (await insertLicense(env, candidate, productId, email, userId || null, order ? order.id : null, 2, "Bought on rotaidem.com (Stripe)", "Stripe")) key = candidate;
+  }
+  await env.DB.prepare("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?").bind(order ? order.id : null, key, sid).run();
+  await emailLicenseKeys(env, request, email, [key], productId);
+  if (user) await audit(env, user, "stripe_order", `${productId} ${amount.toFixed(2)} ${String(session.currency || "").toUpperCase()}`);
+  return get();
+}
+const AFFILIATE_CODE = /^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/;
+const AFFILIATE_DEFAULT_PERCENT = 20;
+async function affiliateByCode(env, code) {
+  code = String(code || "").trim();
+  if (!AFFILIATE_CODE.test(code)) return null;
+  return env.DB.prepare("SELECT * FROM affiliates WHERE LOWER(code) = ? AND status = 'active'").bind(code.toLowerCase()).first().catch(() => null);
+}
+async function creditAffiliate(env, orderId, amount, currency, code, buyerId, buyerEmail) {
+  const aff = await affiliateByCode(env, code);
+  if (!aff) return null;
+  if ((aff.user_id && buyerId && Number(aff.user_id) === Number(buyerId)) || (aff.email && aff.email.toLowerCase() === String(buyerEmail || "").toLowerCase())) return null;
+  const commission = Math.round((Number(amount || 0) * Number(aff.percent || 0)) / 100 * 100) / 100;
+  try {
+    await env.DB.prepare("INSERT INTO affiliate_commissions (affiliate_id, order_id, amount, currency, rate, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)")
+      .bind(aff.id, orderId, commission, String(currency || "").toLowerCase(), Number(aff.percent || 0), utcStamp()).run();
+  } catch (err) { return null; }
+  return aff;
+}
+async function affiliateTotals(env, affiliateId) {
+  const rows = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id = ? GROUP BY status").bind(affiliateId).all()).results || [];
+  const by = {}; for (const r of rows) by[r.status] = { orders: Number(r.n) || 0, amount: Math.round((Number(r.total) || 0) * 100) / 100 };
+  return { pending: by.pending || { orders: 0, amount: 0 }, paid: by.paid || { orders: 0, amount: 0 }, orders: Object.values(by).reduce((n, v) => n + v.orders, 0) };
+}
+async function affiliateOrders(env, affiliateId) {
+  const rows = (await env.DB.prepare("SELECT c.amount AS commission, c.currency, c.status, c.created_at, o.id AS order_id, o.amount AS sale, o.product_id, p.name AS product " +
+    "FROM affiliate_commissions c LEFT JOIN orders o ON o.id = c.order_id LEFT JOIN products p ON p.id = o.product_id WHERE c.affiliate_id = ? ORDER BY c.id DESC LIMIT 500").bind(affiliateId).all()).results || [];
+  return rows.map(r => ({ order_id: r.order_id, date: String(r.created_at || "").slice(0, 16), product: r.product || r.product_id || "",
+    sale: Math.round((Number(r.sale) || 0) * 100) / 100, commission: Math.round((Number(r.commission) || 0) * 100) / 100, currency: String(r.currency || "").toUpperCase(), status: r.status }));
+}
+async function accountAffiliate(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const aff = await env.DB.prepare("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
+  if (!aff) return json({ affiliate: null, percent: AFFILIATE_DEFAULT_PERCENT });
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  return json({ affiliate: { code: aff.code, percent: aff.percent, status: aff.status, payout: aff.payout || "", clicks: Number(aff.clicks) || 0,
+    connected: !!aff.stripe_account, payouts_ready: !!aff.payouts_ready,
+    link: base + "/?ref=" + encodeURIComponent(aff.code), orders_list: await affiliateOrders(env, aff.id), ...(await affiliateTotals(env, aff.id)) },
+    percent: AFFILIATE_DEFAULT_PERCENT, payouts: { on: false, min: 50, last: "" } });
+}
+async function accountAffiliateApply(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Log in first" }, 401);
+  if (await env.DB.prepare("SELECT id FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null))
+    return json({ error: "You already have an affiliate account" }, 409);
+  const body = await request.json().catch(() => ({}));
+  const code = String(body.code || "").trim() || slug(user.name || "").slice(0, 31);
+  if (!AFFILIATE_CODE.test(code)) return json({ error: "Pick a code of 3 to 31 letters, digits, dashes or underscores" }, 400);
+  if (await env.DB.prepare("SELECT id FROM affiliates WHERE LOWER(code) = ?").bind(code.toLowerCase()).first().catch(() => null))
+    return json({ error: `The code "${code}" is taken. Try another one.` }, 409);
+  const why = String(body.about || "").trim().slice(0, 300);
+  await env.DB.prepare("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)")
+    .bind(code, String(user.email || "").toLowerCase(), user.id, String(user.name || "").slice(0, 100), AFFILIATE_DEFAULT_PERCENT, why ? "Applied: " + why : "Applied from My account", utcStamp()).run();
+  return json({ ok: true, status: "pending", code });
+}
+async function accountAffiliatePayout(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const aff = await env.DB.prepare("SELECT id FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
+  if (!aff) return json({ error: "You are not an affiliate" }, 404);
+  const payout = String((await request.json().catch(() => ({}))).payout || "").trim().slice(0, 300);
+  await env.DB.prepare("UPDATE affiliates SET payout = ? WHERE id = ?").bind(payout, aff.id).run();
+  return json({ ok: true, payout });
+}
+async function affiliateClick(request, env) {
+  const aff = await affiliateByCode(env, (await request.json().catch(() => ({}))).code);
+  if (aff) await env.DB.prepare("UPDATE affiliates SET clicks = COALESCE(clicks, 0) + 1 WHERE id = ?").bind(aff.id).run().catch(() => {});
+  return json({ ok: true });
+}
+async function checkout(request, env, pid) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Log in to buy. Your licence key is linked to your account.", login: true }, 401);
+  const product = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(pid).first();
+  if (!product || !(Number(product.pay_amount) > 0) || product.status !== "published") return json({ error: "This product cannot be bought on the website yet" }, 404);
+  if (!stripeKey(env)) return json({ error: "Payments are not set up yet. Please try again later or contact us." }, 503);
+  const owned = (await env.DB.prepare("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)").bind(user.id, String(user.email || "").toLowerCase()).all()).results || [];
+  if (owned.some(r => sameProduct(pid, r.product_id))) return json({ error: `You already have a licence for ${product.name}. It is under My account.`, owned: true }, 409);
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const fields = { mode: "payment", "line_items[0][quantity]": "1", "line_items[0][price_data][currency]": product.pay_currency || "sek",
+    "line_items[0][price_data][unit_amount]": String(priceNow(product)), "line_items[0][price_data][product_data][name]": product.name || pid,
+    customer_email: user.email, client_reference_id: String(user.id), "metadata[product_id]": pid, "metadata[user_id]": String(user.id),
+    "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": String(user.id),
+    success_url: `${base}/checkout-done?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/addons/view?id=${encodeURIComponent(pid)}&cancelled=1` };
+  if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
+  if ((await shopSettings(env)).promo_codes) fields.allow_promotion_codes = "true"; // codes made in the Stripe dashboard
+  const reqBody = await request.json().catch(() => ({}));
+  const referral = String(reqBody.referral || "").trim(); // window.endorsely_referral from the buyer's browser
+  if (/^[A-Za-z0-9_-]{1,100}$/.test(referral)) fields["metadata[endorsely_referral]"] = referral; // Endorsely (affiliates) credits the sale from this
+  if (await affiliateByCode(env, reqBody.ref)) fields["metadata[affiliate_code]"] = String(reqBody.ref).trim(); // our own affiliate program
+  const [session, error] = await stripeCall(env, "POST", "/v1/checkout/sessions", fields);
+  if (error || !(session || {}).url) return json({ error: error || "Stripe did not open a checkout page" }, 502);
+  return json({ url: session.url });
+}
+// The page after paying asks this: makes the order and key at once if Stripe says it is paid.
+async function checkoutStatus(request, env) {
+  const user = await currentUser(request, env, { ignoreGate: true });
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const sid = new URL(request.url).searchParams.get("session_id") || "";
+  if (!CHECKOUT_SESSION.test(sid)) return json({ error: "Order not found" }, 404);
+  if (!stripeKey(env)) return json({ error: "Payments are not set up yet" }, 503);
+  const [session, error] = await stripeCall(env, "GET", `/v1/checkout/sessions/${encodeURIComponent(sid)}`);
+  if (error) return json({ error }, 502);
+  const meta = session.metadata || {};
+  if (String(meta.user_id) !== String(user.id)) return json({ error: "Order not found" }, 404);
+  const product = await env.DB.prepare("SELECT name FROM products WHERE id = ?").bind(meta.product_id || "").first();
+  const answer = { paid: session.payment_status === "paid", status: session.status || "", product_id: meta.product_id || "", product: (product || {}).name || meta.product_id || "" };
+  if (answer.paid) {
+    const done = (await fulfilCheckout(env, request, session)) || {};
+    Object.assign(answer, { license_key: done.license_key || "", email: done.email || "" });
+  }
+  return json(answer);
+}
+// Stripe tells about paid checkouts here, also when the customer closed the page after paying.
+async function stripeWebhook(request, env) {
+  if (!stripeWebhookSecret(env)) return json({ error: "The webhook is not set up" }, 503);
+  const payload = await request.text();
+  const parts = (request.headers.get("Stripe-Signature") || "").split(",").map(p => p.split("=")).filter(p => p.length >= 2);
+  const stamp = (parts.find(([k]) => k === "t") || [])[1] || "", signatures = parts.filter(([k]) => k === "v1").map(p => p.slice(1).join("="));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(stripeWebhookSecret(env)), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expected = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${stamp}.${payload}`)))].map(b => b.toString(16).padStart(2, "0")).join("");
+  if (!(Math.abs(Date.now() / 1000 - Number(stamp)) <= 300) || !signatures.includes(expected)) return json({ error: "Bad signature" }, 400);
+  let event;
+  try { event = JSON.parse(payload); } catch (err) { return json({ error: "Bad payload" }, 400); }
+  if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) await fulfilCheckout(env, request, (event.data || {}).object || {});
+  return json({ received: true });
+}
+
 // ---------- blocklist and system (same as server.py) ----------
 const BLOCK_IP = /^[0-9a-f.:]{3,45}$/;
 async function blocklist(env) {
@@ -890,7 +1154,7 @@ async function adminSystem(request, env) {
   const lastBackup = await env.DB.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'download_backup'").first();
   return json({ database: "Cloudflare D1", schema: "d1", python: "Cloudflare Workers", server_time: utcStamp(), site_url: (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, ""),
     email_ready: !!resendKey(env), mail_from: mailFrom(env), admin_password: !!(await gateHash(env)), tables, media_bytes: Number(mediaBytes),
-    last_backup: String((lastBackup || {}).at || ""), blocked: (await blocklist(env)).length });
+    last_backup: String((lastBackup || {}).at || ""), blocked: (await blocklist(env)).length, stripe: stripeMode(env), stripe_webhook: !!stripeWebhookSecret(env) });
 }
 
 
@@ -959,12 +1223,45 @@ function cleanConfig(c) {
 }
 const ROADMAP_STAGES = ["Done", "In progress", "Next", "Later"];
 // Pages and folders of the site: a short link may not take their address.
-const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "health", "heavypro", "img", "index",
+const SITE_PAGES = ["404", "about", "account", "addons", "admin", "api", "compatibility", "contact", "downloads", "forgot-password", "get-rotahub", "checkout-done", "files", "health", "heavypro", "img", "index",
   "installation", "login", "media", "newsletter", "privacy", "reset-password", "roadmap", "signup", "support", "terms", "unsubscribe", "work-at-rsg", "files", "fonts"];
 function cleanRoadmap(items) {
   if (!Array.isArray(items) || items.length > 40) throw new Error("The roadmap can have at most 40 steps");
   return items.map(i => ({ stage: ROADMAP_STAGES.includes((i || {}).stage) ? i.stage : "Next", title: String((i || {}).title || "").trim().slice(0, 120), text: String((i || {}).text || "").trim().slice(0, 600) }))
     .filter(i => i.title);
+}
+// Supported aircraft (Admin -> Aircraft): home page, Compatibility and HeavyPro pages. Empty: the pages keep their own list.
+function cleanAircraft(items) {
+  if (!Array.isArray(items) || items.length > 30) throw new Error("At most 30 aircraft");
+  return items.map(i => (i && typeof i === "object" ? i : {})).map(i => ({ name: String(i.name || "").trim().slice(0, 80), profile: String(i.profile || "").trim().slice(0, 80),
+    note: String(i.note || "").trim().slice(0, 200), home: !!i.home, home_text: String(i.home_text || "").trim().slice(0, 120) })).filter(i => i.name);
+}
+// Link previews: {default: {image}, pages: {"/heavypro": {image, title, description}}}, only known pages (functions/_middleware.js shows them).
+const SHARE_PAGES = { "/": "home", "/heavypro": "HeavyPro", "/addons/": "products", "/addons/view": "product", "/downloads": "downloads", "/get-rotahub": "get RotaHub",
+  "/compatibility": "compatibility", "/installation": "installation guide", "/support": "help and FAQ", "/roadmap": "roadmap", "/newsletter": "news", "/about": "about",
+  "/contact": "contact", "/work-at-rsg": "careers" };
+function cleanShare(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Link previews must be an object");
+  const one = (item, name) => {
+    item = item && typeof item === "object" ? item : {};
+    const raw = String(item.image || "").trim(), image = validImageUrl(raw);
+    if (raw && !image) throw new Error(`The ${name} picture must be an uploaded picture or an https:// link`);
+    return Object.fromEntries(Object.entries({ image, title: String(item.title || "").trim().slice(0, 90), description: String(item.description || "").trim().slice(0, 200) }).filter(([, v]) => v));
+  };
+  const pages = {};
+  for (const [path, name] of Object.entries(SHARE_PAGES)) { const item = one((data.pages || {})[path], name + " page"); if (Object.keys(item).length) pages[path] = item; }
+  const d = one(data.default, "default");
+  return { default: d.image ? { image: d.image } : {}, pages };
+}
+// Pilot quotes (Admin -> Pilot quotes): [{name, about, text, image}], at most 20 (same as server.py).
+function cleanTestimonials(items) {
+  if (!Array.isArray(items) || items.length > 20) throw new Error("At most 20 quotes");
+  return items.map(i => (i && typeof i === "object" ? i : {})).map(i => {
+    const name = String(i.name || "").trim().slice(0, 60), text = String(i.text || "").replace(/\r\n/g, "\n").trim().slice(0, 800), raw = String(i.image || "").trim();
+    const image = validImageUrl(raw);
+    if (name && text && raw && !image) throw new Error(`The picture for ${name} must be an uploaded picture or an https:// link`);
+    return { name, about: String(i.about || "").trim().slice(0, 80), text, image };
+  }).filter(i => i.name && i.text);
 }
 function cleanFaq(items) {
   if (!Array.isArray(items) || items.length > 60) throw new Error("The FAQ can have at most 60 questions");
@@ -1014,8 +1311,9 @@ async function siteSettings(env) {
   const texts = (await getSetting(env, "site.texts", {})) || {};
   return { images, defaults: IMAGE_SLOTS, texts: typeof texts === "object" && !Array.isArray(texts) ? texts : {}, config: await siteConfig(env),
     announcement: { enabled: !!banner.enabled, text: String(banner.text || ""), link: String(banner.link || ""), from: String(banner.from || ""), until: String(banner.until || "") },
-    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
-    extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) } };
+    roadmap: (await getSetting(env, "site.roadmap", [])) || [], faq: (await getSetting(env, "site.faq", [])) || [], aircraft: (await getSetting(env, "site.aircraft", [])) || [],
+    share: { default: {}, pages: {}, ...((await getSetting(env, "site.share", {})) || {}) }, testimonials: (await getSetting(env, "site.testimonials", [])) || [], links: (await getSetting(env, "site.links", {})) || {},
+    extras: { ...EXTRAS_DEFAULT, ...((await getSetting(env, "site.extras", {})) || {}) }, hub: (await hubConfig(env)).downloads };
 }
 function validImageUrl(url) {
   url = String(url || "").trim();
@@ -1054,6 +1352,9 @@ async function adminSaveSettings(request, env) {
     if ("config" in body) await setSetting(env, "site.config", cleanConfig(body.config || {}));
     if ("roadmap" in body) await setSetting(env, "site.roadmap", cleanRoadmap(body.roadmap));
     if ("faq" in body) await setSetting(env, "site.faq", cleanFaq(body.faq));
+    if ("aircraft" in body) await setSetting(env, "site.aircraft", cleanAircraft(body.aircraft));
+    if ("share" in body) await setSetting(env, "site.share", cleanShare(body.share));
+    if ("testimonials" in body) await setSetting(env, "site.testimonials", cleanTestimonials(body.testimonials));
     if ("links" in body) await setSetting(env, "site.links", cleanLinks(body.links));
     if ("extras" in body) await setSetting(env, "site.extras", cleanExtras(body.extras || {}));
   } catch (err) { return json({ error: err.message }, 400); }
@@ -1071,7 +1372,7 @@ async function adminSaveSettings(request, env) {
     if (Object.keys(texts).length > 1000) return json({ error: "Too many changed texts" }, 400);
     await setSetting(env, "site.texts", texts);
   }
-  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "links", "extras", "texts"].filter(k => k in body).join(", ")
+  await audit(env, user, "save_settings", ["images", "announcement", "config", "roadmap", "faq", "aircraft", "share", "testimonials", "links", "extras", "texts"].filter(k => k in body).join(", ")
     + (body.texts && typeof body.texts === "object" ? ": " + Object.keys(body.texts).slice(0, 5).join(", ") : ""));
   return json({ ok: true, ...(await siteSettings(env)) });
 }
@@ -1509,6 +1810,132 @@ async function accountClaimLicense(request, env) {
   }
   const row = await env.DB.prepare("SELECT licenses.id, license_key, product_id, status, max_activations, licenses.created_at, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS activations FROM licenses WHERE id = ?").bind(lic.id).first();
   return json({ license: row });
+}
+
+// ---------- RotaHub: what the desktop app shows (same as server.py) ----------
+const HUB_ID = /^[a-z0-9][a-z0-9._-]{0,59}$/, HUB_PREFIX = /^[A-Z0-9]{2,8}$/, HUB_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/, HUB_LEVELS = ["info", "warning"];
+const HUB_PRODUCT_FIELDS = ["hidden", "featured", "manifest_url", "licence_ids", "licence_store", "key_prefix", "image"];
+const HUB_TEXTS = { login_title: 60, login_text: 300, library_title: 40, library_text: 300 }, HUB_IMAGES = ["login_image", "library_image", "product_image"];
+const ACCENT_HEX = { steel: "#aab6c2", amber: "#f2a900", sky: "#5ab0ff", mint: "#4cc38a", rose: "#ff6b81", violet: "#a78bfa" };
+function hubImage(value, what) {
+  const v = String(value || "").trim();
+  if (v && !validImageUrl(v)) throw new Error(`The ${what} must be an uploaded picture or an https:// link`);
+  return v;
+}
+function hubLink(value, what) {
+  const v = String(value || "").trim();
+  if (v && (v.length > 400 || !(v.startsWith("https://") || (v.startsWith("/") && !v.startsWith("//"))))) throw new Error(`The ${what} must start with https:// or / (a page on the site)`);
+  return v;
+}
+function cleanHub(b) {
+  const m = b.message || {};
+  const text = String(m.text || "").trim();
+  if (text.length > 300) throw new Error("The message in the app can be at most 300 characters");
+  if (m.enabled && !text) throw new Error("Write the message before switching it on");
+  const minVersion = String(b.min_version || "").trim();
+  if (minVersion && !HUB_VERSION.test(minVersion)) throw new Error("The lowest version looks like 0.2.0");
+  const products = [], seen = new Set();
+  for (const p of (Array.isArray(b.products) ? b.products : []).slice(0, 60)) {
+    const pid = String((p || {}).id || "").trim().toLowerCase();
+    if (!HUB_ID.test(pid) || seen.has(pid)) continue;
+    seen.add(pid);
+    let ids = p.licence_ids || [];
+    ids = (typeof ids === "string" ? ids.split(",") : Array.isArray(ids) ? ids : []).map(x => String(x).trim().toLowerCase()).filter(Boolean);
+    if (ids.length > 5 || !ids.every(x => HUB_ID.test(x))) throw new Error(`${pid}: licence product ids are short ids like heavypro, separated by commas (at most 5)`);
+    const store = String(p.licence_store || "").trim().toLowerCase();
+    if (store && !HUB_ID.test(store)) throw new Error(`${pid}: the licence folder is one short name like heavypro, no slashes`);
+    const prefix = String(p.key_prefix || "").trim().toUpperCase();
+    if (prefix && !HUB_PREFIX.test(prefix)) throw new Error(`${pid}: the key prefix is 2 to 8 letters or digits, like HPRO`);
+    const manifest = String(p.manifest_url || "").trim();
+    if (manifest && (!manifest.startsWith("https://") || manifest.length > 400)) throw new Error(`${pid}: the release file must be an https:// address`);
+    const entry = { id: pid, hidden: !!p.hidden, featured: !!p.featured, manifest_url: manifest, licence_ids: ids, licence_store: store, key_prefix: prefix, image: hubImage(p.image, `${pid} picture`) };
+    if (HUB_PRODUCT_FIELDS.some(k => Array.isArray(entry[k]) ? entry[k].length : entry[k])) products.push(entry);
+  }
+  const lookIn = b.look || {}, accent = ACCENT_HEX[lookIn.accent] ? lookIn.accent : "";
+  const look = { accent, accent_color: accent ? ACCENT_HEX[accent] : "" };
+  for (const key of HUB_IMAGES) look[key] = hubImage(lookIn[key], key.replace(/_/g, " "));
+  for (const [key, limit] of Object.entries(HUB_TEXTS)) {
+    const value = String(lookIn[key] || "").trim();
+    if (value.length > limit) throw new Error(`The ${key.replace(/_/g, " ")} can be at most ${limit} characters`);
+    look[key] = value;
+  }
+  const d = b.downloads || {}, rotahubUrl = String(d.rotahub_url || "").trim();
+  if (rotahubUrl && (rotahubUrl.length > 400 || !(rotahubUrl.startsWith("https://") || /^\/files\/[A-Za-z0-9._-]+(\?v=[A-Za-z0-9]+)?$/.test(rotahubUrl)))) throw new Error("The RotaHub download link must start with https:// or be an uploaded file (/files/...)");
+  return { message: { enabled: !!m.enabled, text, level: HUB_LEVELS.includes(m.level) ? m.level : "info", link: hubLink(m.link, "message link") },
+    min_version: minVersion, help_url: hubLink(b.help_url, "help link"), products, look, downloads: { rotahub_url: rotahubUrl }, changelog: cleanChangelog(b.changelog) };
+}
+async function hubConfig(env) {
+  try { return cleanHub((await getSetting(env, "hub.config", {})) || {}); } catch (err) { return cleanHub({}); }
+}
+const versionKey = v => v.split(".").map(Number);
+const versionLess = (a, b) => { const x = versionKey(a), y = versionKey(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i]; return false; };
+// Who uses RotaHub, from the website logins it makes (User-Agent RotaHub/0.2.0 ...).
+async function hubStats(env, minVersion = "") {
+  const rows = (await env.DB.prepare("SELECT user_id, user_agent, last_seen FROM sessions WHERE user_agent LIKE ?").bind("RotaHub%").all()).results || [];
+  const week = utcStamp(7 * 86400), versions = {};
+  for (const r of rows) {
+    const m = /^RotaHub\/(\d{1,4}\.\d{1,4}\.\d{1,4})/.exec(String(r.user_agent || ""));
+    const v = m ? m[1] : "older";
+    (versions[v] = versions[v] || new Set()).add(r.user_id);
+  }
+  const listed = Object.entries(versions).sort(([a], [b]) => a === "older" ? 1 : b === "older" ? -1 : versionLess(a, b) ? 1 : -1);
+  const outdated = new Set();
+  if (minVersion) for (const [v, users] of listed) if (v === "older" || versionLess(v, minVersion)) users.forEach(u => outdated.add(u));
+  return { people: new Set(rows.map(r => r.user_id)).size, logins: rows.length, active_7d: new Set(rows.filter(r => String(r.last_seen || "") >= week).map(r => r.user_id)).size,
+    versions: listed.map(([version, users]) => ({ version, people: users.size })), outdated: outdated.size };
+}
+// Admin -> Shop: payments set-up, discount codes, sales per product (same as server.py)
+const SHOP_DEFAULT = { promo_codes: false };
+async function shopSettings(env) {
+  const saved = (await getSetting(env, "shop.settings", {})) || {};
+  return { ...SHOP_DEFAULT, ...Object.fromEntries(Object.keys(SHOP_DEFAULT).filter(k => k in saved).map(k => [k, saved[k]])) };
+}
+async function adminShop(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const since = utcStamp(30 * 86400), sales = {};
+  const rows = (await env.DB.prepare("SELECT product_id, currency, COUNT(*) AS n, SUM(amount) AS total, SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS recent FROM orders WHERE payment_status = 'Paid' GROUP BY product_id, currency").bind(since).all()).results || [];
+  for (const r of rows) (sales[r.product_id || ""] = sales[r.product_id || ""] || []).push({ currency: String(r.currency || "").toLowerCase(), orders: Number(r.n) || 0, total: Math.round((Number(r.total) || 0) * 100) / 100, last_30_days: Number(r.recent) || 0 });
+  const products = ((await env.DB.prepare("SELECT * FROM products ORDER BY sort_order, name").all()).results || []).map(p => {
+    const item = { id: p.id, name: p.name, status: p.status, pay_amount: Number(p.pay_amount) || 0, pay_currency: p.pay_currency || "sek", sale_amount: Number(p.sale_amount) || 0,
+      sale_until: p.sale_until || "", sale_active: saleActive(p), price_now: priceNow(p), can_buy: !!(stripeKey(env) && Number(p.pay_amount) > 0 && p.status === "published"), sales: sales[p.id] || [] };
+    delete sales[p.id];
+    return item;
+  });
+  const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  return json({ stripe: { connected: !!stripeKey(env), mode: stripeMode(env), webhook: !!stripeWebhookSecret(env), webhook_url: base + "/api/stripe/webhook" },
+    settings: await shopSettings(env), products, other_sales: Object.entries(sales).flatMap(([k, list]) => list.map(v => ({ product_id: k, ...v }))) });
+}
+async function adminSaveShop(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change the shop" }, 403);
+  const body = await request.json().catch(() => ({}));
+  const settings = { ...(await shopSettings(env)), promo_codes: !!body.promo_codes };
+  await setSetting(env, "shop.settings", settings);
+  await audit(env, user, "save_shop", "discount codes " + (settings.promo_codes ? "on" : "off"));
+  return json({ ok: true, settings });
+}
+async function adminHub(request, env) {
+  const user = await currentUser(request, env);
+  if (!user || user.role === "Customer") return json({ error: "Admin only" }, 403);
+  const config = await hubConfig(env);
+  return json({ ...config, stats: await hubStats(env, config.min_version) });
+}
+// Uploading download files needs a web space with folders (the STRATO website); Cloudflare Pages serves cloudflare/public/files.
+async function adminFilesUnavailable(request, env, listing) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can see the files" }, 403);
+  if (listing) return json({ files: [], unavailable: true });
+  return json({ error: "Uploading files works on the STRATO website. On Cloudflare, put files in cloudflare/public/files and deploy." }, 501);
+}
+async function adminSaveHub(request, env) {
+  const user = await currentUser(request, env);
+  if (!isManager(user)) return json({ error: "Only the Owner or an Admin can change RotaHub" }, 403);
+  let cleaned;
+  try { cleaned = cleanHub(await request.json().catch(() => ({}))); } catch (err) { return json({ error: err.message }, 400); }
+  await setSetting(env, "hub.config", cleaned);
+  await audit(env, user, "save_hub", "message " + (cleaned.message.enabled ? "on" : "off") + (cleaned.min_version ? `, lowest version ${cleaned.min_version}` : ""));
+  return json({ ...cleaned, stats: await hubStats(env, cleaned.min_version) });
 }
 
 // ---------- email broadcasts ----------

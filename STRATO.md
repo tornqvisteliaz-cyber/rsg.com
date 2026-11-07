@@ -148,6 +148,8 @@ python3 rotaidem/strato/setup.py backup          settings + full database into r
 python3 rotaidem/strato/setup.py password        new password for an account
 python3 rotaidem/strato/setup.py permissions     make settings and logs private (700/600) again
 python3 rotaidem/strato/setup.py admin-password  set, change or remove the extra admin page password (also when forgotten)
+python3 rotaidem/strato/setup.py stripe          set up payments: Stripe key and webhook secret (typed, not shown)
+python3 rotaidem/strato/setup.py discord         connect the Discord bot for the verified buyer role (secrets typed, not shown)
 python3 rotaidem/strato/setup.py fetch-installer  copy the newest HeavyPro installer from GitHub to rotaidem.com/files/ (Download buttons follow)
 python3 rotaidem/strato/setup.py import FILE     restore a backup (replaces the database; asks first)
 python3 rotaidem/strato/setup.py reset-catalog   remove all products (asks first, keeps a copy)
@@ -157,6 +159,105 @@ python3 rotaidem/strato/setup.py install         first installation on a new web
 There is also a check page in the browser:
 `https://rotaidem.com/cgi-bin/rotaidem-check.py?key=<CHECK_KEY>`. The key is the `CHECK_KEY` line
 in `rotaidem-data/config.env`; don't share screenshots that show it.
+
+## Payments (Stripe)
+
+1. In Stripe (dashboard.stripe.com): Developers → API keys → **Create restricted key** with
+   *Checkout Sessions: Write* only. Use a `rk_test_`/`sk_test_` key first to try it with test cards.
+2. Developers → Webhooks → **Add endpoint**: `https://rotaidem.com/api/stripe/webhook`, events
+   `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Reveal its signing secret.
+3. Over SSH: `python3 rotaidem/strato/setup.py stripe`, paste both (nothing is shown), and it tests the key.
+4. Admin → Products → a product → **Price at checkout** (amount and currency) → Save.
+
+The product's Buy button then opens Stripe's payment page (the customer logs in first, so the key
+is on their account). After paying they come back to `/checkout-done`, which shows the licence key;
+the order (marked *Stripe* in Admin → Orders) and the key are made once, and the key is emailed.
+The webhook does the same when someone closes the page right after paying. The keys are only in
+`rotaidem-data/config.env`; never paste them anywhere else.
+
+## Discord: verified buyers get the buyer channels
+
+No bot program has to run: the website does everything through Discord's API when it is needed.
+Customers press **Link Discord** under My account; the website adds them to your server and gives
+licence holders a *Verified buyer* role. The role is taken away when a licence is revoked and given
+back when it is restored. `/verify` in Discord lets members check themselves.
+
+1. discord.com/developers/applications → **New Application** (e.g. Rotaidem).
+2. **OAuth2 → Redirects → Add**: `https://rotaidem.com/api/discord/callback`.
+3. Over SSH: `python3 rotaidem/strato/setup.py discord`. It asks for the Application ID and Public
+   Key (General Information), the Client Secret (OAuth2 → Reset Secret) and the bot token (Bot → Reset
+   Token). Secrets are not shown while typing. It tests the token and prints the invite link.
+4. Open the invite link and add the bot to your server.
+5. In Discord: Server Settings → Roles → make a role such as **Verified buyer**. Drag the bot's own
+   role **above** it, or it cannot give it.
+6. Lock the buyer channels: edit each channel → Permissions → `@everyone`: View Channel **off**,
+   Verified buyer: View Channel **on**.
+7. User Settings → Advanced → **Developer Mode** on. Right-click the server → Copy Server ID, and the
+   role → Copy Role ID. Paste both in **Admin → Discord** on the website and save.
+8. In the Developer Portal → General Information → **Interactions Endpoint URL**:
+   `https://rotaidem.com/api/discord/interactions` → Save (Discord tests it then). Then press
+   **Add the /verify command** in Admin → Discord.
+9. Optional: in Admin → Discord, **Post a Verify button** in a channel such as #welcome.
+
+**Posting with the bot:** Admin → Discord → *Post to Discord*. Pick a channel, write a message and/or a
+card (title, text, link, picture), add link buttons, and choose who to ping (nobody, the buyer role,
+@here or @everyone). *Start from…* fills it in from a product update or a news post. In an
+announcement channel it is also published to servers that follow it. Posts can be edited or deleted
+from the list below the form.
+
+- **#channel links:** type `#channel-name` (or use *Insert a # channel*): it becomes a link in Discord.
+- **Extras:** the bot can react with emojis, pin the post, and add a **poll** (2 to 10 answers, open
+  from an hour to two weeks).
+- **Post later:** pick a date and time. STRATO has no timer, so the post goes out at the first visit
+  to the website after that time (with normal traffic, within a minute or two). *Post now* and
+  *Cancel* are in the waiting list.
+- **Automatic posts:** choose a channel for product updates (optionally pinging verified buyers), for
+  news posts, and for sales (🎉 product and amount only; use a staff-only channel).
+
+The bot needs **Send Messages**, **Embed Links**, **Add Reactions**, **Manage Messages** (pins),
+**Read Message History**, **Send Polls** and, for @everyone pings, **Mention Everyone**: the invite
+link from `setup.py discord` (and Admin → Discord → Invite the bot) asks for all of them. If you
+invited the bot before, open the invite link again or give its role those permissions in Server
+Settings → Roles.
+
+## Affiliate program
+
+Reward people who send you buyers. In **Admin -> Affiliates**, add an affiliate with a short **code**
+and a **percent** (e.g. `erik`, 25%). They share their link, `https://rotaidem.com/?ref=erik`. When a
+visitor arrives with that link and buys (within 30 days), the affiliate earns that percent of the sale.
+
+- The code travels to Stripe Checkout as metadata, and a paid order credits the commission. Nobody can
+  refer themselves (same account or email earns nothing).
+- The **To be paid** column is what you owe. Pay it however you like (bank transfer, PayPal, a free
+  licence), then press **Mark paid** to clear it. Export CSV for your records.
+- **Which orders?** Press **Orders** on a row to see every sale that affiliate brought — the date, the
+  buyer, the product, the sale and the commission — plus where they want to be paid and how many times
+  their link was opened (**Clicks**).
+- **Self-signup.** Customers can apply for a code themselves from **My account** (it arrives as
+  **Pending** with a Discord note). Press **Approve** to turn it on, or **Edit** to change the code or
+  percent first. An affiliate sees their link, their referred orders and their running total on My
+  account, and sets their own payout details there.
+- If you set an affiliate's **account email**, that person sees it on their My account page. You can
+  pause an affiliate without deleting their history.
+- This is separate from the Endorsely script; use either or both.
+
+**Automatic payouts (Stripe Connect).** Instead of paying each affiliate by hand, let the site do it:
+
+- The affiliate presses **Set up automatic payouts** on their My account page and completes Stripe's
+  onboarding (their name, bank or debit card — you never see it). This uses Stripe Connect, which your
+  account already supports; it adds no new service or monthly cost.
+- In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on. From then
+  on, each commission is sent **straight to a connected affiliate the moment their referred sale is
+  paid** — automatic and direct, no button to press and no waiting.
+- The **catch-up minimum** only covers affiliates who connect Stripe *after* they have already earned:
+  the site sweeps up what they are owed above that minimum (weekly, or with **Run payouts now**). Anyone
+  who was already connected is paid instantly, minimum or not.
+- You always receive the full sale first, so your Stripe balance covers the commission. Transfers carry
+  an idempotency key, so a retry can never pay twice. A buyer's success page never fails over a payout —
+  if a transfer cannot be made it stays pending and the next sweep settles it.
+- Affiliates who do not connect Stripe are still paid by hand with **Mark paid** — nothing changes.
+- STRATO has no always-on cron, so the weekly catch-up happens on the first visit after it is due (the
+  same way scheduled Discord posts work).
 
 ## Security
 

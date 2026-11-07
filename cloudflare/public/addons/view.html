@@ -8,6 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <script src="/site-settings.js"></script>
+    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
 </head>
 <body>
 <section class="page-head" id="hero" style="background-image:url('/img/approach.jpg')"><div class="wrap" style="padding-top:110px;padding-bottom:70px">
@@ -20,10 +21,17 @@
         <div class="box">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><span class="stat-num" id="price"></span><span class="badge" id="status"></span></div>
             <a id="buy" class="btn btn-accent btn-block" href="mailto:Eliaz@rotaidem.com">Buy now</a>
-            <a id="download" class="btn btn-ghost btn-block" style="margin-top:10px;display:none" rel="noopener">Download installer</a>
+            <a id="download" class="btn btn-ghost btn-block" style="margin-top:10px;display:none" rel="noopener">Get it in RotaHub</a>
             <p id="download-help" style="margin:8px 0 0;font-size:13px;text-align:center;display:none"><a class="muted" href="/downloads#help">Trouble downloading or installing?</a></p>
             <table class="table" style="margin-top:22px"><tbody id="specs"></tbody></table>
+            <div style="margin-top:18px" data-trustpilot></div>
         </div>
+    </div>
+</section>
+<section class="section dark" data-testimonials hidden>
+    <div class="wrap">
+        <div class="section-head"><h2 data-text="product.what-pilots-say">What pilots say</h2><span data-trustpilot></span></div>
+        <div class="quotes" data-testimonials-list></div>
     </div>
 </section>
 <section class="section alt" id="gallery-section"><div class="wrap"><h2 data-text="product.screenshots">Screenshots</h2><div class="grid grid-3" id="gallery" style="margin-top:28px"></div></div></section>
@@ -40,9 +48,21 @@ function show(p) {
     const buy = document.getElementById("buy");
     if (p.buy_url && /^(https?:|mailto:)/.test(p.buy_url)) buy.href = p.buy_url;
     if (p.status !== "published") buy.textContent = "Notify me";
+    if (p.can_buy) { // paid on Stripe's checkout page
+        const money = cents => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: String(p.pay_currency).toUpperCase() }).format(cents / 100); }
+                                 catch (err) { return (cents / 100).toFixed(2) + " " + String(p.pay_currency || "").toUpperCase(); } };
+        const now = p.price_now || p.pay_amount;
+        buy.href = "#"; buy.textContent = "Buy now · " + money(now);
+        if (p.sale_active) { // Admin -> Products -> Sale price
+            const until = p.sale_until ? new Date(p.sale_until + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "long" }) : "";
+            buy.insertAdjacentHTML("beforebegin", `<p class="sale"><s>${esc(money(p.pay_amount))}</s> <strong>${esc(money(now))}</strong>${until ? ` <span>Sale price until ${esc(until)}</span>` : " <span>Sale price</span>"}</p>`);
+        }
+        buy.onclick = e => { e.preventDefault(); rsgBuy(p.id, buy); };
+        if (new URLSearchParams(location.search).get("cancelled")) buy.insertAdjacentHTML("beforebegin", '<p class="muted" style="margin:0 0 12px;font-size:14px">The payment was cancelled. Nothing was charged.</p>');
+    }
     if (/^https:\/\//.test(p.download_url || "") || /^\/files\//.test(p.download_url || "") || p.has_download) {
         const dl = document.getElementById("download");
-        dl.href = p.download_url || "#"; dl.dataset.dl = p.id; dl.style.display = ""; // counted, and checked for licence-only downloads
+        dl.href = "/get-rotahub?product=" + encodeURIComponent(p.name || p.id); dl.dataset.dl = p.id; dl.style.display = ""; // counted; the installer itself only goes to RotaHub
         document.getElementById("download-help").style.display = "";
     }
     document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");

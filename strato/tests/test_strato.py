@@ -12,6 +12,8 @@ are dropped):
     ROTAIDEM_TEST_MYSQL="mysql8=127.0.0.1:3308:user:password:db;mariadb=127.0.0.1:3306:user:password:db"
 """
 import base64
+import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -20,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 
@@ -61,6 +64,241 @@ class FakeResend:
 
     def stop(self):
         self.server.shutdown()
+
+
+class FakeStripe:
+    """Stands in for api.stripe.com: Checkout sessions made, read back, and marked paid by the test."""
+
+    def __init__(self):
+        self.created, self.sessions = [], {}
+        self.accounts, self.transfers, self.idempotency = {}, [], {}  # Stripe Connect: accounts, Transfers made, idempotency keys seen
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data):
+                raw = json.dumps(data).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()).items()}
+                if not self.headers.get("Authorization", "").startswith("Bearer sk_test_"):
+                    return self.reply(400, {"error": {"message": "bad request"}})
+                if self.path == "/v1/checkout/sessions":
+                    outer.created.append(form)
+                    sid = f"cs_test_{len(outer.created)}{os.urandom(6).hex()}"
+                    outer.sessions[sid] = {"id": sid, "object": "checkout.session", "mode": form["mode"], "status": "open", "payment_status": "unpaid",
+                                           "amount_total": int(form["line_items[0][price_data][unit_amount]"]), "currency": form["line_items[0][price_data][currency]"],
+                                           "customer_email": form.get("customer_email"), "url": f"https://checkout.stripe.test/c/{sid}",
+                                           "metadata": {k[9:-1]: v for k, v in form.items() if k.startswith("metadata[")}}
+                    return self.reply(200, outer.sessions[sid])
+                if self.path == "/v1/accounts":  # Connect: a new Express account, payouts off until "onboarded"
+                    aid = f"acct_test_{len(outer.accounts) + 1}"
+                    outer.accounts[aid] = {"id": aid, "object": "account", "payouts_enabled": False, "email": form.get("email", "")}
+                    return self.reply(200, outer.accounts[aid])
+                if self.path == "/v1/account_links":  # the onboarding link we send the affiliate to
+                    return self.reply(200, {"object": "account_link", "url": f"https://connect.stripe.test/setup/{form.get('account', '')}"})
+                if self.path == "/v1/transfers":  # pay an affiliate; the idempotency key must not transfer twice
+                    key = self.headers.get("Idempotency-Key", "")
+                    if key and key in outer.idempotency:
+                        return self.reply(200, outer.idempotency[key])
+                    tr = {"id": f"tr_test_{len(outer.transfers) + 1}", "object": "transfer", "amount": int(form.get("amount", 0)),
+                          "currency": form.get("currency", ""), "destination": form.get("destination", "")}
+                    outer.transfers.append(tr)
+                    if key:
+                        outer.idempotency[key] = tr
+                    return self.reply(200, tr)
+                return self.reply(400, {"error": {"message": "bad request"}})
+
+            def do_GET(self):
+                path = urllib.parse.urlparse(self.path).path
+                if path == "/v1/checkout/sessions":
+                    return self.reply(200, {"object": "list", "data": []})
+                if path.startswith("/v1/accounts/"):
+                    acct = outer.accounts.get(path.rsplit("/", 1)[-1])
+                    return self.reply(200, acct) if acct else self.reply(404, {"error": {"message": "No such account"}})
+                if path == "/v1/accounts":
+                    return self.reply(200, {"object": "list", "data": list(outer.accounts.values())})
+                session = outer.sessions.get(path.rsplit("/", 1)[-1])
+                self.reply(200, session) if session else self.reply(404, {"error": {"message": "No such checkout.session"}})
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def pay(self, sid):
+        self.sessions[sid].update(status="complete", payment_status="paid")
+        return self.sessions[sid]
+
+    def stop(self):
+        self.server.shutdown()
+
+
+class FakeDiscord:
+    """Stands in for discord.com/api: OAuth2 code exchange, the user, server members and their roles, commands, messages.
+    An OAuth2 code "code-<discord id>" belongs to that Discord user."""
+    BOT = "Bot bot-token-test"
+
+    def __init__(self):
+        self.members, self.commands, self.messages = {}, [], []  # members: {discord id: set of role ids}
+        self.posted, self.crossposted = {}, []  # message id -> (channel, message) for Post to Discord
+        self.reactions, self.pins = [], []
+        self.bot_position = 5  # the bot's role; the buyer role is at 3. Below it, Discord refuses to give the role.
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data=None):
+                raw = json.dumps(data).encode() if data is not None else b""
+                self.send_response(status)
+                if raw:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def body(self):
+                return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
+            def handle_any(self):
+                parts, auth, raw = self.path.split("?")[0].strip("/").split("/"), self.headers.get("Authorization", ""), self.body()
+                if self.command == "POST" and self.path == "/oauth2/token":
+                    form = {k: v[0] for k, v in urllib.parse.parse_qs(raw.decode()).items()}
+                    ok = form.get("client_secret") == "client-secret-test" and form.get("code", "").startswith("code-")
+                    return self.reply(200, {"access_token": "access-" + form["code"][5:], "token_type": "Bearer"}) if ok else self.reply(400, {"error": "invalid_grant"})
+                if self.path == "/users/@me" and auth.startswith("Bearer access-"):
+                    uid = auth[len("Bearer access-"):]
+                    return self.reply(200, {"id": uid, "username": "pilot" + uid[-3:], "global_name": "Pilot " + uid[-3:]})
+                if auth != FakeDiscord.BOT:
+                    return self.reply(401, {"message": "401: Unauthorized"})
+                if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command == "PUT":
+                    data = json.loads(raw)
+                    if data.get("access_token") != "access-" + parts[3]:
+                        return self.reply(403, {"message": "Invalid OAuth2 access token"})
+                    if parts[3] in outer.members:
+                        return self.reply(204)
+                    outer.members[parts[3]] = set(data.get("roles") or [])
+                    return self.reply(201, {"user": {"id": parts[3]}})
+                if parts[:1] == ["guilds"] and parts[2:] == ["roles"]:
+                    return self.reply(200, [{"id": parts[1], "name": "@everyone", "position": 0, "permissions": "1024"},
+                                            {"id": "1200000000000000002", "name": "Verified buyer", "position": 3, "permissions": "0"},
+                                            {"id": "1200000000000000009", "name": "Rotaidem bot", "position": outer.bot_position, "permissions": str((1 << 28) | 1)}])
+                if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command == "GET":
+                    return self.reply(200, {"roles": ["1200000000000000009"]}) if parts[3] == "999" else self.reply(404, {"message": "Unknown Member"})
+                if parts[:1] == ["guilds"] and len(parts) == 6 and parts[4] == "roles":
+                    if outer.bot_position <= 3:
+                        return self.reply(403, {"message": "Missing Permissions"})
+                    if parts[3] not in outer.members:
+                        return self.reply(404, {"message": "Unknown Member"})
+                    (outer.members[parts[3]].add if self.command == "PUT" else outer.members[parts[3]].discard)(parts[5])
+                    return self.reply(204)
+                if parts[:1] == ["applications"] and self.command == "PUT":
+                    outer.commands = json.loads(raw)
+                    return self.reply(200, outer.commands)
+                if parts[:1] == ["guilds"] and parts[2:] == ["channels"]:
+                    return self.reply(200, [{"id": "1400000000000000001", "type": 4, "name": "Info", "position": 0},
+                                            {"id": "1400000000000000002", "type": 0, "name": "general", "parent_id": "1400000000000000001", "position": 1},
+                                            {"id": "1400000000000000003", "type": 5, "name": "announcements", "parent_id": "1400000000000000001", "position": 0},
+                                            {"id": "1400000000000000004", "type": 2, "name": "Voice", "position": 2}])
+                if parts[:1] == ["guilds"] and len(parts) == 2 and self.command == "GET":
+                    return self.reply(200, {"id": parts[1], "name": "Rotaidem", "approximate_member_count": 128, "approximate_presence_count": 17})
+                if parts[:1] == ["channels"] and len(parts) == 7 and parts[4] == "reactions":
+                    outer.reactions.append((parts[3], urllib.parse.unquote(parts[5])))
+                    return self.reply(204)
+                if parts[:1] == ["channels"] and len(parts) == 4 and parts[2] == "pins":
+                    outer.pins.append(parts[3])
+                    return self.reply(204)
+                if parts[:1] == ["channels"] and len(parts) == 5 and parts[4] == "crosspost":
+                    outer.crossposted.append(parts[3])
+                    return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and len(parts) == 4 and self.command in ("PATCH", "DELETE"):
+                    if parts[3] not in outer.posted:
+                        return self.reply(404, {"message": "Unknown Message"})
+                    if self.command == "DELETE":
+                        del outer.posted[parts[3]]
+                        return self.reply(204)
+                    outer.posted[parts[3]] = (parts[1], json.loads(raw))
+                    return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and self.command == "POST":
+                    outer.messages.append((parts[1], json.loads(raw)))
+                    mid = str(1500000000000000000 + len(outer.messages))
+                    outer.posted[mid] = outer.messages[-1]
+                    return self.reply(200, {"id": mid})
+                if self.path == "/users/@me":
+                    return self.reply(200, {"id": "999", "username": "Rotaidem bot"})
+                self.reply(404, {"message": "Unknown"})
+
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self):
+        self.server.shutdown()
+
+
+# Ed25519 signing for the test's own "Discord" (the website only checks signatures). RFC 8032.
+_EP = 2 ** 255 - 19
+_EL = 2 ** 252 + 27742317777372353535851937790883648493
+_ED = -121665 * pow(121666, _EP - 2, _EP) % _EP
+
+
+def _ed_add(a, b):
+    A, B = (a[1] - a[0]) * (b[1] - b[0]) % _EP, (a[1] + a[0]) * (b[1] + b[0]) % _EP
+    C, D = 2 * a[3] * b[3] * _ED % _EP, 2 * a[2] * b[2] % _EP
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % _EP, G * H % _EP, F * G % _EP, E * H % _EP)
+
+
+def _ed_mul(s, point):
+    q = (0, 1, 1, 0)
+    while s:
+        if s & 1:
+            q = _ed_add(q, point)
+        point, s = _ed_add(point, point), s >> 1
+    return q
+
+
+def _ed_base():
+    y = 4 * pow(5, _EP - 2, _EP) % _EP
+    x2 = (y * y - 1) * pow(_ED * y * y + 1, _EP - 2, _EP) % _EP
+    x = pow(x2, (_EP + 3) // 8, _EP)
+    if (x * x - x2) % _EP:
+        x = x * pow(2, (_EP - 1) // 4, _EP) % _EP
+    x = _EP - x if x & 1 else x
+    return (x, y, 1, x * y % _EP)
+
+
+def _ed_bytes(point):
+    zi = pow(point[2], _EP - 2, _EP)
+    x, y = point[0] * zi % _EP, point[1] * zi % _EP
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def ed25519_keys(seed):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little") & ((1 << 254) - 8) | (1 << 254)
+    return a, h[32:], _ed_bytes(_ed_mul(a, _ed_base()))
+
+
+def ed25519_sign(seed, message):
+    a, prefix, public = ed25519_keys(seed)
+    r = int.from_bytes(hashlib.sha512(prefix + message).digest(), "little") % _EL
+    big_r = _ed_bytes(_ed_mul(r, _ed_base()))
+    k = int.from_bytes(hashlib.sha512(big_r + public + message).digest(), "little") % _EL
+    return big_r + ((r + k * a) % _EL).to_bytes(32, "little")
+
+
+DISCORD_SEED = b"rotaidem-test-discord-application"
 
 
 class Response:
@@ -105,7 +343,7 @@ class Webspace:
     """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
     rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
-    def __init__(self, db_values, resend_url):
+    def __init__(self, db_values, resend_url, stripe_url="", discord_url=""):
         self.root = tempfile.mkdtemp(prefix="strato-")
         self.app = os.path.join(self.root, "rotaidem")
         os.mkdir(self.app)
@@ -118,6 +356,11 @@ class Webspace:
         self.values = {"SECRET_KEY": "s" * 64, "CHECK_KEY": "checkkey123", "SITE_URL": "https://rotaidem.test",
                        "LICENSE_API_KEY": "generator-key-0123456789", "RESEND_API_KEY": "re_test", "RESEND_API_URL": resend_url,
                        "MAIL_FROM": "Rotaidem <no-reply@rotaidem.com>", **db_values}
+        if stripe_url:
+            self.values.update(STRIPE_SECRET_KEY="sk_test_fake0123456789", STRIPE_API_URL=stripe_url, STRIPE_WEBHOOK_SECRET="whsec_testsecret")
+        if discord_url:
+            self.values.update(DISCORD_CLIENT_ID="112233445566778899", DISCORD_CLIENT_SECRET="client-secret-test", DISCORD_BOT_TOKEN="bot-token-test",
+                               DISCORD_PUBLIC_KEY=ed25519_keys(DISCORD_SEED)[2].hex(), DISCORD_API_URL=discord_url)
         if "MYSQL_HOST" not in self.values:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
@@ -177,12 +420,16 @@ class StratoCGITests:
         if cls.db_values:
             empty_mysql(cls.db_values)
         cls.resend = FakeResend()
-        cls.w = Webspace(cls.db_values, cls.resend.url)
+        cls.stripe = FakeStripe()
+        cls.discord = FakeDiscord()
+        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url)
 
     @classmethod
     def tearDownClass(cls):
         cls.w.remove()
         cls.resend.stop()
+        cls.stripe.stop()
+        cls.discord.stop()
 
     @classmethod
     def login(cls, who, password):
@@ -550,6 +797,39 @@ class StratoCGITests:
             with open(os.path.join(self.w.public, page)) as fh:
                 self.assertIn('<script src="/site-settings.js"></script>', fh.read(), page)
 
+    def test_link_previews_written_into_the_pages(self):
+        """Discord, Messenger and others never run scripts: the preview tags are in the page files."""
+        t = self.owner_token
+        page = lambda name: open(os.path.join(self.w.public, name), encoding="utf-8").read()  # noqa: E731
+        home = page("index.html")
+        self.assertEqual(home.count("<!-- share -->"), 1, "deploy writes them")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/hero.jpg">', home)
+        self.assertIn('<meta property="og:url" content="https://rotaidem.test/">', home)
+        self.assertIn('<meta property="og:title" content="Rotaidem | HeavyPro for Microsoft Flight Simulator 2024">', home, "the page's own title")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/clouds.jpg">', page("heavypro.html"), "each page its own picture")
+        self.assertNotIn("<!-- share -->", page("admin.html"))
+        bad = {"share": {"pages": {"/heavypro": {"image": "javascript:alert(1)"}}}}
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", bad, token=t).status, 400)
+        share = {"default": {"image": "/media/7.png"},
+                 "pages": {"/heavypro": {"image": "https://cdn.example.com/heavy.jpg", "title": 'HeavyPro "launch" & more', "description": "Feel the weight"},
+                           "/not-a-page": {"title": "dropped"}, "/about": {"title": "  "}}}
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"share": share}, token=t))["share"]
+        self.assertEqual(saved, {"default": {"image": "/media/7.png"}, "pages": {"/heavypro": share["pages"]["/heavypro"]}})
+        heavy = page("heavypro.html")
+        self.assertEqual(heavy.count("<!-- share -->"), 1, "replaced, not added again")
+        self.assertIn('<meta property="og:image" content="https://cdn.example.com/heavy.jpg">', heavy)
+        self.assertIn('<meta property="og:title" content="HeavyPro &quot;launch&quot; &amp; more">', heavy)
+        self.assertIn('<meta property="og:description" content="Feel the weight">', heavy)
+        self.assertIn('<meta name="twitter:image" content="https://cdn.example.com/heavy.jpg">', heavy)
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/media/7.png">', page("index.html"), "the default picture for the rest")
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/media/7.png">', page("addons/view.html"))
+        # pages the program itself sends carry the same tags
+        served = self.w.cgi("GET", "/heavypro").body.decode()
+        self.assertEqual(served.count("<!-- share -->"), 1)
+        self.assertIn("https://cdn.example.com/heavy.jpg", served)
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"share": {}}, token=t))
+        self.assertIn('<meta property="og:image" content="https://rotaidem.test/img/clouds.jpg">', page("heavypro.html"), "back to the page's own picture")
+
     # ---------- e-mail ----------
 
     def test_email_through_resend(self):
@@ -901,24 +1181,27 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
         listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
         self.assertEqual(listed["changelog"], [{"version": "1.1", "date": "2026-10-20", "notes": "Faster"}, {"version": "1.0", "date": "", "notes": ""}])
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["url"], product["download_url"])
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/download/gated-app"))["hub"], "the website only hands out RotaHub")
         self.ok(self.w.cgi("POST", "/api/download/gated-app"))  # same address again soon: counted once
         self.ok(self.w.cgi("POST", "/api/download/gated-app", remote_addr="198.51.100.20"))
         stats = self.ok(self.w.cgi("GET", "/api/admin/downloads", token=t))
         row = next(p for p in stats["products"] if p["product_id"] == "gated-app")
         self.assertEqual((row["total"], row["last_7"], row["last_30"]), (2, 2, 2))
-        # licence holders only: the link is hidden and the download needs an account with a licence
-        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
         listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "gated-app")
-        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True))
+        self.assertEqual((listed["download_url"], listed["has_download"]), ("", True), "the installer link stays off the website")
         staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "gated-app")
         self.assertEqual(staff_view["download_url"], product["download_url"], "the admin still sees the link")
-        r = self.w.cgi("POST", "/api/download/gated-app")
+        # RotaHub gets the installer; licence holders only: RotaHub needs an account with a licence
+        hub = {"User-Agent": "RotaHub/0.2.0 (Windows NT 10.0)"}
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", headers=hub))["url"], product["download_url"])
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "download_gate": "licence"}, token=t))
+        r = self.w.cgi("POST", "/api/download/gated-app", headers=hub)
         self.assertEqual((r.status, r.json().get("login")), (401, True))
         customer, email = self.customer("downloader")
-        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/download/gated-app", token=customer, headers=hub).status, 403)
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["hub"], "the website still offers RotaHub")
         self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": email, "product_id": "gated-app", "send_email": False}, token=t))
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer))["url"], product["download_url"])
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/gated-app", token=customer, headers=hub))["url"], product["download_url"])
         self.assertEqual(self.w.cgi("POST", "/api/download/no-such-product").status, 404)
 
     def test_dashboard_recap_and_team_board(self):
@@ -1064,6 +1347,642 @@ class StratoCGITests:
         for path in ("/api/admin/goals", "/api/admin/leaderboard", "/api/admin/link-hits"):
             self.assertEqual(self.w.cgi("GET", path, token=customer).status, 403, path)
 
+    def test_rotahub_add_a_key(self):
+        t = self.owner_token
+        alice, _ = self.customer("hubalice")
+        bob, _ = self.customer("hubbob")
+        keys = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 3, "send_email": False}, token=t))["keys"]
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}).status, 401)
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": "HPRO-NOPE"}, token=alice).status, 400)
+        r = self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0].lower()}, token=alice))
+        self.assertEqual((r["license"]["license_key"], r["license"]["status"], int(r["license"]["activations"])), (keys[0], "active", 0))
+        self.assertIn(keys[0], [l["license_key"] for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=alice))["licenses"]])
+        self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=alice))  # again: fine
+        r = self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[0]}, token=bob)
+        self.assertEqual(r.status, 409, "a key on another account stays there")
+        # a key sold to another address (a gift) can be added by whoever has it
+        lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[1])
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"email": "gift-giver@example.com"}, token=t))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[1]}, token=bob))["license"]["license_key"], keys[1])
+        lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == keys[2])
+        self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic['id']}", {"status": "revoked"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/account/licenses/claim", {"key": keys[2]}, token=bob).status, 403)
+
+    def upload(self, name, data, token, chunk=300):
+        upload_id = os.urandom(10).hex()
+        pieces = [data[i:i + chunk] for i in range(0, len(data), chunk)] or [b""]
+        r = None
+        for i, piece in enumerate(pieces):
+            r = self.w.cgi("POST", "/api/admin/files", {"name": name, "upload_id": upload_id, "index": i, "total": len(pieces),
+                                                        "data": base64.b64encode(piece).decode()}, token=token)
+            if r.status != 200:
+                return r
+        return r
+
+    def test_files_uploaded_from_the_admin(self):
+        t = self.owner_token
+        setup = b"MZ" + os.urandom(1000)
+        r = self.upload("RotaHub.exe", setup, t)
+        self.assertEqual(r.status, 200, r.body)
+        f = r.json()["file"]
+        self.assertTrue(f["url"].startswith("/files/RotaHub.exe?v="))
+        with open(os.path.join(self.w.public, "files", "RotaHub.exe"), "rb") as fh:
+            self.assertEqual(fh.read(), setup, "all pieces, in order, in the website's files folder")
+        self.assertEqual(os.stat(os.path.join(self.w.public, "files", "RotaHub.exe")).st_mode & 0o777, 0o644)
+        self.assertIn("RotaHub.exe", [x["name"] for x in self.ok(self.w.cgi("GET", "/api/admin/files", token=t))["files"]])
+        self.assertEqual(self.upload("Fake.exe", b"not a program" * 10, t).status, 400, "an .exe must be a Windows program")
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "Fake.exe")))
+        self.assertEqual(self.upload("my setup.exe", setup, t).status, 400)
+        self.assertEqual(self.upload("../evil.exe", setup, t).status, 400)
+        self.assertEqual(self.upload("script.php", b"<?php", t).status, 400)
+        customer, _ = self.customer("filepeek")
+        self.assertEqual(self.upload("Other.exe", setup, customer).status, 403)
+        self.assertEqual(self.w.cgi("GET", "/api/admin/files", token=customer).status, 403)
+        self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=customer).status, 403)
+        self.ok(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t))
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "RotaHub.exe")))
+        self.assertEqual(self.w.cgi("DELETE", "/api/admin/files/RotaHub.exe", token=t).status, 404)
+
+    def webhook(self, event, secret="whsec_testsecret", stamp=None):
+        payload = json.dumps(event).encode()
+        stamp = str(int(time.time()) if stamp is None else stamp)
+        sig = hmac.new(secret.encode(), stamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+        return self.w.cgi("POST", "/api/stripe/webhook", payload, headers={"Stripe-Signature": f"t={stamp},v1={sig}", "Content-Type": "application/json"})
+
+    def test_stripe_checkout_order_and_key(self):
+        t = self.owner_token
+        product = {"name": "Pay App", "id": "pay-app", "status": "published", "tagline": "Paid add-on", "pay_amount": "149", "pay_currency": "sek"}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "pay_amount": "lots"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "pay_currency": "xyz"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")
+        self.assertEqual((listed["can_buy"], listed["pay_amount"], listed["pay_currency"]), (True, 14900, "sek"))
+        r = self.w.cgi("POST", "/api/checkout/pay-app")
+        self.assertEqual((r.status, r.json().get("login")), (401, True))
+        buyer, email = self.customer("stripebuyer")
+        url = self.ok(self.w.cgi("POST", "/api/checkout/pay-app", token=buyer))["url"]
+        form = self.stripe.created[-1]
+        sid = url.rsplit("/", 1)[-1]
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], form["line_items[0][price_data][currency]"], form["customer_email"], form["metadata[product_id]"]),
+                         ("14900", "sek", email, "pay-app"))
+        self.assertEqual(form["success_url"], "https://rotaidem.test/checkout-done?session_id={CHECKOUT_SESSION_ID}")
+        self.assertFalse(self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["paid"])
+        # paid: the page after paying gets the key, the order is made once and the key emailed
+        self.stripe.pay(sid)
+        self.resend.requests.clear()
+        done = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        self.assertTrue(done["paid"])
+        self.assertTrue(done["license_key"].startswith("PAYA-"), done)
+        self.assertIn(done["license_key"], self.resend.requests[-1]["body"][0]["html"])
+        again = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        self.assertEqual(again["license_key"], done["license_key"])
+        self.assertEqual(self.ok(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid]}})), {"received": True})
+        orders = [o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o.get("payment_ref") == sid]
+        self.assertEqual(len(orders), 1, "one order however often it is confirmed")
+        self.assertEqual((float(orders[0]["amount"]), orders[0]["currency"], orders[0]["payment_status"]), (149.0, "sek", "Paid"))
+        self.assertIn(done["license_key"], [l["license_key"] for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=buyer))["licenses"]])
+        r = self.w.cgi("POST", "/api/checkout/pay-app", token=buyer)
+        self.assertEqual((r.status, r.json().get("owned")), (409, True), "already owns it")
+        # someone else cannot look at this order
+        other, _ = self.customer("stripepeek")
+        self.assertEqual(self.w.cgi("GET", "/api/checkout/status", token=other, query="session_id=" + sid).status, 404)
+        # the webhook alone makes the order when the buyer closed the page after paying
+        url = self.ok(self.w.cgi("POST", "/api/checkout/pay-app", token=other))["url"]
+        sid2 = url.rsplit("/", 1)[-1]
+        self.assertEqual(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.pay(sid2)}}, secret="whsec_wrong").status, 400)
+        self.assertEqual(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid2]}}, stamp=int(time.time()) - 3600).status, 400)
+        self.ok(self.webhook({"type": "checkout.session.completed", "data": {"object": self.stripe.sessions[sid2]}}))
+        self.assertTrue(any(l["product_id"] == "pay-app" for l in self.ok(self.w.cgi("GET", "/api/account/licenses", token=other))["licenses"]))
+        # not for sale: no price, or not available
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "status": "coming_soon"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/checkout/pay-app", token=other).status, 404)
+        self.assertFalse(next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "pay-app")["can_buy"])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/system", token=t))["stripe"], "test")
+
+    def test_affiliate_program(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Aff App", "id": "aff-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        # create an affiliate; code + percent are validated
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates", {"code": "x"}, token=t).status, 400, "code too short")
+        aff_user, aff_email = self.customer("affpartner")
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"code": "erik", "name": "Erik", "email": aff_email, "percent": "25"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates", {"code": "ERIK"}, token=t).status, 409, "code taken (case-insensitive)")
+        buyer, _ = self.customer("affbuyer")
+        # buying with ?ref carries the code to Stripe and, once paid, credits the affiliate
+        self.ok(self.w.cgi("POST", "/api/checkout/aff-app", {"ref": "erik"}, token=buyer))
+        form = self.stripe.created[-1]
+        self.assertEqual(form.get("metadata[affiliate_code]"), "erik")
+        sid = form and self.stripe.sessions and list(self.stripe.sessions)[-1]
+        self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual((row["orders"], row["pending"]["amount"], row["percent"]), (1, 25.0, 25), "25% of 100.00")
+        # the affiliate sees it on My account
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=aff_user))["affiliate"]
+        self.assertEqual((me["code"], me["orders"], me["pending"]["amount"]), ("erik", 1, 25.0))
+        self.assertTrue(me["link"].endswith("/?ref=erik"))
+        # self-referral earns nothing: the affiliate buying through their own link
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Self App", "id": "self-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/checkout/self-app", {"ref": "erik"}, token=aff_user))
+        sid2 = list(self.stripe.sessions)[-1]
+        self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=aff_user, query="session_id=" + sid2))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual(row["orders"], 1, "self-referral did not add a commission")
+        # mark paid clears what is owed; a customer cannot touch any of this
+        self.assertEqual(self.w.cgi("GET", "/api/admin/affiliates", token=buyer).status, 403)
+        afid = row["id"]
+        self.ok(self.w.cgi("POST", f"/api/admin/affiliates/{afid}/pay", {}, token=t))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "erik")
+        self.assertEqual((row["pending"]["amount"], row["paid"]["amount"]), (0, 25.0))
+        self.ok(self.w.cgi("DELETE", f"/api/admin/affiliates/{afid}", token=t))
+        self.assertFalse(any(a["code"] == "erik" for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"]))
+
+    def test_affiliate_accounts_apply_and_tracking(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Track App", "id": "track-app", "status": "published", "pay_amount": "80", "pay_currency": "usd"}, token=t))
+        joe, joe_email = self.customer("affjoe")
+        # a non-affiliate sees no account but learns the rate, so the apply form can show it
+        before = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))
+        self.assertEqual((before["affiliate"], before["percent"]), (None, 20))
+        # the customer applies; it starts pending and cannot be applied for twice
+        applied = self.ok(self.w.cgi("POST", "/api/account/affiliate/apply", {"about": "YouTube"}, token=joe))
+        self.assertEqual((applied["status"], applied["code"]), ("pending", "affjoe"))
+        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=joe).status, 409, "already applied")
+        mine = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"]
+        self.assertEqual(mine["status"], "pending")
+        # a pending code earns nothing and counts no clicks (only active codes do)
+        buyer, buyer_email = self.customer("trackbuyer")
+        self.ok(self.w.cgi("POST", "/api/affiliate/click", {"code": "affjoe"}))
+        self.ok(self.w.cgi("POST", "/api/checkout/track-app", {"ref": "affjoe"}, token=buyer))
+        sid = list(self.stripe.sessions)[-1]
+        self.assertNotIn("metadata[affiliate_code]", self.stripe.created[-1], "pending code is not an active referral")
+        self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+        row = next(a for a in self.ok(self.w.cgi("GET", "/api/admin/affiliates", token=t))["affiliates"] if a["code"] == "affjoe")
+        self.assertEqual((row["orders"], row["clicks"], row["status"]), (0, 0, "pending"))
+        afid = row["id"]
+        # staff approve it, keeping the code the applicant chose
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"id": afid, "code": "affjoe", "email": joe_email, "percent": "20", "status": "active"}, token=t))
+        # now the link counts clicks and a referred sale earns a tracked commission
+        buyer2, buyer2_email = self.customer("trackbuyer2")
+        self.ok(self.w.cgi("POST", "/api/affiliate/click", {"code": "affjoe"}))
+        self.ok(self.w.cgi("POST", "/api/checkout/track-app", {"ref": "affjoe"}, token=buyer2))
+        sid2 = list(self.stripe.sessions)[-1]
+        self.assertEqual(self.stripe.created[-1].get("metadata[affiliate_code]"), "affjoe")
+        self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer2, query="session_id=" + sid2))
+        # the affiliate sees the referred order on My account
+        mine = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=joe))["affiliate"]
+        self.assertEqual((mine["orders"], mine["pending"]["amount"], mine["clicks"]), (1, 16.0, 1), "20% of 80.00, one click")
+        self.assertEqual(len(mine["orders_list"]), 1)
+        o = mine["orders_list"][0]
+        self.assertEqual((o["product"], o["sale"], o["commission"], o["status"]), ("Track App", 80.0, 16.0, "pending"))
+        self.assertNotIn("buyer", o, "customers never see who bought")
+        # the affiliate saves where to be paid; staff see it and the buyer in the detail view
+        self.ok(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "paypal@affjoe.test"}, token=joe))
+        detail = self.ok(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=t))["affiliate"]
+        self.assertEqual(detail["payout"], "paypal@affjoe.test")
+        self.assertEqual(detail["orders_list"][0]["buyer"], buyer2_email)
+        # a customer cannot reach the admin detail or apply endpoints as staff
+        self.assertEqual(self.w.cgi("GET", f"/api/admin/affiliates/{afid}", token=buyer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "x"}, token=buyer).status, 404, "buyer is not an affiliate")
+
+    def test_affiliate_payouts_over_stripe_connect(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Pay App", "id": "pay-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
+        partner, partner_email = self.customer("partner")
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates", {"code": "partner", "email": partner_email, "percent": "20", "status": "active"}, token=t))
+        payer, _ = self.customer("payer")
+        # a referred, paid sale -> a pending commission of 20.00
+        self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer))
+        sid = list(self.stripe.sessions)[-1]; self.stripe.pay(sid)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer, query="session_id=" + sid))
+        # the affiliate starts Stripe onboarding; we get a link and an Express account is created
+        connect = self.ok(self.w.cgi("POST", "/api/account/affiliate/connect", {}, token=partner))
+        self.assertIn("connect.stripe.test/setup/acct_test_", connect["url"])
+        self.assertEqual(len(self.stripe.accounts), 1)
+        acct = list(self.stripe.accounts)[0]
+        # turn automatic payouts on with a 10.00 minimum
+        self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "10"}, token=t))
+        # before onboarding finishes, Stripe cannot pay: a run sends nothing
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
+        self.assertEqual(self.stripe.transfers, [])
+        # the affiliate finishes onboarding (Stripe enables payouts); now a run pays the commission
+        self.stripe.accounts[acct]["payouts_enabled"] = True
+        run = self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))
+        self.assertEqual(run["paid"], [{"code": "partner", "amount": 20.0, "currency": "USD", "transfer": "tr_test_1"}])
+        self.assertEqual(len(self.stripe.transfers), 1)
+        self.assertEqual((self.stripe.transfers[0]["amount"], self.stripe.transfers[0]["destination"]), (2000, acct))
+        self.assertEqual(len(self.stripe.idempotency), 1, "the transfer carried an idempotency key")
+        # the commission is now paid, and the affiliate sees it on My account
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
+        self.assertEqual((me["pending"]["amount"], me["paid"]["amount"], me["payouts_ready"]), (0, 20.0, True))
+        self.assertEqual(me["orders_list"][0]["status"], "paid")
+        # a second run pays nothing and never double-transfers
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
+        self.assertEqual(len(self.stripe.transfers), 1)
+        # with payouts on and the affiliate set up, a NEW referred sale pays instantly and directly:
+        # straight through the moment the sale is paid, no run and no minimum wait
+        payer2, _ = self.customer("payer2")
+        self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer2))
+        sid2 = list(self.stripe.sessions)[-1]; self.stripe.pay(sid2)
+        self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer2, query="session_id=" + sid2))
+        self.assertEqual(len(self.stripe.transfers), 2, "the second commission was paid instantly on the sale")
+        me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
+        self.assertEqual((me["pending"]["amount"], me["paid"]["amount"]), (0, 40.0))
+        self.assertTrue(all(o["status"] == "paid" for o in me["orders_list"]))
+        # customers cannot run payouts or change the settings
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=payer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": False}, token=payer).status, 403)
+
+    def test_sale_price_and_the_shop(self):
+        t = self.owner_token
+        product = {"name": "Sale App", "id": "sale-app", "status": "published", "pay_amount": "7.99", "pay_currency": "usd"}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "9.99"}, token=t).status, 400, "a sale is cheaper")
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "cheap"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "soon"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "2999-12-31"}, token=t))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "sale-app")
+        self.assertEqual((listed["sale_active"], listed["price_now"], listed["pay_amount"], listed["sale_until"]), (True, 599, 799, "2999-12-31"))
+        # the shop: discount codes are off until switched on; customers see none of it
+        buyer, _ = self.customer("salebuyer")
+        self.assertEqual(self.w.cgi("GET", "/api/admin/shop", token=buyer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": True}, token=buyer).status, 403)
+        shop = self.ok(self.w.cgi("GET", "/api/admin/shop", token=t))
+        self.assertEqual((shop["stripe"]["connected"], shop["stripe"]["mode"], shop["settings"]["promo_codes"]), (True, "test", False))
+        self.assertTrue(shop["stripe"]["webhook_url"].endswith("/api/stripe/webhook"))
+        self.ok(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": True}, token=t))
+        # buyers pay the sale price, and may enter a code
+        sid = self.ok(self.w.cgi("POST", "/api/checkout/sale-app", token=buyer))["url"].rsplit("/", 1)[-1]
+        form = self.stripe.created[-1]
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], form["line_items[0][price_data][currency]"], form.get("allow_promotion_codes")), ("599", "usd", "true"))
+        self.assertNotIn("metadata[endorsely_referral]", form, "no referral, none sent")
+        self.stripe.pay(sid)
+        self.assertTrue(self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["paid"])
+        item = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/shop", token=t))["products"] if p["id"] == "sale-app")
+        self.assertEqual((item["sale_active"], item["price_now"], item["can_buy"]), (True, 599, True))
+        self.assertEqual(item["sales"], [{"currency": "usd", "orders": 1, "total": 5.99, "last_30_days": 1}])
+        # a sale past its last day is over: the normal price again, and codes switched off
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "sale_amount": "5.99", "sale_until": "2020-01-01"}, token=t))
+        self.ok(self.w.cgi("POST", "/api/admin/shop", {"promo_codes": False}, token=t))
+        other, _ = self.customer("salelate")
+        self.assertEqual(self.w.cgi("POST", "/api/checkout/sale-app", {"referral": "bad referral <x>"}, token=other).status, 200)
+        self.assertNotIn("metadata[endorsely_referral]", self.stripe.created[-1], "an odd referral is left out")
+        self.ok(self.w.cgi("POST", "/api/checkout/sale-app", {"referral": "ref_8Kd2-x"}, token=other))
+        form = self.stripe.created[-1]
+        self.assertEqual(form["metadata[endorsely_referral]"], "ref_8Kd2-x", "Endorsely credits the affiliate")
+        self.assertEqual((form["line_items[0][price_data][unit_amount]"], "allow_promotion_codes" in form), ("799", False))
+        listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "sale-app")
+        self.assertEqual((listed["sale_active"], listed["price_now"]), (False, 799))
+        self.assertIn("save_shop", [a["action"] for a in self.ok(self.w.cgi("GET", "/api/admin/audit", token=t))["logs"]])
+
+    def test_aircraft_list_from_the_admin(self):
+        t = self.owner_token
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["aircraft"], [], "nothing saved: the pages keep their own list")
+        aircraft = [{"name": "PMDG 737", "profile": "Boeing 737", "note": "Full support", "home": True, "home_text": "Boeing narrow-body profile"},
+                    {"name": "  ", "profile": "dropped: no name"}, {"name": "<b>GA</b>", "profile": "Generic GA", "home": "yes", "extra": "ignored"}]
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"aircraft": aircraft}, token=t))["aircraft"]
+        self.assertEqual(saved, [aircraft[0], {"name": "<b>GA</b>", "profile": "Generic GA", "note": "", "home": True, "home_text": ""}])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["aircraft"][0]["name"], "PMDG 737")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": [{"name": "x"}] * 31}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": "PMDG"}, token=t).status, 400)
+        buyer, _ = self.customer("aircraftfan")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=buyer).status, 403)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"aircraft": []}, token=t))["aircraft"], [])
+
+    def discord_call(self, event, seed=DISCORD_SEED, stamp=None):
+        raw = json.dumps(event).encode()
+        stamp = stamp or str(int(time.time()))
+        sig = ed25519_sign(seed, stamp.encode() + raw).hex()
+        return self.w.cgi("POST", "/api/discord/interactions", raw, headers={"X-Signature-Ed25519": sig, "X-Signature-Timestamp": stamp})
+
+    def discord_link(self, token, discord_id):
+        """My account -> Link Discord -> Discord asks -> back to the website. Returns where the customer lands."""
+        url = self.ok(self.w.cgi("POST", "/api/discord/start", token=token))["url"]
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+        self.assertEqual((q["client_id"], q["scope"], q["redirect_uri"]), ("112233445566778899", "identify guilds.join", "https://rotaidem.test/api/discord/callback"))
+        r = self.w.cgi("GET", "/api/discord/callback", query=urllib.parse.urlencode({"code": "code-" + discord_id, "state": q["state"]}))
+        self.assertEqual(r.status, 302, r.stderr[-500:])
+        return r.headers["location"]
+
+    def test_discord_verified_buyer_role(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        buyer, buyer_email = self.customer("discordbuyer")
+        self.assertFalse(self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]["available"], "not until server and role are chosen")
+        self.assertEqual(self.w.cgi("POST", "/api/discord/start", token=buyer).status, 503)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "my server", "role_id": role}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=buyer).status, 403)
+        self.assertTrue(self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))["ready"])
+        try:
+            lic = self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": buyer_email, "product_id": "heavypro", "send_email": False}, token=t))
+            # a licence holder links Discord: joins the server with the buyer role
+            self.assertEqual(self.discord_link(buyer, "300000000000000001"), "https://rotaidem.test/account?discord=linked#discord")
+            self.assertEqual(self.discord.members["300000000000000001"], {role})
+            me = self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]
+            self.assertEqual((me["linked"], me["name"], me["buyer"]), (True, "Pilot 001", True))
+            # the role follows the licence
+            lic_id = next(l["id"] for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == lic["keys"][0])
+            self.ok(self.w.cgi("POST", f"/api/admin/licenses/{lic_id}", {"status": "revoked"}, token=t))
+            self.assertEqual(self.discord.members["300000000000000001"], set(), "revoked: role taken")
+            self.ok(self.w.cgi("POST", "/api/admin/licenses/bulk", {"action": "activate", "ids": [lic_id]}, token=t))
+            self.assertEqual(self.discord.members["300000000000000001"], {role}, "active again: role back")
+            # someone without a licence joins the server but gets no role; a bad or old link does nothing
+            other, _ = self.customer("discordfan")
+            self.assertEqual(self.discord_link(other, "300000000000000002"), "https://rotaidem.test/account?discord=linked-no-licence#discord")
+            self.assertEqual(self.discord.members["300000000000000002"], set())
+            r = self.w.cgi("GET", "/api/discord/callback", query="code=code-300000000000000003&state=1.9999999999.abc.forged")
+            self.assertTrue(r.headers["location"].endswith("?discord=expired#discord"))
+            self.assertNotIn("300000000000000003", self.discord.members)
+            self.assertTrue(self.w.cgi("GET", "/api/discord/callback", query="error=access_denied").headers["location"].endswith("?discord=cancelled#discord"))
+            # /verify in Discord: only signed calls; linked members get their role, others a Verify button
+            self.assertEqual(self.w.cgi("POST", "/api/discord/interactions", {"type": 1}).status, 401)
+            self.assertEqual(self.discord_call({"type": 1}, seed=b"someone else").status, 401)
+            self.assertEqual(self.ok(self.discord_call({"type": 1})), {"type": 1})
+            self.discord.members["300000000000000001"].clear()
+            answer = self.ok(self.discord_call({"type": 2, "data": {"name": "verify"}, "member": {"user": {"id": "300000000000000001"}}}))
+            self.assertEqual((answer["type"], answer["data"]["flags"]), (4, 64))
+            self.assertIn("You are verified", answer["data"]["content"])
+            self.assertEqual(self.discord.members["300000000000000001"], {role})
+            answer = self.ok(self.discord_call({"type": 2, "data": {"name": "verify"}, "member": {"user": {"id": "300000000000000009"}}}))
+            self.assertEqual(answer["data"]["components"][0]["components"][0]["url"], "https://rotaidem.test/account#discord")
+            # the admin: members, check everyone, /verify command, a Verify button in a channel
+            info = self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))
+            mine = {"300000000000000001", "300000000000000002"}
+            self.assertEqual({m["discord_id"]: m["buyer"] for m in info["members"] if m["discord_id"] in mine}, {"300000000000000001": True, "300000000000000002": False})
+            self.assertEqual(info["interactions_url"], "https://rotaidem.test/api/discord/interactions")
+            self.assertTrue(all(info["setup"].values()))
+            self.discord.members["300000000000000002"].add(role)  # given by hand in Discord, no licence
+            counts = self.ok(self.w.cgi("POST", "/api/admin/discord/sync", token=t))["counts"]
+            self.assertEqual((counts.get("removed"), counts.get("failed")), (1, None))
+            self.assertGreaterEqual(counts.get("given", 0), 1)
+            self.assertEqual(self.discord.members["300000000000000002"], set())
+            self.ok(self.w.cgi("POST", "/api/admin/discord/command", token=t))
+            self.assertEqual([c["name"] for c in self.discord.commands], ["verify"])
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "general", "text": "Hi"}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "1300000000000000003", "text": "Verify here"}, token=t))
+            channel, message = self.discord.messages[-1]
+            self.assertEqual((channel, message["content"], message["components"][0]["components"][0]["label"]), ("1300000000000000003", "Verify here", "Verify on rotaidem.com"))
+            # unlink: role off, account no longer linked; settings stay staff-only
+            self.ok(self.w.cgi("POST", "/api/discord/unlink", token=buyer))
+            self.assertEqual(self.discord.members["300000000000000001"], set())
+            self.assertFalse(self.ok(self.w.cgi("GET", "/api/me", token=buyer))["user"]["discord"]["linked"])
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord", token=buyer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
+
+    def test_pilot_quotes(self):
+        t = self.owner_token
+        quotes = [{"name": "Captain Erik L.", "about": "Airline pilot, Boeing 737", "text": "Closest a desk stick has felt.", "image": "/media/4.jpg"},
+                  {"name": "  ", "text": "no name: dropped"}, {"name": "Anna", "text": "", "image": ""},
+                  {"name": "Sim pilot", "text": "Smooth.", "image": "https://cdn.example.com/a.png", "extra": 1}]
+        saved = self.ok(self.w.cgi("POST", "/api/admin/settings", {"testimonials": quotes}, token=t))["testimonials"]
+        self.assertEqual(saved, [quotes[0], {"name": "Sim pilot", "about": "", "text": "Smooth.", "image": "https://cdn.example.com/a.png"}])
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["testimonials"][0]["name"], "Captain Erik L.")
+        bad = {"testimonials": [{"name": "X", "text": "Hi", "image": "javascript:alert(1)"}]}
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", bad, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"testimonials": [{"name": "x", "text": "y"}] * 21}, token=t).status, 400)
+        with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+            self.assertIn("Closest a desk stick has felt.", fh.read(), "published with the site settings")
+        fan, _ = self.customer("quotefan")
+        self.assertEqual(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=fan).status, 403)
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/settings", {"testimonials": []}, token=t))["testimonials"], [])
+
+    def test_post_to_discord_from_the_admin(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        self.assertEqual(self.w.cgi("GET", "/api/admin/discord/channels", token=t).status, 503, "not set up")
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            chans = self.ok(self.w.cgi("GET", "/api/admin/discord/channels", token=t))["channels"]
+            self.assertEqual([(c["name"], c["announcement"], c["category"]) for c in chans], [("announcements", True, "Info"), ("general", False, "Info")], "text channels only")
+            fan, _ = self.customer("discordposter")
+            post = {"channel_id": "1400000000000000003", "channel_name": "announcements", "ping": "buyers", "text": "New version!",
+                    "embed": {"title": "HeavyPro 0.7.0 is out", "description": "Smoother pitch", "url": "/heavypro", "image": "/media/3.png", "color": "#4cc38a"},
+                    "buttons": [{"label": "Update in RotaHub", "url": "/get-rotahub?product=HeavyPro"}, {"label": "", "url": ""}], "publish": True}
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", post, token=fan).status, 403)
+            for bad in ({"channel_id": "general"}, {"text": "", "embed": {}}, {"buttons": [{"label": "Go", "url": "javascript:alert(1)"}]},
+                        {"embed": {"title": "x", "image": "file:///c:/x.png"}}, {"text": "x" * 2001}):
+                self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", {**post, **bad}, token=t).status, 400, bad)
+            sent = self.ok(self.w.cgi("POST", "/api/admin/discord/message", post, token=t))
+            self.assertTrue(sent["published"])
+            channel, msg = self.discord.posted[sent["id"]]
+            self.assertEqual(channel, "1400000000000000003")
+            self.assertEqual(msg["content"], f"<@&{role}>\nNew version!")
+            self.assertEqual(msg["allowed_mentions"], {"parse": [], "roles": [role]}, "only the buyer role is pinged")
+            self.assertEqual(msg["embeds"][0], {"title": "HeavyPro 0.7.0 is out", "description": "Smoother pitch", "url": "https://rotaidem.test/heavypro",
+                                                 "color": 0x4cc38a, "image": {"url": "https://rotaidem.test/media/3.png"}})
+            self.assertEqual(msg["components"][0]["components"], [{"type": 2, "style": 5, "label": "Update in RotaHub", "url": "https://rotaidem.test/get-rotahub?product=HeavyPro"}])
+            self.assertEqual(self.discord.crossposted, [sent["id"]])
+            # nobody is pinged unless asked
+            plain = self.ok(self.w.cgi("POST", "/api/admin/discord/message", {"channel_id": "1400000000000000002", "text": "@everyone hi"}, token=t))
+            self.assertEqual(self.discord.posted[plain["id"]][1]["allowed_mentions"], {"parse": [], "roles": []})
+            # the list of posts; edit and delete
+            mine = lambda: [m for m in self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["messages"] if m["id"] in (sent["id"], plain["id"])]  # noqa: E731
+            history = mine()
+            self.assertEqual([m["summary"] for m in history], ["@everyone hi", "HeavyPro 0.7.0 is out"])
+            self.assertEqual(history[1]["draft"]["embed"]["title"], "HeavyPro 0.7.0 is out")
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/message/1400000000000000003/{sent['id']}", {**post, "embed": {**post["embed"], "title": "HeavyPro 0.7.1 is out"}}, token=t))
+            self.assertEqual(self.discord.posted[sent["id"]][1]["embeds"][0]["title"], "HeavyPro 0.7.1 is out")
+            self.assertEqual(mine()[1]["summary"], "HeavyPro 0.7.1 is out")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000003/{sent['id']}", token=t))
+            self.assertNotIn(sent["id"], self.discord.posted)
+            del self.discord.posted[plain["id"]]  # deleted in Discord by hand: forgotten here too
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000002/{plain['id']}", token=t))
+            self.assertEqual(mine(), [])
+            self.assertIn("562950222081089", self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"], "the bot may post and embed")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
+
+    def test_discord_extras_and_automatic_posts(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        general, news, sales = "1400000000000000002", "1400000000000000003", "1400000000000000002"
+        self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Old news", "content": "Posted before the news channel was chosen."}, token=t))
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            info = self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))
+            self.assertEqual(info["server"], {"name": "Rotaidem", "members": 128, "online": 17})
+            # #channel links, a poll, reactions and a pin
+            post = {"channel_id": general, "channel_name": "general", "text": "Talk about it in #general (not #nowhere)",
+                    "embed": {"title": "Vote", "description": "Results in #announcements"}, "reactions": "✈️ 🔥 <bad>",
+                    "pin": True, "poll": {"question": "Next profile?", "answers": ["iFly 737 MAX", "PMDG 777F"], "hours": 48, "multiple": True}}
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", {**post, "poll": {"question": "One answer?", "answers": ["only"]}}, token=t).status, 400)
+            mid = self.ok(self.w.cgi("POST", "/api/admin/discord/message", post, token=t))["id"]
+            msg = self.discord.posted[mid][1]
+            self.assertEqual(msg["content"], "Talk about it in <#1400000000000000002> (not #nowhere)")
+            self.assertEqual(msg["embeds"][0]["description"], "Results in <#1400000000000000003>")
+            self.assertEqual((msg["poll"]["question"]["text"], [a["poll_media"]["text"] for a in msg["poll"]["answers"]], msg["poll"]["duration"], msg["poll"]["allow_multiselect"]),
+                             ("Next profile?", ["iFly 737 MAX", "PMDG 777F"], 48, True))
+            self.assertEqual(self.discord.reactions[-2:], [(mid, "✈️"), (mid, "🔥")])
+            self.assertEqual(self.discord.pins[-1], mid)
+            # later: waits in the list; Post now or Cancel
+            later = time.strftime("%Y-%m-%dT%H:%M", time.gmtime(time.time() + 7200))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/message", {**post, "at": "2020-01-01T10:00"}, token=t).status, 400, "not in the past")
+            a = self.ok(self.w.cgi("POST", "/api/admin/discord/message", {"channel_id": general, "text": "Later 1", "at": later}, token=t))
+            b = self.ok(self.w.cgi("POST", "/api/admin/discord/message", {"channel_id": general, "text": "Later 2", "at": later}, token=t))
+            waiting = self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["scheduled"]
+            self.assertEqual([i["post"]["text"] for i in waiting], ["Later 1", "Later 2"])
+            before = len(self.discord.messages)
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/scheduled/{a['scheduled']}/now", token=t))
+            self.assertEqual(self.discord.messages[-1][1]["content"], "Later 1")
+            self.assertEqual(self.w.cgi("POST", f"/api/admin/discord/scheduled/{a['scheduled']}/now", token=t).status, 404, "posted once")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/scheduled/{b['scheduled']}", token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["scheduled"], [])
+            self.assertEqual(len(self.discord.messages), before + 1)
+            # automatic posts: product update (pings buyers), news (only new ones), sales (no customer details)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "news_channel": "#news"}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "updates_channel": news, "updates_ping": True,
+                                                               "news_channel": news, "sales_channel": sales}, token=t))
+            product = {"name": "Auto App", "id": "auto-app", "status": "published", "version": "1.0.0", "pay_amount": "5", "pay_currency": "usd",
+                       "changelog": [{"version": "1.1.0", "date": "2026-11-01", "notes": "Smoother pitch"}]}
+            self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+            count = len(self.discord.messages)
+            self.ok(self.w.cgi("POST", "/api/save-product", {**product, "tagline": "same version"}, token=t))
+            self.assertEqual(len(self.discord.messages), count, "no new version, no post")
+            self.ok(self.w.cgi("POST", "/api/save-product", {**product, "version": "1.1.0"}, token=t))
+            channel, msg = self.discord.messages[-1]
+            self.assertEqual((channel, msg["embeds"][0]["title"], msg["embeds"][0]["description"], msg["content"]), (news, "Auto App 1.1.0 is out", "Smoother pitch", f"<@&{role}>"))
+            self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Fresh news", "content": "Something new."}, token=t))
+            channel, msg = self.discord.messages[-1]
+            self.assertEqual((channel, msg["embeds"][0]["title"]), (news, "Fresh news"))
+            self.assertNotIn("Old news", [m[1].get("embeds", [{}])[0].get("title") if m[1].get("embeds") else "" for m in self.discord.messages])
+            buyer, email = self.customer("autosale")
+            sid = self.ok(self.w.cgi("POST", "/api/checkout/auto-app", token=buyer))["url"].rsplit("/", 1)[-1]
+            self.stripe.pay(sid)
+            self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))
+            channel, msg = self.discord.messages[-1]
+            self.assertEqual(channel, sales)
+            self.assertTrue(msg["content"].startswith("🎉 New sale: **Auto App** for 5.00 USD"), msg["content"])
+            self.assertNotIn(email, msg["content"])
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "updates_channel": "", "news_channel": "", "sales_channel": ""}, token=t))
+
+    def test_discord_set_up_check(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        self.assertFalse(self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))["ok"], "nothing chosen yet")
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
+            self.assertTrue(check["ok"], check)
+            # the bot's role below the buyer role: the check says so, and so does the member's last result
+            self.discord.bot_position = 2
+            check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
+            self.assertFalse(check["ok"])
+            self.assertIn("BELOW", " ".join(c["text"] for c in check["checks"] if not c["ok"]))
+            buyer, email = self.customer("rolecheck")
+            self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": email, "product_id": "heavypro", "send_email": False}, token=t))
+            self.discord_link(buyer, "300000000000000055")
+            member = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["members"] if m["discord_id"] == "300000000000000055")
+            self.assertIn("bot's role must be ABOVE", member["discord_result"])
+            self.assertEqual(self.discord.members["300000000000000055"], {role}, "joining with the role still worked")
+            # fixed in Discord: Check everyone again gives the role
+            self.discord.bot_position = 5
+            self.discord.members["300000000000000055"].clear()
+            self.assertGreaterEqual(self.ok(self.w.cgi("POST", "/api/admin/discord/sync", token=t))["counts"].get("given", 0), 1)
+            self.assertEqual(self.discord.members["300000000000000055"], {role})
+            member = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["members"] if m["discord_id"] == "300000000000000055")
+            self.assertIn("Role given", member["discord_result"])
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord/check", token=buyer).status, 403)
+        finally:
+            self.discord.bot_position = 5
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
+
+    def test_update_feed_for_rotahub(self):
+        t = self.owner_token
+        setup = b"MZ" + os.urandom(2000)
+        f = self.upload("FeedAppSetup.exe", setup, t).json()["file"]
+        product = {"name": "Feed App", "id": "feed-app", "status": "published", "version": "v1.2", "download_url": f["url"],
+                   "changelog": [{"version": "v1.2", "date": "2026-10-26", "notes": "Smoother"}]}
+        self.assertEqual(self.w.cgi("POST", "/api/save-product", {**product, "download_url": "javascript:alert(1)"}, token=t).status, 400)
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))
+        feed = self.ok(self.w.cgi("GET", "/api/hub/products"))
+        item = next(p for p in feed["products"] if p["id"] == "feed-app")
+        self.assertEqual((item["version"], item["version_number"], item["notes"], item["required"], item["licence_only"]), ("v1.2", "1.2.0", "Smoother", False, False))
+        self.assertTrue(item["updated_at"])
+        self.assertEqual((item["download"]["available"], item["download"]["kind"], item["download"]["size"]), (True, "exe", len(setup)))
+        self.assertEqual(item["download"]["sha256"], hashlib.sha256(setup).hexdigest(), "RotaHub can check the file it downloads")
+        self.assertNotIn("FeedAppSetup", json.dumps(item), "the installer's address stays out of the feed")
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"])), {"revision": feed["revision"], "unchanged": True})
+        self.ok(self.w.cgi("POST", "/api/save-product", product, token=t))  # saved again, nothing new
+        self.assertTrue(self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"])).get("unchanged"))
+        # a new version: RotaHub sees a new revision with the new number, notes and "required"
+        self.ok(self.w.cgi("POST", "/api/save-product", {**product, "version": "1.3.0", "update_required": True,
+                                                          "changelog": [{"version": "1.3.0", "notes": "Required fix"}] + product["changelog"]}, token=t))
+        feed2 = self.ok(self.w.cgi("GET", "/api/hub/products", query="since=" + feed["revision"]))
+        item = next(p for p in feed2["products"] if p["id"] == "feed-app")
+        self.assertEqual((item["version_number"], item["notes"], item["required"]), ("1.3.0", "Required fix", True))
+        self.assertEqual(self.ok(self.w.cgi("POST", "/api/download/feed-app", headers={"User-Agent": "RotaHub/0.2.0"}))["url"], f["url"])
+        self.ok(self.w.cgi("DELETE", "/api/admin/files/FeedAppSetup.exe", token=t))
+        self.assertFalse(os.path.exists(os.path.join(self.w.public, "files", "FeedAppSetup.exe.sha256")))
+        self.assertEqual(next(p for p in self.ok(self.w.cgi("GET", "/api/hub/products"))["products"] if p["id"] == "feed-app")["download"]["sha256"], "")
+        self.ok(self.w.cgi("DELETE", "/api/products/feed-app", token=t))
+
+    def test_downloads_through_rotahub_and_the_apps_look(self):
+        t = self.owner_token
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Hub Product", "id": "hub-product", "status": "published",
+                                                         "download_url": "https://rotaidem.test/files/HubProductSetup.exe"}, token=t))
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"downloads": {"rotahub_url": "ftp://x/RotaHub.exe"}}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_image": "javascript:alert(1)"}}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {"look": {"login_title": "x" * 61}}, token=t).status, 400)
+        saved = self.ok(self.w.cgi("POST", "/api/admin/hub", {
+            "downloads": {"rotahub_url": "/files/RotaHub.exe?v=abc123"},
+            "look": {"accent": "mint", "login_image": "/media/3.jpg", "library_image": "https://cdn.example.com/banner.jpg", "login_title": "Hello pilot"},
+            "products": [{"id": "hub-product", "image": "/img/hero.jpg"}],
+            "changelog": [{"version": "0.2.0", "date": "2026-10-26", "notes": "Messages from the website"}, {"version": "", "notes": "dropped"}]}, token=t))
+        try:
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub"))["changelog"], [{"version": "0.2.0", "date": "2026-10-26", "notes": "Messages from the website"}])
+            self.assertEqual((saved["look"]["accent"], saved["look"]["accent_color"], saved["look"]["login_title"]), ("mint", "#4cc38a", "Hello pilot"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/hub"))["products"][0]["image"], "/img/hero.jpg")
+            # visitors get RotaHub, RotaHub gets the installer
+            r = self.ok(self.w.cgi("POST", "/api/download/hub-product"))
+            self.assertEqual((r["hub"], r["url"], r["product"]), (True, "/files/RotaHub.exe?v=abc123", "Hub Product"))
+            r = self.ok(self.w.cgi("POST", "/api/download/hub-product", headers={"User-Agent": "RotaHub/0.2.0 (Windows NT 10.0)"}))
+            self.assertEqual(r, {"url": "https://rotaidem.test/files/HubProductSetup.exe"})
+            listed = next(p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"] if p["id"] == "hub-product")
+            self.assertEqual((listed["download_url"], listed["has_download"]), ("", True), "the installer link stays out of the website")
+            staff_view = next(p for p in self.ok(self.w.cgi("GET", "/api/products", token=t))["products"] if p["id"] == "hub-product")
+            self.assertEqual(staff_view["download_url"], "https://rotaidem.test/files/HubProductSetup.exe")
+            with open(os.path.join(self.w.public, "site-settings.js")) as fh:
+                self.assertIn('"rotahub_url": "/files/RotaHub.exe?v=abc123"', fh.read(), "the RotaHub page learns the link at once")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/hub", {}, token=t))
+        r = self.ok(self.w.cgi("POST", "/api/download/hub-product"))
+        self.assertEqual((r["hub"], r["url"]), (True, ""), "no RotaHub link yet: the RotaHub page says it is not ready")
+
+    def test_rotahub_settings_and_stats(self):
+        t = self.owner_token
+        public = self.ok(self.w.cgi("GET", "/api/hub"))
+        self.assertEqual((public["message"]["enabled"], public["min_version"], public["products"]), (False, "", []))
+        bad = [{"message": {"enabled": True, "text": ""}}, {"min_version": "two"}, {"help_url": "javascript:alert(1)"},
+               {"products": [{"id": "heavypro", "licence_store": "..\\\\evil"}]}, {"products": [{"id": "heavypro", "manifest_url": "http://plain.example/x.jws"}]},
+               {"products": [{"id": "heavypro", "key_prefix": "toolongprefix"}]}]
+        for b in bad:
+            self.assertEqual(self.w.cgi("POST", "/api/admin/hub", b, token=t).status, 400, b)
+        saved = self.ok(self.w.cgi("POST", "/api/admin/hub", {
+            "message": {"enabled": True, "text": "HeavyPro 0.6 is out", "level": "warning", "link": "/downloads"},
+            "min_version": "0.2.0", "help_url": "https://discord.gg/rotaidem",
+            "products": [{"id": "heavypro", "featured": True, "licence_ids": "heavypro, rotaidem-heavypro", "key_prefix": "hpro"},
+                         {"id": "secret-tool", "hidden": True}, {"id": "plain"}]}, token=t))
+        try:
+            public = self.ok(self.w.cgi("GET", "/api/hub"))
+            self.assertEqual(public["message"], {"enabled": True, "text": "HeavyPro 0.6 is out", "level": "warning", "link": "/downloads"})
+            self.assertEqual(public["min_version"], "0.2.0")
+            self.assertEqual([p["id"] for p in public["products"]], ["heavypro", "secret-tool"], "entries with nothing set are left out")
+            self.assertEqual((public["products"][0]["licence_ids"], public["products"][0]["key_prefix"]), (["heavypro", "rotaidem-heavypro"], "HPRO"))
+            self.assertNotIn("stats", public)
+            # app logins: counted per version, and shown as RotaHub on the account page
+            customer, email = self.customer("hubuser")
+            app = self.ok(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}, headers={"User-Agent": "RotaHub/0.1.0 (Windows NT 10.0)"}))["token"]
+            devices = [s["device"] for s in self.ok(self.w.cgi("GET", "/api/account/sessions", token=customer))["sessions"]]
+            self.assertIn("RotaHub on Windows", devices)
+            stats = self.ok(self.w.cgi("GET", "/api/admin/hub", token=t))["stats"]
+            self.assertGreaterEqual(stats["people"], 1)
+            self.assertIn({"version": "0.1.0", "people": 1}, stats["versions"])
+            self.assertGreaterEqual(stats["outdated"], 1, "0.1.0 is below the lowest version 0.2.0")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/hub", {}, token=app).status, 403)
+            self.assertEqual(self.w.cgi("GET", "/api/admin/hub", token=app).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/hub", {}, token=t))
+
     def test_user_notes_and_scheduled_posts(self):
         t = self.owner_token
         _, email = self.customer("noted")
@@ -1203,7 +2122,7 @@ class StratoCGITests:
         for name in os.listdir(folder):
             self.assertEqual(os.stat(os.path.join(folder, name)).st_mode & 0o777, 0o644, name)
         self.assertEqual(os.listdir(self.w.data).count("HeavyProSetup.exe.download"), 0)
-        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products"))["products"]}
+        products = {p["id"]: p for p in self.ok(self.w.cgi("GET", "/api/products", token=self.owner_token))["products"]}
         self.assertEqual(products["heavypro"]["download_url"], f"https://rotaidem.test/files/HeavyProSetup.exe?v={sha[:10]}")
         self.assertIn("now point to", out)
 

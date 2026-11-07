@@ -23,6 +23,8 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py email-test ADDRESS  sends a test e-mail and shows what Resend answers
     python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
     python3 rotaidem/strato/setup.py signing-key     shows the public key HeavyPro uses to check licence answers
+    python3 rotaidem/strato/setup.py stripe          sets up payments: the Stripe key and webhook secret (typed, never shown)
+    python3 rotaidem/strato/setup.py discord         connects the Discord bot for the verified buyer role (keys typed, never shown)
     python3 rotaidem/strato/setup.py fetch-installer [URL]  copies the newest HeavyPro installer from GitHub onto
                                                   rotaidem.com/files/ and points the Download buttons at it
 
@@ -260,15 +262,17 @@ RewriteRule ^(.+)$ $1.html [L]
 Header always set X-Content-Type-Options "nosniff"
 Header always set Referrer-Policy "strict-origin-when-cross-origin"
 Header always set X-Frame-Options "SAMEORIGIN"
-<FilesMatch "^(admin|account)\\.html$">
-Header set Cache-Control "private, no-store"
-</FilesMatch>
-# Pictures and fonts may be kept by the browser for a day; site-settings.js is checked every time.
+# Pictures and fonts may be kept by the browser for a day. Pages, scripts and the stylesheet are
+# checked every time (an unchanged file is just "304 not modified"), so a deploy shows at once.
 <FilesMatch "\\.(jpg|jpeg|png|webp|gif|svg|woff2?)$">
 Header set Cache-Control "public, max-age=86400"
 </FilesMatch>
-<FilesMatch "^site-settings\\.js$">
+<FilesMatch "\\.(html|js|css)$">
 Header set Cache-Control "no-cache"
+</FilesMatch>
+# The admin and account pages are never stored (after the rule above, so this one wins for them).
+<FilesMatch "^(admin|account)\\.html$">
+Header set Cache-Control "private, no-store"
 </FilesMatch>
 </IfModule>
 """
@@ -1102,6 +1106,112 @@ def cmd_email_test(address):
         say("  " + error)
 
 
+def cmd_stripe():
+    """Payments: the Stripe secret key (and the webhook's signing secret) into config.env, then a test call."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    say("Stripe payments. Find the keys at dashboard.stripe.com -> Developers -> API keys.")
+    say("Best: a restricted key (Create restricted key) with  Checkout Sessions: Write  and nothing else.")
+    say("Nothing you type is shown. Press Enter to keep what is there now.")
+    say()
+    key = ask_secret("Secret or restricted key (sk_live_..., rk_live_..., or _test_ for trying it out)")
+    if key:
+        if not re.match(r"^(sk|rk)_(live|test)_[A-Za-z0-9]{10,}$", key):
+            say("That does not look like a Stripe secret key (sk_live_... or rk_live_...). Nothing was changed.")
+            sys.exit(1)
+        values["STRIPE_SECRET_KEY"] = key
+    say()
+    say("Webhook (recommended: orders are made even when a customer closes the page right after paying).")
+    say("In Stripe: Developers -> Webhooks -> Add endpoint:")
+    say(f"  URL     {site_url(values.get('SITE_URL'))}/api/stripe/webhook")
+    say("  Events  checkout.session.completed  and  checkout.session.async_payment_succeeded")
+    say("then reveal its Signing secret (whsec_...).")
+    hook = ask_secret("Signing secret (whsec_..., Enter = skip)")
+    if hook:
+        if not hook.startswith("whsec_"):
+            say("That does not look like a signing secret (whsec_...). Nothing was changed.")
+            sys.exit(1)
+        values["STRIPE_WEBHOOK_SECRET"] = hook
+    if key or hook:
+        write_config(config_path(data_dir), values)
+        say("Saved in " + config_path(data_dir) + " (only you can read it).")
+    secret = values.get("STRIPE_SECRET_KEY", "")
+    if not secret:
+        say("No Stripe key is set: the Buy buttons keep using each product's Buy link.")
+        return
+    say()
+    api = values.get("STRIPE_API_URL", "https://api.stripe.com").rstrip("/")
+    req = urllib.request.Request(api + "/v1/checkout/sessions?limit=1", headers={"Authorization": f"Bearer {secret}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        mode = "TEST mode (no real money)" if "_test_" in secret else "LIVE mode (real payments)"
+        say(f"Stripe answered: the key works, {mode}.")
+        say("Now give products a price in Admin -> Products -> Price at checkout. Their Buy buttons then open Stripe.")
+    except urllib.error.HTTPError as exc:
+        say(f"Stripe refused the key ({exc.code}). Check that it is copied completely and that a restricted key has "
+            "Checkout Sessions: Write.")
+    except OSError as exc:
+        say(f"Could not reach Stripe from this server: {exc}")
+
+
+def cmd_discord():
+    """Discord: the application's keys and its bot token into config.env, then a test call. The server and role are
+    chosen in Admin -> Discord."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    site = site_url(values.get("SITE_URL"))
+    say("Discord: verified buyers get a role (and with it the buyer channels).")
+    say("1. discord.com/developers/applications -> New Application, call it Rotaidem.")
+    say("2. OAuth2 -> Redirects -> Add:  " + site + "/api/discord/callback")
+    say("3. General Information -> Interactions Endpoint URL:  " + site + "/api/discord/interactions")
+    say("   (save it after this command has run and the website is deployed: Discord tests the address)")
+    say("Nothing secret you type is shown. Press Enter to keep what is there now.")
+    say()
+    changed = False
+    client_id = ask("Application ID (General Information, a long number)", values.get("DISCORD_CLIENT_ID", ""))
+    if client_id and client_id != values.get("DISCORD_CLIENT_ID"):
+        if not re.match(r"^\d{15,22}$", client_id):
+            say("That does not look like an application ID (a long number). Nothing was changed.")
+            sys.exit(1)
+        values["DISCORD_CLIENT_ID"], changed = client_id, True
+    public_key = ask("Public Key (General Information, 64 letters and digits)", values.get("DISCORD_PUBLIC_KEY", ""))
+    if public_key and public_key != values.get("DISCORD_PUBLIC_KEY"):
+        if not re.match(r"^[0-9a-fA-F]{64}$", public_key):
+            say("That does not look like the Public Key (64 letters and digits). Nothing was changed.")
+            sys.exit(1)
+        values["DISCORD_PUBLIC_KEY"], changed = public_key.lower(), True
+    secret = ask_secret("Client Secret (OAuth2 -> Reset Secret)")
+    if secret:
+        values["DISCORD_CLIENT_SECRET"], changed = secret, True
+    token = ask_secret("Bot token (Bot -> Reset Token)")
+    if token:
+        values["DISCORD_BOT_TOKEN"], changed = token, True
+    if changed:
+        write_config(config_path(data_dir), values)
+        say("Saved in " + config_path(data_dir) + " (only you can read it).")
+    if not values.get("DISCORD_BOT_TOKEN"):
+        say("No bot token yet: Discord stays off.")
+        return
+    say()
+    api = values.get("DISCORD_API_URL", "https://discord.com/api/v10").rstrip("/")
+    req = urllib.request.Request(api + "/users/@me", headers={"Authorization": "Bot " + values["DISCORD_BOT_TOKEN"],
+                                                              "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            bot = json.loads(resp.read())
+        say(f"Discord answered: the bot token works ({bot.get('username', 'bot')}).")
+        if values.get("DISCORD_CLIENT_ID"):
+            say("4. Invite the bot to your server (Manage Roles, and to post: Send Messages, Embed Links, reactions, pins, polls):")
+            say("   https://discord.com/oauth2/authorize?client_id=" + values["DISCORD_CLIENT_ID"] + "&scope=bot%20applications.commands&permissions=562950222081089")
+        say("5. In Discord, Server Settings -> Roles: drag the bot's role ABOVE the buyer role, or it cannot give it.")
+        say("6. Admin -> Discord on the website: paste the server ID and the buyer role ID, then press Add /verify.")
+    except urllib.error.HTTPError as exc:
+        say(f"Discord refused the bot token ({exc.code}). Copy it again from Bot -> Reset Token.")
+    except OSError as exc:
+        say(f"Could not reach Discord from this server: {exc}")
+
+
 def cmd_signing_key():
     """Print the public half of the licence signing key (safe to share; the private half stays in the database)."""
     data_dir = current_data_dir()
@@ -1234,7 +1344,10 @@ def cmd_fetch_installer(args):
     d = server.DB()
     row = d.first("SELECT id, download_url FROM products WHERE id = ?", product_id)
     if row:
-        d.run("UPDATE products SET download_url = ? WHERE id = ?", link, product_id)
+        try:  # updated_at tells RotaHub there is a new release
+            d.run("UPDATE products SET download_url = ?, updated_at = ? WHERE id = ?", link, server.utc_stamp(), product_id)
+        except Exception:  # noqa: BLE001 - a database from before that column: the link alone
+            d.run("UPDATE products SET download_url = ? WHERE id = ?", link, product_id)
         say(f"The Download buttons for '{product_id}' now point to:  {link}")
         if row.get("download_url") and not str(row["download_url"]).startswith(link.split("?")[0]):
             say(f"  (Before: {row['download_url']})")
@@ -1321,6 +1434,10 @@ def main():
         cmd_admin_password()
     elif command == "signing-key":
         cmd_signing_key()
+    elif command == "stripe":
+        cmd_stripe()
+    elif command == "discord":
+        cmd_discord()
     elif command == "fetch-installer":
         cmd_fetch_installer(args[1:])
     elif command in ("help", "-h", "--help"):
@@ -1328,7 +1445,7 @@ def main():
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test", "admin-password", "fetch-installer", "signing-key"]
+                 "check", "email-test", "admin-password", "fetch-installer", "signing-key", "stripe", "discord"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")

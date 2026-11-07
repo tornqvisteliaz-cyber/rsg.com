@@ -1,8 +1,9 @@
 // Shared layout: header toolbar with dropdowns, footer and login state.
 // <body data-layout="off"> skips the layout, data-footer="off" skips only the footer.
 const LOGO = "/logo.svg";
+const TRUSTPILOT = "https://www.trustpilot.com/review/rotaidem.com"; // our reviews (Trustpilot)
 const MENU = [
-    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
+    ["Products", "/addons/", [["/addons/", "All products", "Everything we make"], [TRUSTPILOT, "Reviews", "What customers say, on Trustpilot"], ["/compatibility", "Compatibility", "Supported aircraft and hardware"], ["/roadmap", "Roadmap", "What we are working on"]]],
     ["Support", "/support", [["/support", "Help and FAQ", "Answers to common questions"], ["/installation", "Installation guide", "Set up HeavyPro step by step"], ["/downloads", "Downloads", "Installers and updates"], ["/contact", "Contact us", "Email and contact form"]]],
     ["News", "/newsletter", null],
     ["Company", "/about", [["/about", "About us", "Who we are"], ["/work-at-rsg", "Careers", "Work with us"], ["/contact", "Contact", "Get in touch"]]],
@@ -10,6 +11,26 @@ const MENU = [
 // Path prefix when the site is served from a sub-folder (GitHub Pages preview sets <meta name="site-base">).
 const BASE = ((document.querySelector('meta[name="site-base"]') || {}).content || "").replace(/\/$/, "");
 function withBase(path) { return BASE && path.startsWith("/") && !path.startsWith(BASE + "/") ? BASE + path : path; }
+// Affiliate referral: an arriving ?ref=CODE is kept for 30 days and sent at checkout.
+(function () {
+    try {
+        const code = new URLSearchParams(location.search).get("ref");
+        if (!code || !/^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(code)) return;
+        localStorage.setItem("rsg_ref", JSON.stringify({ code, at: Date.now() }));
+        // Count the visit once per code, so affiliates see how often their link is opened.
+        if (localStorage.getItem("rsg_ref_hit") !== code) {
+            localStorage.setItem("rsg_ref_hit", code);
+            fetch(withBase("/api/affiliate/click"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).catch(() => {});
+        }
+    } catch (err) {}
+})();
+function affiliateRef() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("rsg_ref") || "null");
+        if (saved && Date.now() - saved.at < 30 * 864e5) return saved.code;
+    } catch (err) {}
+    return "";
+}
 document.addEventListener("click", e => {
     const a = e.target.closest && e.target.closest("a[href]");
     if (!BASE || !a) return;
@@ -42,15 +63,22 @@ function renderLayout() {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
-            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 22px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>
+            <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 18px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>${trustpilotBadge()}
                 <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
-            <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
+            <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="${TRUSTPILOT}" target="_blank" rel="noopener">Reviews</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a></div>
             <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a id="ft-mail" href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
         </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
         body.append(footer);
     }
 }
+
+// The Trustpilot badge: <span data-trustpilot></span> (or data-trustpilot="ask" to invite a review) is filled in on every page.
+function trustpilotBadge(ask) {
+    return `<a class="tp-badge" href="${TRUSTPILOT}" target="_blank" rel="noopener"><span class="tp-star" aria-hidden="true">★</span><strong>Trustpilot</strong>` +
+        `<span>${ask ? "Review us" : "Read our reviews"}</span></a>`;
+}
+document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("[data-trustpilot]").forEach(el => { el.innerHTML = trustpilotBadge(el.dataset.trustpilot === "ask"); }));
 
 function paintAuth() {
     const box = document.getElementById("auth-links");
@@ -72,6 +100,7 @@ async function rsgDownload(productId, fallback) {
     try {
         const res = await fetch(withBase("/api/download/" + encodeURIComponent(productId)), { method: "POST", headers: token ? { "X-Rotaidem-Token": token } : {} });
         const data = await res.json().catch(() => ({}));
+        if (res.ok && data.hub) { location.href = withBase("/get-rotahub?product=" + encodeURIComponent(data.product || "")); return; } // downloads go through RotaHub
         if (res.ok && data.url) { location.href = data.url; return; }
         if (data.login) { if (confirm(data.error + "\n\nLog in now?")) location.href = withBase("/login?next=" + encodeURIComponent(location.pathname)); return; }
         if (data.error) { alert(data.error); return; }
@@ -84,6 +113,24 @@ document.addEventListener("click", e => {
     e.preventDefault();
     rsgDownload(b.dataset.dl, b.getAttribute("href") && b.getAttribute("href") !== "#" ? b.getAttribute("href") : "");
 });
+
+// Buy with Stripe Checkout (products with a price at checkout): logged in -> Stripe's payment page.
+async function rsgBuy(productId, button) {
+    const token = localStorage.getItem("rsg_token");
+    if (!token) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
+    if (button) { button.dataset.label = button.dataset.label || button.textContent; button.textContent = "Opening checkout…"; button.style.pointerEvents = "none"; }
+    try {
+        // Endorsely (affiliates): the referral this visitor came with goes to Stripe, so the sale is credited
+        const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token, "Content-Type": "application/json" },
+            body: JSON.stringify({ referral: window.endorsely_referral || "", ref: affiliateRef() }) });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.url) { location.href = data.url; return; }
+        if (data.login) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
+        alert(data.error || "The checkout could not be opened. Please try again.");
+        if (data.owned) location.href = withBase("/account");
+    } catch (err) { alert("The checkout could not be opened. Check your connection and try again."); }
+    if (button) { button.textContent = button.dataset.label; button.style.pointerEvents = ""; }
+}
 
 function rsgLogout() {
     const token = localStorage.getItem("rsg_token");
@@ -108,7 +155,7 @@ const STATUS_LABEL = { published: "Available", coming_soon: "Coming soon", in_de
 function productCard(p) {
     return `<a class="product" href="/addons/view?id=${encodeURIComponent(p.id)}"><div class="img"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div>` +
         `<div class="meta"><h3>${esc(p.name)}</h3><span class="price">${esc(p.price || "")}</span></div>` +
-        `<div class="sub">${esc(p.tagline || p.simulator || "")} · ${esc(STATUS_LABEL[p.status] || p.status || "")}</div></a>`;
+        `<div class="sub">${esc(p.tagline || p.simulator || "")}</div><span class="badge status ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status || "")}</span></a>`;
 }
 
 // Any <form data-subscribe> with an email field signs the visitor up for product emails.
@@ -218,6 +265,23 @@ function applyLists(site) {
     const roadmap = document.querySelector("[data-roadmap]");
     if (roadmap && (site.roadmap || []).length) roadmap.innerHTML = site.roadmap.map(i =>
         `<div><span class="when">${esc(i.stage)}</span><div><h3>${esc(i.title)}</h3>${i.text ? `<p class="muted" style="white-space:pre-line">${esc(i.text)}</p>` : ""}</div></div>`).join("");
+    // Admin -> Aircraft: the supported aircraft on the home, Compatibility and HeavyPro pages
+    const aircraft = site.aircraft || [];
+    if (aircraft.length) {
+        const home = document.querySelector('[data-aircraft="home"]'), table = document.querySelector('[data-aircraft="table"]'), names = document.querySelector('[data-aircraft="names"]');
+        if (home) home.innerHTML = aircraft.filter(a => a.home).map(a => `<div><strong>${esc(a.name)}</strong><span>${esc(a.home_text || a.profile)}</span></div>`).join("");
+        if (table) table.innerHTML = aircraft.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.profile)}</td><td class="muted">${esc(a.note)}</td></tr>`).join("");
+        if (names) names.textContent = aircraft.map(a => a.name).join(", ");
+    }
+    // Admin -> Pilot quotes: "What pilots say" with their picture, shown wherever a page has the section
+    const quotes = site.testimonials || [];
+    if (quotes.length) document.querySelectorAll("[data-testimonials]").forEach(section => {
+        const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+        section.querySelector("[data-testimonials-list]").innerHTML = quotes.map(q => `<figure class="quote"><blockquote>${esc(q.text)}</blockquote><figcaption>` +
+            (q.image ? `<img class="avatar" src="${esc(safeImage(q.image))}" alt="" loading="lazy">` : `<span class="avatar" aria-hidden="true">${esc(initials(q.name))}</span>`) +
+            `<span><strong>${esc(q.name)}</strong>${q.about ? `<small>${esc(q.about)}</small>` : ""}</span></figcaption></figure>`).join("");
+        section.hidden = false;
+    });
     const faq = document.querySelector("[data-faq]");
     if (faq && (site.faq || []).length) faq.innerHTML = site.faq.map(i =>
         `<details><summary>${esc(i.q)}</summary><p style="white-space:pre-line">${esc(i.a)}</p></details>`).join("");
