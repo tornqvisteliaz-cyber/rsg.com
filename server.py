@@ -157,7 +157,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-11-07-affiliate-payouts"
+SCHEMA_VERSION = "2026-11-08-licence-columns"
 
 
 def ensure_schema():
@@ -236,7 +236,9 @@ def ensure_schema():
                           # automatic payouts over Stripe Connect: the affiliate's connected account and whether Stripe can pay it
                           ("affiliates", f"stripe_account {word}"), ("affiliates", "payouts_ready INTEGER DEFAULT 0"),
                           # the Stripe transfer that settled a commission (empty when paid by hand)
-                          ("affiliate_commissions", f"transfer_id {word}")):
+                          ("affiliate_commissions", f"transfer_id {word}"),
+                          # optional licence end date (empty = never ends); lost in the affiliate merge
+                          ("licenses", f"expires_at {word}")):
         try:
             d.run(f"ALTER TABLE {table} ADD COLUMN {column}")
         except Exception:
