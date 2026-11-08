@@ -3045,7 +3045,7 @@ def admin_affiliate_payout_run():
 # the licence (bought, revoked, restored, claimed). Channels are locked to the role in Discord.
 # /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
 
-DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": ""}
+DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": "", "status_channel": ""}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
@@ -3385,7 +3385,7 @@ def admin_save_discord():
         return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
     products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
     old = discord_settings()
-    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel")}
+    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel", "status_channel")}
     if any(v and not SNOWFLAKE.match(v) for v in channels.values()):
         return err("Choose the channels from the list", 400)
     if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
@@ -4525,7 +4525,8 @@ SHARE_PAGES = (  # address, file, name in the admin, picture slot used when noth
     ("/compatibility", "compatibility.html", "Compatibility", "header"), ("/installation", "installation.html", "Installation guide", "header"),
     ("/support", "support.html", "Help and FAQ", "header"), ("/roadmap", "roadmap.html", "Roadmap", "header"),
     ("/newsletter", "newsletter.html", "News", "header"), ("/about", "about.html", "About", "about"),
-    ("/contact", "contact.html", "Contact", "header"), ("/work-at-rsg", "work-at-rsg.html", "Careers", "header"))
+    ("/contact", "contact.html", "Contact", "header"), ("/work-at-rsg", "work-at-rsg.html", "Careers", "header"),
+    ("/status", "status.html", "Status", "header"))
 SHARE_FILES = {f: (path, slot) for path, f, _name, slot in SHARE_PAGES}
 SHARE_BLOCK = re.compile(r"\s*<!-- share -->.*?<!-- /share -->", re.S)
 
@@ -5093,6 +5094,152 @@ def health():
     except Exception:  # noqa: BLE001 - the reason goes to the log, not to visitors
         app.logger.exception("Health check: database unavailable")
         return jsonify({"ok": False, "database": "unavailable"}), 503
+
+
+# ---------- status page (/status and Admin -> Status) ----------
+# STRATO has no cron, so the checks run when someone opens /status or the admin Status tab: at most
+# once a minute. Every 5 minutes a snapshot is kept for the 24-hour uptime meters.
+# shortcut: uptime only counts times someone was looking; point an outside pinger at /api/status if that matters.
+STATUS_FRESH_SECONDS, STATUS_SNAPSHOT_SECONDS, STATUS_SNAPSHOTS = 60, 300, 288
+
+
+class StatusOff(Exception):
+    """The service is not set up (no key in config.env): shown as "Not in use", not as down."""
+
+
+def status_database():
+    db().first("SELECT 1 AS ok")
+    stored = (db().first("SELECT value FROM meta WHERE key = 'schema_version'") or {}).get("value")
+    if stored != SCHEMA_VERSION:
+        raise RuntimeError(f"Tables are at version {stored}, the program expects {SCHEMA_VERSION}. Run: python3 rotaidem/strato/setup.py deploy")
+
+
+def status_licences():
+    signing_key()
+    db().first("SELECT COUNT(*) AS n FROM license_activation_log")
+    db().first("SELECT id, expires_at FROM licenses LIMIT 1")
+
+
+def status_accounts():
+    db().first("SELECT COUNT(*) AS n FROM users")
+    db().first("SELECT COUNT(*) AS n FROM sessions")
+
+
+def status_downloads():
+    if not (db().first("SELECT COUNT(*) AS n FROM products") or {}).get("n"):
+        raise RuntimeError("The catalogue has no products")
+
+
+def status_checkout():
+    if not STRIPE_SECRET_KEY:
+        raise StatusOff()
+    _, error = stripe_call("GET", "/v1/balance")
+    if error:
+        raise RuntimeError(error)
+
+
+def status_email():
+    if not RESEND_API_KEY:
+        raise StatusOff()
+
+
+def status_discord():
+    if not DISCORD_BOT_TOKEN:
+        raise StatusOff()
+    _, error, _ = discord_call("GET", "/users/@me", timeout=8)
+    if error:
+        raise RuntimeError(error)
+
+
+STATUS_CHECKS = (  # id, name on the page, check (None: the website answered, so it is up)
+    ("website", "Website", None), ("database", "Database", status_database),
+    ("licences", "HeavyPro licence activation", status_licences), ("accounts", "Accounts and My account", status_accounts),
+    ("downloads", "Downloads and RotaHub updates", status_downloads), ("checkout", "Checkout (Stripe)", status_checkout),
+    ("email", "Emails (licence keys, sign-up)", status_email), ("discord", "Discord bot", status_discord))
+
+
+def status_check(fn):
+    """(state, milliseconds, detail): "ok", "down" with the reason (staff only), or "off"."""
+    start = time.perf_counter()
+    state, detail = "ok", ""
+    try:
+        if fn:
+            fn()
+    except StatusOff:
+        state, detail = "off", "Not set up"
+    except Exception as exc:  # noqa: BLE001 - a failing check is exactly what this reports
+        state, detail = "down", f"{type(exc).__name__}: {exc}"[:300]
+    return state, int((time.perf_counter() - start) * 1000), detail
+
+
+def status_alert(before, checks):
+    """A post in the Discord status channel when something goes down or comes back. Never fails the caller."""
+    was = {c["id"]: c["state"] for c in (before or {}).get("checks", [])}
+    minute = int(time.time()) // 60
+    for c in checks:
+        if {was.get(c["id"]), c["state"]} != {"ok", "down"} or not discord_claim(f"status.{c['id']}.{minute}"):
+            continue  # shortcut: one failed check posts at once; require two in a row if it gets noisy
+        down = c["state"] == "down"
+        discord_auto("status", {"embed": {
+            "title": f"{'🔴' if down else '🟢'} {c['name']} {'is down' if down else 'is back up'}",
+            "description": "We are looking into it." if down else "Working again.",
+            "url": "/status", "color": "#e5484d" if down else "#4cc38a"},
+            "buttons": [{"label": "Live status", "url": "/status"}]})
+
+
+def status_run(force=False):
+    """The latest checks (run again when older than a minute) and the uptime history."""
+    now = time.time()
+    try:
+        last, history = get_setting("status.last", None), get_setting("status.history", []) or []
+    except Exception:  # noqa: BLE001 - database down: check anyway, nothing to compare with
+        last, history = None, []
+    if last and not force and now - float(last.get("at") or 0) < STATUS_FRESH_SECONDS:
+        return last, history
+    checks = []
+    for cid, name, fn in STATUS_CHECKS:
+        state, ms, detail = status_check(fn)
+        checks.append({"id": cid, "name": name, "state": state, "ms": ms, "detail": detail})
+    current = {"at": now, "checks": checks}
+    try:
+        set_setting("status.last", current)
+        if not history or now - float(history[-1]["t"]) >= STATUS_SNAPSHOT_SECONDS:
+            history = (history + [{"t": int(now), "s": {c["id"]: c["state"] for c in checks}}])[-STATUS_SNAPSHOTS:]
+            set_setting("status.history", history)
+        status_alert(last, checks)
+    except Exception:  # noqa: BLE001 - the answer still shows what is down
+        app.logger.exception("Status page: could not save the checks")
+    return current, history
+
+
+def status_answer(current, history, staff=False):
+    rows = []
+    for c in current["checks"]:
+        seen = [h["s"].get(c["id"]) for h in history if h["s"].get(c["id"]) in ("ok", "down")]
+        row = {k: c[k] for k in ("id", "name", "state", "ms")}
+        row["uptime"] = round(100 * seen.count("ok") / len(seen), 2) if seen else None
+        row["recent"] = [h["s"].get(c["id"], "") for h in history[-48:]]  # the last 4 hours, oldest first
+        if staff:
+            row["detail"] = c["detail"]
+        rows.append(row)
+    states = {r["id"]: r["state"] for r in rows}
+    overall = "down" if "down" in (states["website"], states["database"]) else "degraded" if "down" in states.values() else "ok"
+    stamp = lambda t: datetime.fromtimestamp(float(t), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    return {"overall": overall, "checked_at": stamp(current["at"]), "since": stamp(history[0]["t"]) if history else None, "checks": rows}
+
+
+@app.get("/api/status")
+def public_status():
+    return jsonify(status_answer(*status_run()))
+
+
+@app.get("/api/admin/status")
+def admin_status():
+    if not staff_user():
+        return err("Admin only", 403)
+    answer = status_answer(*status_run(force=request.args.get("refresh") == "1"), staff=True)
+    answer["discord_channel"] = bool(discord_settings()["status_channel"]) and discord_ready()
+    return jsonify(answer)
 
 
 @app.get("/")
