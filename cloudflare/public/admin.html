@@ -677,6 +677,8 @@
                         <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0 0"><input type="checkbox" id="da-ping"> Ping verified buyers</label></div>
                     <div class="field"><label for="da-news">News posts</label><select id="da-news"></select><div class="hint">When a news post goes up (also scheduled ones). Posts already up are not sent.</div></div>
                     <div class="field"><label for="da-sales">Sales (for the team)</label><select id="da-sales"></select><div class="hint">🎉 for every paid order: product and amount, no customer details. Use a staff-only channel.</div></div>
+                    <div class="field"><label for="da-welcome">Welcome</label><select id="da-welcome"></select><div class="hint">👋 when someone links Discord to their Rotaidem account for the first time.</div></div>
+                    <div class="field"><label for="da-team">Team feed (staff only)</label><select id="da-team"></select><div class="hint">📨 new messages (contact form and /support), 🧑‍✈️ new accounts, and a weekly report every Monday morning (UTC). Use a staff-only channel.</div></div>
                     <div class="field"><label for="da-status">Status alerts</label><select id="da-status"></select><div class="hint">🔴 when a part of the site goes down and 🟢 when it is back (see Status). Checked while someone has /status or the admin open.</div></div>
                 </div>
                 <button class="btn" type="submit">Save</button>
@@ -701,8 +703,8 @@
         <div class="panel" style="margin-bottom:24px">
             <div class="panel-head"><h2>In Discord</h2></div>
             <div class="panel-body">
-                <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the /verify command</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
-                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">/verify lets members check themselves; it answers with a Verify button. Check everyone again gives or takes the role for every linked member.</p>
+                <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the slash commands</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
+                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">Adds /verify, /status, /version, /licence (a member's own keys, only they see it), /download, /profile, /support (a form that lands in Messages) and /help. Press it again after an update to get new commands. Check everyone again gives or takes the role for every linked member.</p>
                 <form id="dc-post-form">
                     <div class="field"><label for="dc-channel">Post a Verify button in a channel</label><input id="dc-channel" inputmode="numeric" placeholder="Channel ID: right-click the channel, Copy Channel ID"></div>
                     <div class="field"><textarea id="dc-post-text" rows="3" maxlength="1800">Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.</textarea></div>
@@ -710,9 +712,48 @@
                 </form>
             </div>
         </div>
+        <div class="panel" style="margin-bottom:24px" id="dt-panel">
+            <div class="panel-head"><h2>Community tools</h2></div>
+            <div class="panel-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:28px">
+                <form id="dt-invite">
+                    <h3 style="margin:0 0 10px;font-size:15px">Invite link</h3>
+                    <div class="field"><label for="dt-inv-channel">Channel</label><select id="dt-inv-channel"></select></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dt-inv-age">Works for</label><select id="dt-inv-age"><option value="3600">1 hour</option><option value="86400" selected>1 day</option><option value="604800">7 days</option><option value="0">Forever</option></select></div>
+                        <div class="field"><label for="dt-inv-uses">Uses</label><select id="dt-inv-uses"><option value="0">No limit</option><option value="1">1</option><option value="10">10</option><option value="50">50</option></select></div>
+                    </div>
+                    <button class="btn btn-sm" type="submit">Make link</button>
+                    <p class="hint" id="dt-inv-out" style="margin-top:10px"></p>
+                </form>
+                <form id="dt-event">
+                    <h3 style="margin:0 0 10px;font-size:15px">Server event</h3>
+                    <div class="field"><label for="dt-ev-name">Name</label><input id="dt-ev-name" maxlength="100" placeholder="e.g. Sunday group flight: EGLL to KJFK"></div>
+                    <div class="field"><label for="dt-ev-place">Where</label><input id="dt-ev-place" maxlength="100" placeholder="e.g. VATSIM, or Voice channel: Flight deck"></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dt-ev-start">Starts (your time)</label><input id="dt-ev-start" type="datetime-local"></div>
+                        <div class="field"><label for="dt-ev-end">Ends</label><input id="dt-ev-end" type="datetime-local"></div>
+                    </div>
+                    <div class="field"><label for="dt-ev-desc">Details</label><textarea id="dt-ev-desc" rows="2" maxlength="1000" placeholder="Aircraft, route, briefing time…"></textarea></div>
+                    <button class="btn btn-sm" type="submit">Create event</button>
+                    <div id="dt-ev-list" style="margin-top:12px;font-size:13px"></div>
+                </form>
+                <form id="dt-give">
+                    <h3 style="margin:0 0 10px;font-size:15px">Giveaway winners</h3>
+                    <div class="field"><label for="dt-gv-link">Message link</label><input id="dt-gv-link" placeholder="Right-click the giveaway post, Copy Message Link"></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dt-gv-emoji">Reaction that counts</label><input id="dt-gv-emoji" value="🎉" maxlength="64"></div>
+                        <div class="field"><label for="dt-gv-n">Winners</label><input id="dt-gv-n" type="number" min="1" max="20" value="1"></div>
+                    </div>
+                    <div class="field"><label for="dt-gv-prize">Prize (optional)</label><input id="dt-gv-prize" maxlength="200" placeholder="e.g. a HeavyPro licence"></div>
+                    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dt-gv-announce" checked> The bot announces the winners under the post</label>
+                    <button class="btn btn-sm" type="submit">Pick winners</button>
+                    <p class="hint" id="dt-gv-out" style="margin-top:10px"></p>
+                </form>
+            </div>
+        </div>
         <div class="panel">
             <div class="panel-head"><h2>Linked members</h2><span class="muted" style="font-size:13px" id="dc-count"></span></div>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Last result</th><th>Linked</th></tr></thead><tbody id="dc-members"></tbody></table></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Last result</th><th>Linked</th><th></th></tr></thead><tbody id="dc-members"></tbody></table></div>
         </div>
     </section>
 
@@ -2464,8 +2505,11 @@ function renderDiscord() {
     $("dc-members").innerHTML = members.map(m => `<tr><td>${esc(m.name || "")}<div class="muted" style="font-size:13px">${esc(m.email || "")}</div></td><td>${esc(m.discord_name || m.discord_id)}</td>` +
         `<td>${m.buyer ? '<span class="badge published">Has a licence</span>' : '<span class="badge">No licence</span>'}</td>` +
         `<td style="font-size:13px;max-width:320px" class="${/refused|could not|Not in/.test(m.discord_result || "") ? "" : "muted"}">${esc(m.discord_result || "-")}</td>` +
-        `<td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td></tr>`).join("")
-        || empty(5, "Nobody has linked Discord yet. Customers do it under My account.");
+        `<td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td>` +
+        `<td><button class="btn btn-ghost btn-sm" type="button" data-dc-dm="${esc(m.id)}" data-dc-name="${esc(m.discord_name || m.name || "")}">Message</button></td></tr>`).join("")
+        || empty(6, "Nobody has linked Discord yet. Customers do it under My account.");
+    $("dt-panel").hidden = !dc.ready;
+    if (dc.ready && !state.dtLoaded) { state.dtLoaded = true; loadDtEvents(); }
 }
 // Post to Discord: the bot posts what you write here; what it posted can be edited or deleted
 state.dp = { image: "", buttons: [], editing: null, channels: [] };
@@ -2476,7 +2520,8 @@ async function loadDpChannels() {
         let cat = null;
         const opts = sel => `<option value="">${sel}</option>` + state.dp.channels.map(c => `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`).join("");
         $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
-        for (const id of ["da-updates", "da-news", "da-sales", "da-status"]) $(id).innerHTML = opts("Off");
+        for (const id of ["da-updates", "da-news", "da-sales", "da-status", "da-welcome", "da-team"]) $(id).innerHTML = opts("Off");
+        $("dt-inv-channel").innerHTML = opts("Choose a channel");
         renderAuto();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
             const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
@@ -2488,7 +2533,7 @@ async function loadDpChannels() {
 }
 function renderAuto() {
     const cfg = (state.discord || {}).settings || {};
-    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-status").value = cfg.status_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
+    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-status").value = cfg.status_channel || ""; $("da-welcome").value = cfg.welcome_channel || ""; $("da-team").value = cfg.team_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
 }
 async function loadDpHistory() {
     let d = {};
@@ -2594,7 +2639,7 @@ $("da-form").onsubmit = async e => {
     const cfg = (state.discord || {}).settings || {};
     try {
         const d = await post("/api/admin/discord", { guild_id: cfg.guild_id, role_id: cfg.role_id, products: cfg.products || [],
-            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, status_channel: $("da-status").value, updates_ping: $("da-ping").checked });
+            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, status_channel: $("da-status").value, welcome_channel: $("da-welcome").value, team_channel: $("da-team").value, updates_ping: $("da-ping").checked });
         state.discord.settings = d.settings; renderAuto(); toast("Automatic posts saved"); loadAudit();
     } catch (err) { toast(err.message, true); }
 };
@@ -2660,7 +2705,55 @@ $("dc-form").onsubmit = async e => {
         state.discord.settings = d.settings; state.discord.ready = d.ready; renderDiscord(); toast(d.ready ? "Discord is ready" : "Saved. Some set-up is still missing."); loadAudit();
     } catch (err) { toast(err.message, true); }
 };
-$("dc-command").onclick = async () => { try { await post("/api/admin/discord/command", {}); toast("/verify is in your server"); loadAudit(); } catch (err) { toast(err.message, true); } };
+$("dc-command").onclick = async () => { try { await post("/api/admin/discord/command", {}); toast("The slash commands are in your server"); loadAudit(); } catch (err) { toast(err.message, true); } };
+// Community tools: invite links, server events, giveaway winners, and a DM to a linked member
+$("dt-invite").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const d = await post("/api/admin/discord/invite", { channel_id: $("dt-inv-channel").value, max_age: Number($("dt-inv-age").value), max_uses: Number($("dt-inv-uses").value) });
+        $("dt-inv-out").innerHTML = `<code>${esc(d.url)}</code> <button class="btn btn-ghost btn-sm" type="button" data-dc-copy="${esc(d.url)}">Copy</button>`;
+        loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+async function loadDtEvents() {
+    try {
+        const d = await api("/api/admin/discord/events");
+        $("dt-ev-list").innerHTML = (d.events || []).length ? "<strong>Coming up</strong>" + d.events.map(ev => `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+            <span>${esc(ev.name)}<br><span class="muted">${esc(new Date(ev.scheduled_start_time).toLocaleString())}${ev.location ? ", " + esc(ev.location) : ""}${ev.user_count ? `, ${esc(ev.user_count)} interested` : ""}</span></span>
+            <button class="btn btn-ghost btn-sm" type="button" data-dt-ev-del="${esc(ev.id)}">Cancel</button></div>`).join("") : '<span class="muted">No events coming up.</span>';
+    } catch (err) { $("dt-ev-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; }
+}
+$("dt-event").onsubmit = async e => {
+    e.preventDefault();
+    const iso = id => $(id).value ? new Date($(id).value).toISOString() : "";
+    try {
+        await post("/api/admin/discord/events", { name: $("dt-ev-name").value, location: $("dt-ev-place").value, description: $("dt-ev-desc").value, start: iso("dt-ev-start"), end: iso("dt-ev-end") });
+        toast("Event created in Discord"); $("dt-event").reset(); loadDtEvents(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("dt-give").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const d = await post("/api/admin/discord/giveaway", { link: $("dt-gv-link").value, emoji: $("dt-gv-emoji").value, winners: Number($("dt-gv-n").value),
+            prize: $("dt-gv-prize").value, announce: $("dt-gv-announce").checked });
+        $("dt-gv-out").textContent = `${d.entered} entered. Winner${d.winners.length > 1 ? "s" : ""}: ${d.winners.map(w => w.name).join(", ")}`;
+        loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+document.addEventListener("click", async e => {
+    const del = e.target.closest("[data-dt-ev-del]"), dm = e.target.closest("[data-dc-dm]"), copy = e.target.closest("#dt-panel [data-dc-copy]");
+    if (copy) navigator.clipboard.writeText(copy.dataset.dcCopy).then(() => toast("Copied"));
+    if (del && confirm("Cancel this event in Discord? Members who were interested see it disappear.")) {
+        try { await api("/api/admin/discord/events/" + del.dataset.dtEvDel, { method: "DELETE" }); toast("Event cancelled"); loadDtEvents(); loadAudit(); }
+        catch (err) { toast(err.message, true); }
+    }
+    if (dm) {
+        const text = prompt(`Direct message to ${dm.dataset.dcName} from the Rotaidem bot:`);
+        if (!text || !text.trim()) return;
+        try { await post("/api/admin/discord/dm", { user_id: Number(dm.dataset.dcDm), text }); toast("Message sent in Discord"); loadAudit(); }
+        catch (err) { toast(err.message, true); }
+    }
+});
 $("dc-sync").onclick = async () => {
     try {
         const d = await post("/api/admin/discord/sync", {}), c = d.counts || {};
