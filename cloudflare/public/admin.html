@@ -358,6 +358,7 @@
     <button class="tab" data-tab="hub">RotaHub</button>
     <button class="tab" data-tab="discord">Discord <span class="count" id="c-discord"></span></button>
     <div class="group">System</div>
+    <button class="tab" data-tab="status">Status <span class="count" id="c-status"></span></button>
     <button class="tab" data-tab="activity">Activity log</button>
     <button class="tab" data-tab="security">Security</button>
     <div class="who"><div id="who-name" style="color:#fff;font-weight:500">…</div><div id="who-role" style="margin-bottom:10px"></div><a href="/">View site</a><button onclick="rsgLogout()">Log out</button></div>
@@ -432,6 +433,14 @@
                 <p class="muted" style="margin-top:0">Change the headings and paragraphs on the website. A new line becomes a line break, and <strong>**words**</strong> between double stars become bold. Changes show on the site straight away; Reset puts the original text back.</p>
                 <div id="t-list"><p class="muted">Loading…</p></div>
             </div>
+        </div>
+    </section>
+
+    <section class="pane" id="pane-status" data-title="Status">
+        <div class="panel">
+            <div class="panel-head"><h2 id="st-overall">Status</h2><div class="actions"><span class="muted" style="font-size:13px" id="st-checked"></span><a class="btn btn-ghost btn-sm" href="/status" target="_blank" rel="noopener">Public page</a><button class="btn btn-sm" type="button" onclick="loadStatus(true)">Check now</button></div></div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>State</th><th style="min-width:160px">Uptime (24 h)</th><th>Response</th><th>Why (staff only)</th></tr></thead><tbody id="st-list"></tbody></table></div>
+            <p class="muted" style="padding:0 20px 18px;margin:0;font-size:13px" id="st-discord"></p>
         </div>
     </section>
 
@@ -663,11 +672,12 @@
             <div class="panel-head"><h2>Automatic posts</h2></div>
             <div class="panel-body">
                 <p class="muted" style="margin-top:0;font-size:14px">The bot posts these by itself. Leave a channel empty to switch that one off.</p>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px">
                     <div class="field"><label for="da-updates">Product updates</label><select id="da-updates"></select><div class="hint">When a product gets a new version (Publish an update).</div>
                         <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0 0"><input type="checkbox" id="da-ping"> Ping verified buyers</label></div>
                     <div class="field"><label for="da-news">News posts</label><select id="da-news"></select><div class="hint">When a news post goes up (also scheduled ones). Posts already up are not sent.</div></div>
                     <div class="field"><label for="da-sales">Sales (for the team)</label><select id="da-sales"></select><div class="hint">🎉 for every paid order: product and amount, no customer details. Use a staff-only channel.</div></div>
+                    <div class="field"><label for="da-status">Status alerts</label><select id="da-status"></select><div class="hint">🔴 when a part of the site goes down and 🟢 when it is back (see Status). Checked while someone has /status or the admin open.</div></div>
                 </div>
                 <button class="btn" type="submit">Save</button>
             </div>
@@ -1281,6 +1291,24 @@ function showTab(name) {
     history.replaceState(null, "", "#" + name);
     if (name === "shop") loadShop().catch(err => toast(err.message, true)); // prices and orders change elsewhere
     if (name === "discord") loadDiscord(); // members link Discord on their own
+    if (name === "status") loadStatus().catch(err => toast(err.message, true));
+}
+
+// The same checks as rotaidem.com/status, with the reason when something is down.
+async function loadStatus(refresh = false) {
+    const d = await api("/api/admin/status" + (refresh ? "?refresh=1" : ""));
+    const down = d.checks.filter(c => c.state === "down").length;
+    $("c-status").textContent = down ? `${down} down` : "";
+    $("st-overall").textContent = { ok: "All systems working", degraded: "Some services have problems", down: "Major outage" }[d.overall] || d.overall;
+    $("st-checked").textContent = "Checked " + new Date(d.checked_at).toLocaleTimeString();
+    const color = s => s === "ok" ? "var(--ok, #4cc38a)" : s === "down" ? "#e5484d" : "#8d98a6";
+    $("st-list").innerHTML = d.checks.map(c => `<tr>
+        <td>${esc(c.name)}</td>
+        <td><span style="color:${color(c.state)}">● ${esc({ ok: "Working", down: "Down", off: "Not in use" }[c.state] || c.state)}</span></td>
+        <td>${c.uptime == null ? '<span class="muted">Collecting</span>' : `<div style="height:6px;background:#262a2e;border-radius:3px;overflow:hidden"><div style="height:100%;width:${Number(c.uptime)}%;background:${c.uptime >= 99 ? "#4cc38a" : c.uptime >= 95 ? "#f5a524" : "#e5484d"}"></div></div><span class="muted" style="font-size:12px">${esc(c.uptime)}%</span>`}</td>
+        <td>${c.state === "off" ? "" : esc(c.ms) + " ms"}</td>
+        <td class="muted" style="font-size:13px;max-width:360px;white-space:normal">${esc(c.detail || "")}</td></tr>`).join("");
+    $("st-discord").innerHTML = d.discord_channel ? "Outages and recoveries are posted in Discord." : 'Get a Discord post when something goes down: choose a channel under <a href="#discord" data-go="discord">Discord → Automatic posts → Status alerts</a>.';
 }
 
 // Downloads through the website's Download buttons (the same address within 10 minutes counts once).
@@ -2448,7 +2476,7 @@ async function loadDpChannels() {
         let cat = null;
         const opts = sel => `<option value="">${sel}</option>` + state.dp.channels.map(c => `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`).join("");
         $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
-        for (const id of ["da-updates", "da-news", "da-sales"]) $(id).innerHTML = opts("Off");
+        for (const id of ["da-updates", "da-news", "da-sales", "da-status"]) $(id).innerHTML = opts("Off");
         renderAuto();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
             const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
@@ -2460,7 +2488,7 @@ async function loadDpChannels() {
 }
 function renderAuto() {
     const cfg = (state.discord || {}).settings || {};
-    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
+    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-status").value = cfg.status_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
 }
 async function loadDpHistory() {
     let d = {};
@@ -2566,7 +2594,7 @@ $("da-form").onsubmit = async e => {
     const cfg = (state.discord || {}).settings || {};
     try {
         const d = await post("/api/admin/discord", { guild_id: cfg.guild_id, role_id: cfg.role_id, products: cfg.products || [],
-            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, updates_ping: $("da-ping").checked });
+            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, status_channel: $("da-status").value, updates_ping: $("da-ping").checked });
         state.discord.settings = d.settings; renderAuto(); toast("Automatic posts saved"); loadAudit();
     } catch (err) { toast(err.message, true); }
 };
@@ -3527,7 +3555,7 @@ async function loadSystem() {
     try { const g = await api("/api/admin/gate"); if (g.enabled && !g.unlocked) await askGate(); } catch (err) {}
     try { await loadOverview(); } catch (err) { toast(err.message, true); return; }
     api("/api/me").then(r => { if (r.user && !val("e-test-to")) $("e-test-to").value = r.user.email; }).catch(() => {});
-    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop(), loadDiscord(), loadAffiliates()].map(p => p.catch(err => toast(err.message, true))));
+    await Promise.all([loadProducts(), loadPosts(), loadOrders(), loadUsers(), loadMessages(), loadAudit(), loadCampaigns(), loadSubscribers(), loadLicenses(), loadMedia(), loadSite().then(loadTexts), loadGate(), loadTemplates(), loadDownloads(), loadInsights(), loadNotes(), loadInbox(), loadBlocklist(), loadSystem(), loadGoals(), loadCrew(), loadHub(), loadFiles(), loadUpdates(), loadShop(), loadDiscord(), loadAffiliates(), loadStatus()].map(p => p.catch(err => toast(err.message, true))));
     refreshAudience();
     showTab(location.hash.slice(1) || "dashboard");
 })();

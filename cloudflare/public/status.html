@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Status | Rotaidem</title>
+    <meta name="description" content="Live status of the Rotaidem website, licence activation, downloads and more.">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/site.css">
+    <script src="/site-settings.js"></script>
+    <style>
+        .st-banner { display: flex; align-items: center; gap: 14px; padding: 20px 24px; margin-bottom: 24px; border: 1px solid var(--line); background: var(--surface); }
+        .st-banner strong { color: var(--ink); font-size: 18px; }
+        .st-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: var(--muted); }
+        .ok .st-dot, .st-dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(76, 195, 138, .15); }
+        .down .st-dot, .st-dot.down { background: var(--danger); box-shadow: 0 0 0 4px rgba(229, 72, 77, .15); }
+        .degraded .st-dot { background: #f5a524; box-shadow: 0 0 0 4px rgba(245, 165, 36, .15); }
+        .st-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.6fr) 90px; gap: 20px; align-items: center; padding: 18px 24px; border-top: 1px solid var(--line); }
+        .st-row:first-child { border-top: 0; }
+        .st-name { display: flex; align-items: center; gap: 12px; color: var(--ink); font-weight: 500; }
+        .st-state { font-size: 13px; color: var(--muted); font-weight: 400; }
+        .st-meter { height: 8px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
+        .st-meter span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width .4s; }
+        .st-meter.low span { background: #f5a524; }
+        .st-meter.bad span { background: var(--danger); }
+        .st-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+        .st-strip { display: flex; gap: 2px; height: 18px; margin-top: 8px; }
+        .st-strip i { flex: 1; border-radius: 1px; background: var(--accent-soft); }
+        .st-strip i.ok { background: var(--ok); opacity: .75; }
+        .st-strip i.down { background: var(--danger); }
+        .st-ms { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); font-size: 14px; }
+        .st-ms small { display: block; color: var(--muted); font-size: 12px; }
+        @media (max-width: 640px) {
+            .st-row { grid-template-columns: 1fr 70px; gap: 10px 14px; padding: 16px; }
+            .st-row .st-bars { grid-column: 1 / -1; grid-row: 2; }
+        }
+    </style>
+</head>
+<body>
+<section class="page-head" data-image="header" style="background-image:url('/img/night.jpg')"><div class="wrap"><div class="crumbs"><a href="/">Home</a> / Status</div><h1>Status</h1><p>Live health of the website, licence activation, downloads and the services behind them. Checked every minute while this page is open.</p></div></section>
+<section class="section-tight"><div class="wrap">
+    <div class="st-banner" id="st-banner"><span class="st-dot"></span><div><strong id="st-title">Checking…</strong><div class="muted" id="st-when" style="font-size:13px"></div></div></div>
+    <div class="box box-flush" id="st-rows"><div class="st-row"><span class="muted">Loading…</span></div></div>
+    <p class="muted" style="margin-top:20px;font-size:14px">The bar is uptime over the last 24 hours; the strip below it shows the last 4 hours, five minutes per mark. Something wrong that this page does not show? <a href="/contact">Tell us</a>.</p>
+</div></section>
+<script src="/auth.js"></script>
+<script>
+const ST_TEXT = { ok: "Working", down: "Down", off: "Not in use", "": "No data" };
+const ST_BANNER = { ok: "All systems working", degraded: "Some services have problems", down: "Major outage" };
+
+function stRow(c) {
+    const up = c.uptime == null ? null : Number(c.uptime);
+    const level = up == null ? "" : up >= 99 ? "" : up >= 95 ? "low" : "bad";
+    const strip = (c.recent || []).map(s => `<i class="${esc(s)}" title="${esc(ST_TEXT[s] || ST_TEXT[""])}"></i>`).join("");
+    return `<div class="st-row">
+        <div class="st-name"><span class="st-dot ${esc(c.state)}"></span><div>${esc(c.name)}<div class="st-state">${esc(ST_TEXT[c.state] || c.state)}</div></div></div>
+        <div class="st-bars">${c.state === "off" ? '<span class="muted" style="font-size:13px">Not used on this site yet</span>' : `
+            <div class="st-meter ${level}" role="meter" aria-label="${esc(c.name)} uptime" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${up ?? ""}"><span style="width:${up ?? 0}%"></span></div>
+            <div class="st-meta"><span>${up == null ? "Collecting data" : up.toFixed(up === 100 ? 0 : 2) + "% uptime, 24 h"}</span></div>
+            <div class="st-strip">${strip}</div>`}</div>
+        <div class="st-ms">${c.state === "off" ? "" : `${esc(c.ms)} ms<small>response</small>`}</div>
+    </div>`;
+}
+
+async function stLoad() {
+    const started = performance.now();
+    let data = null;
+    try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (res.ok) data = await res.json();
+    } catch (e) { /* shown below */ }
+    const banner = document.getElementById("st-banner");
+    if (!data) {
+        banner.className = "st-banner down";
+        document.getElementById("st-title").textContent = "The status check itself is not answering";
+        document.getElementById("st-when").textContent = "The website or its database may be down. Trying again in a minute.";
+        return;
+    }
+    const site = data.checks.find(c => c.id === "website");
+    if (site) site.ms = Math.round(performance.now() - started); // what you felt: the round trip from your browser
+    banner.className = "st-banner " + data.overall;
+    document.getElementById("st-title").textContent = ST_BANNER[data.overall] || data.overall;
+    document.getElementById("st-when").textContent = "Last checked " + new Date(data.checked_at).toLocaleTimeString();
+    document.getElementById("st-rows").innerHTML = data.checks.map(stRow).join("");
+}
+stLoad();
+setInterval(stLoad, 60000);
+</script>
+</body>
+</html>
