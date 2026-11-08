@@ -2757,28 +2757,6 @@ def account_affiliate():
     return jsonify({"affiliate": data, "percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings()})
 
 
-@app.post("/api/account/affiliate/apply")
-def account_affiliate_apply():
-    """Any customer can ask to become an affiliate; it starts as 'pending' until staff approve it."""
-    user = current_user()
-    if not user:
-        return err("Log in first", 401)
-    if affiliate_for_user(user):
-        return err("You already have an affiliate account", 409)
-    b = body()
-    code = str(b.get("code") or "").strip() or slug(user.get("name") or "")[:31]
-    if not AFFILIATE_CODE.match(code):
-        return err("Pick a code of 3 to 31 letters, digits, dashes or underscores", 400)
-    if db().first("SELECT id FROM affiliates WHERE LOWER(code) = ?", code.lower()):
-        return err(f'The code "{code}" is taken. Try another one.', 409)
-    why = str(b.get("about") or "").strip()[:300]
-    db().run("INSERT INTO affiliates (code, email, user_id, name, percent, status, note, created_at, clicks) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0)",
-             code, (user.get("email") or "").lower(), user["id"], str(user.get("name") or "")[:100], AFFILIATE_DEFAULT_PERCENT,
-             ("Applied: " + why) if why else "Applied from My account", utc_stamp())
-    discord_auto("sales", {"text": f"📝 New affiliate application: **{user.get('name') or code}** wants the code `{code}`. Approve it in Admin -> Affiliates."})
-    return jsonify({"ok": True, "status": "pending", "code": code})
-
-
 @app.post("/api/account/affiliate/payout")
 def account_affiliate_payout():
     """Where the affiliate wants their money sent (PayPal email, IBAN, ...), shown to staff when paying."""
