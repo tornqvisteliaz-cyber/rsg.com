@@ -1133,7 +1133,7 @@ def admin_downloads():
     per_product = [{"product_id": r["product_id"], "total": r["n"],
                     "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(7 * 86400)),
                     "last_30": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(30 * 86400))}
-                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads GROUP BY product_id ORDER BY n DESC")]
+                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads WHERE product_id NOT LIKE ? GROUP BY product_id ORDER BY n DESC", "tester:%")]
     days = {}
     for r in db().all("SELECT created_at FROM downloads WHERE created_at >= ?", utc_stamp(30 * 86400)):
         day = str(r["created_at"])[:10]
@@ -4224,11 +4224,11 @@ def files_dir():
     return folder
 
 
-def file_row(name):
-    path = os.path.join(files_dir(), name)
+def file_row(name, folder=None):
+    path = os.path.join(folder or files_dir(), name)
     st = os.stat(path)
     return {"name": name, "size": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "url": f"/files/{name}?v={int(st.st_mtime):x}"}
+            "url": "" if folder else f"/files/{name}?v={int(st.st_mtime):x}"}
 
 
 @app.get("/api/admin/files")
@@ -4241,7 +4241,8 @@ def admin_files():
 
 @app.post("/api/admin/files")
 def admin_upload_file():
-    """One piece of a file: {name, upload_id, index, total, data (base64)}. The last piece puts the file in place."""
+    """One piece of a file: {name, upload_id, index, total, data (base64), private}. The last piece puts the file in
+    place: the public files/ folder, or with "private" the testers' folder that only signed tester links reach."""
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can upload files", 403)
@@ -4277,7 +4278,8 @@ def admin_upload_file():
     if not head.startswith(magic):
         os.remove(part)
         return err(f"That does not look like a real {os.path.splitext(name)[1]} file. Nothing was saved.", 400)
-    target = os.path.join(files_dir(), name)
+    folder = tester_dir() if b.get("private") else None
+    target = os.path.join(folder or files_dir(), name)
     digest = hashlib.sha256()
     with open(part, "rb") as fh:
         for block in iter(lambda: fh.read(1024 * 1024), b""):
@@ -4285,8 +4287,8 @@ def admin_upload_file():
     os.chmod(part, 0o644)
     shutil.move(part, target)
     write_sha256(target, digest.hexdigest())  # RotaHub checks downloads against it
-    audit(user, "upload_file", name)
-    return jsonify({"ok": True, "file": file_row(name)})
+    audit(user, "upload_file", name + (" (tester app)" if folder else ""))
+    return jsonify({"ok": True, "file": file_row(name, folder)})
 
 
 @app.delete("/api/admin/files/<name>")
@@ -4836,6 +4838,166 @@ def site_settings_js():
 def publish_site_settings():
     write_public("site-settings.js", site_settings_js().encode())
     publish_share_tags()
+
+
+# ---------- testers (Admin -> Testers) ----------
+# Testers are email addresses added in the admin (an account can come later). Logged in with that
+# email, My account shows Tester downloads. Tester apps are uploaded in pieces like other files, but
+# into the private data folder, which the web server never serves: a download is a link signed for
+# one tester that works for a few minutes, and the tester is checked again when it is used.
+TESTER_LINK_SECONDS = 15 * 60
+
+
+def tester_dir():
+    folder = os.path.join(str(DATA_DIR), "tester-files")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def tester_list():
+    return get_setting("testers.list", []) or []
+
+
+def tester_apps():
+    return get_setting("testers.apps", []) or []
+
+
+def is_tester(user):
+    """On the tester list, or Owner/Admin (so they can check what testers get)."""
+    if not user:
+        return False
+    return user.get("role") in ("Owner", "Admin") or (user.get("email") or "").lower() in {t["email"] for t in tester_list()}
+
+
+def tester_signature(app_id, user_id, expires):
+    return hmac.new(SECRET_KEY.encode(), f"tester:{app_id}:{user_id}:{expires}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def public_tester_app(a):
+    return {k: a.get(k) for k in ("id", "name", "version", "notes", "size", "created_at")}
+
+
+@app.get("/api/admin/testers")
+def admin_testers():
+    if not manager_user():
+        return err("Only the Owner or an Admin can manage testers", 403)
+    people = []
+    for t in tester_list():
+        account = db().first("SELECT id, name FROM users WHERE LOWER(email) = ?", t["email"])
+        people.append({**t, "account": (account or {}).get("name") or "", "has_account": bool(account)})
+    counts = {r["product_id"]: r for r in db().all(
+        "SELECT product_id, COUNT(*) AS n, COUNT(DISTINCT user_id) AS people FROM downloads WHERE product_id LIKE ? GROUP BY product_id", "tester:%")}
+    apps = [{**a, "downloads": int((counts.get("tester:" + a["id"]) or {}).get("n") or 0),
+             "people": int((counts.get("tester:" + a["id"]) or {}).get("people") or 0)} for a in tester_apps()]
+    return jsonify({"testers": people, "apps": apps})
+
+
+@app.post("/api/admin/testers")
+def admin_add_tester():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can manage testers", 403)
+    b = body()
+    email, note = str(b.get("email") or "").strip().lower(), str(b.get("note") or "").strip()[:120]
+    if not EMAIL_RE.match(email) or len(email) > 200:
+        return err("Enter the tester's email address", 400)
+    people = [t for t in tester_list() if t["email"] != email]
+    set_setting("testers.list", [{"email": email, "note": note, "added_at": utc_stamp(), "added_by": user["name"]}] + people)
+    audit(user, "add_tester", email)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/testers/remove")
+def admin_remove_tester():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can manage testers", 403)
+    email = str(body().get("email") or "").strip().lower()
+    set_setting("testers.list", [t for t in tester_list() if t["email"] != email])
+    audit(user, "remove_tester", email)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/tester-apps")
+def admin_add_tester_app():
+    """A tester app from a file uploaded with "private": name, version and what to test."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can add tester apps", 403)
+    b = body()
+    name, version = str(b.get("name") or "").strip()[:80], str(b.get("version") or "").strip()[:40]
+    notes, file = str(b.get("notes") or "").strip()[:2000], str(b.get("file") or "")
+    if not name:
+        return err("Give the app a name", 400)
+    if not FILE_NAME.match(file) or not os.path.isfile(os.path.join(tester_dir(), file)):
+        return err("Upload the file first", 400)
+    item = {"id": secrets.token_hex(6), "name": name, "version": version, "notes": notes, "file": file,
+            "size": os.path.getsize(os.path.join(tester_dir(), file)), "created_at": utc_stamp(), "created_by": user["name"]}
+    set_setting("testers.apps", [item] + tester_apps())
+    audit(user, "add_tester_app", f"{name} {version}".strip())
+    return jsonify({"ok": True, "app": item})
+
+
+@app.delete("/api/admin/tester-apps/<app_id>")
+def admin_delete_tester_app(app_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete tester apps", 403)
+    apps = tester_apps()
+    gone = next((a for a in apps if a["id"] == app_id), None)
+    if not gone:
+        return err("Tester app not found", 404)
+    left = [a for a in apps if a["id"] != app_id]
+    set_setting("testers.apps", left)
+    path = os.path.join(tester_dir(), gone["file"])
+    if not any(a["file"] == gone["file"] for a in left) and os.path.isfile(path):
+        os.remove(path)
+        if os.path.exists(path + ".sha256"):
+            os.remove(path + ".sha256")
+    audit(user, "delete_tester_app", f"{gone['name']} {gone.get('version') or ''}".strip())
+    return jsonify({"ok": True})
+
+
+@app.get("/api/account/tester")
+def account_tester():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not is_tester(user):
+        return jsonify({"tester": False, "apps": []})
+    return jsonify({"tester": True, "apps": [public_tester_app(a) for a in tester_apps()]})
+
+
+@app.post("/api/account/tester/<app_id>/link")
+def account_tester_link(app_id):
+    """A download link for this tester only, valid for a few minutes (a browser download cannot send the login)."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not is_tester(user):
+        return err("Tester downloads are for testers", 403)
+    if not any(a["id"] == app_id for a in tester_apps()):
+        return err("That tester app is no longer available", 404)
+    expires = int(time.time()) + TESTER_LINK_SECONDS
+    query = urllib.parse.urlencode({"u": user["id"], "e": expires, "s": tester_signature(app_id, user["id"], expires)})
+    return jsonify({"url": f"/api/tester/download/{app_id}?{query}"})
+
+
+@app.get("/api/tester/download/<app_id>")
+def tester_download(app_id):
+    try:
+        user_id, expires = int(request.args.get("u", "")), int(request.args.get("e", ""))
+    except ValueError:
+        return err("This download link is not valid", 403)
+    if expires < time.time() or not hmac.compare_digest(tester_signature(app_id, user_id, expires), str(request.args.get("s", ""))):
+        return err("This download link has expired. Open My account and press Download again.", 403)
+    user = db().first("SELECT id, email, role FROM users WHERE id = ?", user_id)
+    item = next((a for a in tester_apps() if a["id"] == app_id), None)
+    if not is_tester(user) or not item or not os.path.isfile(os.path.join(tester_dir(), item["file"])):
+        return err("This tester download is no longer available to you", 403)
+    db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
+             "tester:" + app_id, user_id, request.remote_addr or "", utc_stamp())
+    return send_from_directory(tester_dir(), item["file"], as_attachment=True)
 
 
 # ---------- link previews (Admin -> Site settings -> Link previews) ----------
