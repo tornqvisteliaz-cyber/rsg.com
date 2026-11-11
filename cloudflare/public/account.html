@@ -23,6 +23,11 @@
 
         <div class="split" style="align-items:start">
             <div>
+                <div class="box box-flush" id="tester" hidden style="margin-bottom:24px">
+                    <h3 style="padding:24px 24px 0">Tester downloads <span class="badge published" style="vertical-align:middle">Tester</span></h3>
+                    <p class="muted" style="padding:0 24px;font-size:14px;margin:4px 0 0">Test builds before everyone else gets them. Please don't share them; tell us what you find at <a href="/contact">Contact</a> or in Discord.</p>
+                    <div class="table-wrap"><table class="table"><thead><tr><th>App</th><th>Size</th><th>Added</th><th></th></tr></thead><tbody id="tester-apps"></tbody></table></div>
+                </div>
                 <div class="box box-flush" style="margin-bottom:24px">
                     <h3 style="padding:24px 24px 0">Licence keys</h3>
                     <p class="muted" style="padding:0 24px;font-size:14px;margin:4px 0 0">Enter your key in the HeavyPro installer. Each key works on a set number of computers; to move to a new PC, deactivate it in HeavyPro first or contact support.</p>
@@ -95,6 +100,7 @@ async function init() {
     document.getElementById("s-name").value = user.name;
     showDiscord(user.discord);
     loadAffiliate();
+    loadTester();
 
     // One failing list must not leave both tables on "Loading…".
     const list = async (url, field) => { try { const r = await fetch(url, { headers }); return r.ok ? (await r.json())[field] || [] : null; } catch (e) { return null; } };
@@ -110,6 +116,32 @@ async function init() {
         `<tr><td>#${esc(o.id)}</td><td>${esc(o.product_id || "-")}</td><td>${esc(o.payment_status)}</td><td>${o.currency ? Number(o.amount || 0).toFixed(2) + " " + esc(String(o.currency).toUpperCase()) : "$" + Number(o.amount || 0).toFixed(2)}</td><td class="muted">${esc(String(o.created_at || "").slice(0, 10))}</td></tr>`
     ).join("") : '<tr><td colspan="5" class="muted">No orders yet.</td></tr>';
 }
+
+// Tester downloads: only shown to testers. A download asks for a link that works a few minutes for this account only.
+async function loadTester() {
+    const d = await (await fetch("/api/account/tester", { headers })).json().catch(() => ({}));
+    const box = document.getElementById("tester");
+    box.hidden = !d.tester;
+    if (!d.tester) return;
+    const size = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round((b || 0) / 1024)) + " KB";
+    document.getElementById("tester-apps").innerHTML = (d.apps || []).map(a =>
+        `<tr><td><strong style="color:var(--ink);font-weight:500">${esc(a.name)}</strong> ${esc(a.version || "")}<div class="muted" style="font-size:13px;white-space:pre-line">${esc(a.notes || "")}</div></td>` +
+        `<td class="muted" style="white-space:nowrap">${size(a.size)}</td><td class="muted" style="white-space:nowrap">${esc(String(a.created_at || "").slice(0, 10))}</td>` +
+        `<td style="text-align:right"><button class="btn btn-sm" data-tester-app="${esc(a.id)}">Download</button></td></tr>`).join("")
+        || '<tr><td colspan="4" class="muted">Nothing to test right now. New test builds show up here.</td></tr>';
+}
+document.getElementById("tester-apps").onclick = async e => {
+    const b = e.target.closest("[data-tester-app]");
+    if (!b) return;
+    b.disabled = true;
+    try {
+        const r = await fetch(`/api/account/tester/${encodeURIComponent(b.dataset.testerApp)}/link`, { method: "POST", headers });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.url) throw new Error(d.error || "The download could not start. Try again.");
+        location.href = d.url;
+    } catch (err) { alert(err.message); }
+    finally { b.disabled = false; }
+};
 
 // Where you are logged in: each browser or computer that has logged in to this account.
 function ago(stamp) {

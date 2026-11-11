@@ -461,6 +461,7 @@ def signup():
         db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 1)",
                  name, email, hash_password(password))
         new_user = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email)
+        discord_auto("team", {"text": f"🧑‍✈️ New account: **{name[:80]}**"})
         return jsonify({"token": new_session(new_user["id"]), "name": name, "email": email, "role": "Customer", "is_admin": False})
     db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)",
              name, email, hash_password(password))
@@ -469,6 +470,7 @@ def signup():
     if error:
         db().run("DELETE FROM users WHERE id = ?", user["id"])  # nothing half-made that would block the address
         return err("We could not send the confirmation email right now. Please try again in a few minutes.", 502)
+    discord_auto("team", {"text": f"🧑‍✈️ New account: **{name[:80]}** (confirming their email)"})
     return jsonify({"verify": True, "email": email,
                     "message": f"Almost done: we sent a link to {email}. Click it to confirm your email and open your account."})
 
@@ -1131,7 +1133,7 @@ def admin_downloads():
     per_product = [{"product_id": r["product_id"], "total": r["n"],
                     "last_7": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(7 * 86400)),
                     "last_30": n("SELECT COUNT(*) AS n FROM downloads WHERE product_id = ? AND created_at >= ?", r["product_id"], utc_stamp(30 * 86400))}
-                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads GROUP BY product_id ORDER BY n DESC")]
+                   for r in db().all("SELECT product_id, COUNT(*) AS n FROM downloads WHERE product_id NOT LIKE ? GROUP BY product_id ORDER BY n DESC", "tester:%")]
     days = {}
     for r in db().all("SELECT created_at FROM downloads WHERE created_at >= ?", utc_stamp(30 * 86400)):
         day = str(r["created_at"])[:10]
@@ -1302,6 +1304,7 @@ def contact():
     db().run("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)",
              str(b.get("name", ""))[:200], email, str(b.get("message", ""))[:5000])
     send_auto_reply(str(b.get("name", ""))[:200], email)
+    discord_team_message(str(b.get("name", "")).strip() or email or "someone", b.get("message", ""), "contact form")
     return jsonify({"ok": True})
 
 
@@ -3045,12 +3048,13 @@ def admin_affiliate_payout_run():
 # the licence (bought, revoked, restored, claimed). Channels are locked to the role in Discord.
 # /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
 
-DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": "", "status_channel": ""}
+DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": "", "status_channel": "",
+                   "welcome_channel": "", "team_channel": ""}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
-# Add Reactions, Manage Messages (pins), Read Message History, Send Polls
-DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49))
+# Add Reactions, Manage Messages (pins), Read Message History, Send Polls, Manage Events
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33))
 
 
 def discord_settings():
@@ -3184,6 +3188,7 @@ def discord_callback():
         app.logger.warning("Discord link failed: %s", error or error2)
         return back("error")
     discord_id, name = str(me["id"]), str(me.get("global_name") or me.get("username") or "")[:100]
+    first_link = not db().first("SELECT id FROM users WHERE discord_id = ?", discord_id)
     db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE discord_id = ? AND id <> ?", discord_id, user["id"])
     db().run("UPDATE users SET discord_id = ?, discord_name = ?, discord_linked_at = ? WHERE id = ?", discord_id, name, utc_stamp(), user["id"])
     user = db().first("SELECT * FROM users WHERE id = ?", user["id"])
@@ -3195,6 +3200,8 @@ def discord_callback():
         db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: could not add them to the server: {join_error}"[:300], user["id"])
     db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'discord_linked', ?, ?, ?)",
              user["id"], f"{name} ({result})", request.remote_addr or "", utc_stamp())
+    if first_link and result != "not in server":
+        discord_welcome(discord_id, result == "given")
     return back("linked" if buyer else "linked-no-licence")
 
 
@@ -3274,7 +3281,7 @@ def ed25519_verify(public_key, message, signature):
 
 @app.post("/api/discord/interactions")
 def discord_interactions():
-    """Discord's calls for slash commands. Only /verify: link button, or the role at once when already linked."""
+    """Discord's calls for slash commands and the /support form. /verify: link button, or the role at once when already linked."""
     try:
         key, sig = bytes.fromhex(DISCORD_PUBLIC_KEY), bytes.fromhex(request.headers.get("X-Signature-Ed25519", ""))
     except ValueError:
@@ -3288,8 +3295,11 @@ def discord_interactions():
         return err("Bad request", 400)
     if event.get("type") == 1:  # Discord checking the address
         return jsonify({"type": 1})
-    if event.get("type") != 2 or (event.get("data") or {}).get("name") != "verify":
-        return jsonify({"type": 4, "data": {"content": "I only know /verify.", "flags": 64}})
+    data = event.get("data") or {}
+    if event.get("type") == 5 or (event.get("type") == 2 and data.get("name") != "verify"):
+        return jsonify(discord_interaction(event))
+    if event.get("type") != 2:
+        return jsonify({"type": 4, "data": {"content": "I do not know that one. Try /help.", "flags": 64}})
     discord_id = str(((event.get("member") or {}).get("user") or event.get("user") or {}).get("id") or "")
     user = db().first("SELECT * FROM users WHERE discord_id = ?", discord_id) if SNOWFLAKE.match(discord_id) else None
     link = {"type": 1, "components": [{"type": 2, "style": 5, "label": "Verify on rotaidem.com", "url": site_url() + "/account#discord"}]}
@@ -3385,7 +3395,7 @@ def admin_save_discord():
         return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
     products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
     old = discord_settings()
-    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel", "status_channel")}
+    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel", "status_channel", "welcome_channel", "team_channel")}
     if any(v and not SNOWFLAKE.match(v) for v in channels.values()):
         return err("Choose the channels from the list", 400)
     if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
@@ -3418,17 +3428,16 @@ def admin_discord_sync():
 
 @app.post("/api/admin/discord/command")
 def admin_discord_command():
-    """Adds /verify to the server (Discord then sends it to /api/discord/interactions)."""
+    """Adds the slash commands to the server (Discord then sends them to /api/discord/interactions)."""
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can do this", 403)
     if not discord_ready():
         return err("Discord is not set up yet", 503)
-    commands = [{"name": "verify", "type": 1, "description": "Get the buyer channels: checks your Rotaidem licence"}]
-    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=commands)
+    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=DISCORD_COMMANDS)
     if error:
         return err(error, 502)
-    audit(user, "discord_command", "/verify")
+    audit(user, "discord_command", " ".join("/" + c["name"] for c in DISCORD_COMMANDS))
     return jsonify({"ok": True})
 
 
@@ -3639,6 +3648,7 @@ def discord_run_due():
         except Exception:  # noqa: BLE001
             app.logger.exception("Scheduled Discord post %s failed", item["id"])
     discord_announce_news()
+    discord_weekly_report()
 
 
 @app.get("/api/admin/discord/channels")
@@ -3771,6 +3781,321 @@ def admin_discord_delete(channel, message_id):
     return jsonify({"ok": True})
 
 
+# ---------- more Discord: slash commands, team feed, weekly report, invites, events, DMs, giveaways ----------
+# Still no bot running all the time: slash commands and the /support form reach /api/discord/interactions,
+# the team feed and weekly report are posts made when something happens on the site.
+
+DISCORD_COMMANDS = [
+    {"name": "verify", "type": 1, "description": "Get the buyer channels: checks your Rotaidem licence"},
+    {"name": "status", "type": 1, "description": "Is everything working? Website, licences, downloads"},
+    {"name": "version", "type": 1, "description": "The latest version of each Rotaidem product"},
+    {"name": "licence", "type": 1, "description": "Your licence keys and how many computers use them (only you see it)"},
+    {"name": "download", "type": 1, "description": "Where to download Rotaidem products"},
+    {"name": "profile", "type": 1, "description": "Look up a shared HeavyPro feel profile",
+     "options": [{"type": 3, "name": "name", "description": "The profile's name", "required": True, "max_length": 60}]},
+    {"name": "support", "type": 1, "description": "Send a message to Rotaidem support"},
+    {"name": "help", "type": 1, "description": "What the Rotaidem bot can do"},
+]
+
+
+def discord_link_row(*buttons):
+    return [{"type": 1, "components": [{"type": 2, "style": 5, "label": label, "url": site_url() + path} for label, path in buttons]}]
+
+
+def discord_reply(content="", embeds=None, components=None, public=False):
+    data = {"content": content[:2000], "embeds": embeds or [], "components": components or [], "allowed_mentions": {"parse": []}}
+    if not public:
+        data["flags"] = 64  # only the member who asked sees it
+    return {"type": 4, "data": data}
+
+
+def discord_member(event):
+    who = (event.get("member") or {}).get("user") or event.get("user") or {}
+    discord_id = str(who.get("id") or "")
+    user = db().first("SELECT * FROM users WHERE discord_id = ?", discord_id) if SNOWFLAKE.match(discord_id) else None
+    return discord_id, str(who.get("global_name") or who.get("username") or "Discord member")[:100], user
+
+
+def discord_cmd_status(event):
+    last, history = get_setting("status.last", None), get_setting("status.history", []) or []
+    if not last:
+        return discord_reply("Not checked yet. Open the live status page to run the checks.", components=discord_link_row(("Live status", "/status")))
+    a = status_answer(last, history)
+    head = {"ok": "🟢 All systems working", "degraded": "🟠 Some services have problems", "down": "🔴 Major outage"}[a["overall"]]
+    lines = [f"{'🟢' if c['state'] == 'ok' else '🔴' if c['state'] == 'down' else '⚪'} {c['name']}" for c in a["checks"] if c["state"] != "off"]
+    minutes = max(0, int((time.time() - float(last["at"])) // 60))
+    return discord_reply(embeds=[{"title": head, "description": "\n".join(lines), "color": 0x4CC38A if a["overall"] == "ok" else 0xE5484D,
+                                  "footer": {"text": f"Checked {minutes} min ago"}}], components=discord_link_row(("Live status", "/status")))
+
+
+def discord_cmd_version(event):
+    rows = db().all("SELECT name, version, changelog FROM products WHERE status = 'published' AND version IS NOT NULL AND version <> '' ORDER BY sort_order, name")[:5]
+    if not rows:
+        return discord_reply("No product versions are published yet.")
+    fields = []
+    for r in rows:
+        try:
+            notes = (json.loads(r["changelog"] or "[]") or [{}])[0].get("notes") or ""
+        except (ValueError, TypeError, AttributeError):
+            notes = ""
+        fields.append({"name": f"{r['name']} {r['version']}", "value": (str(notes)[:300] or "No notes for this version.")})
+    return discord_reply(embeds=[{"title": "Latest versions", "fields": fields, "color": 0xAAB6C2}],
+                         components=discord_link_row(("Downloads", "/downloads"), ("Get RotaHub", "/get-rotahub")))
+
+
+def discord_cmd_licence(event):
+    _, _, user = discord_member(event)
+    if not user:
+        return discord_reply("Link your Discord on your Rotaidem account first (My account, Discord).", components=discord_link_row(("My account", "/account#discord")))
+    rows = db().all("SELECT id, license_key, product_id, status, max_activations, (SELECT COUNT(*) FROM license_activations a WHERE a.license_id = licenses.id) AS used "
+                    "FROM licenses WHERE customer_id = ? OR LOWER(email) = ? ORDER BY id DESC", user["id"], (user.get("email") or "").lower())
+    if not rows:
+        return discord_reply("Your account has no licence keys yet. Bought with another email? Add the key under My account.",
+                             components=discord_link_row(("My account", "/account")))
+    lines = [f"`{r['license_key'][:5]}••••-••••-{r['license_key'][-4:]}` {r['product_id']}: {r['used']}/{r['max_activations']} computers"
+             f"{'' if r['status'] == 'active' else ' (revoked)'}" for r in rows[:10]]
+    return discord_reply("Your licences (only you can see this):\n" + "\n".join(lines) + "\nFull keys are under My account.",
+                         components=discord_link_row(("My account", "/account")))
+
+
+def discord_cmd_download(event):
+    return discord_reply("Rotaidem products install and update through RotaHub.",
+                         components=discord_link_row(("Get RotaHub", "/get-rotahub"), ("Downloads", "/downloads"), ("Installation guide", "/installation")))
+
+
+def discord_cmd_profile(event):
+    opts = {o.get("name"): o.get("value") for o in (event.get("data") or {}).get("options") or []}
+    name = str(opts.get("name") or "").strip()[:60]
+    row = db().first("SELECT name, downloads, updated_at FROM shared_profiles WHERE name_key = ?", profile_key(name)) if name else None
+    if not row:
+        return discord_reply(f"No shared profile is called **{name or '?'}**. Names are exact, ignoring capitals.")
+    return discord_reply(embeds=[{"title": f"Feel profile: {row['name']}", "color": 0xAAB6C2,
+                                  "description": f"Fetched {row['downloads'] or 0} times, last changed {str(row['updated_at'] or '')[:10]}.\n"
+                                                 f"In HeavyPro: Profiles, Get a shared profile, type **{row['name']}**."}], public=True)
+
+
+def discord_cmd_support(event):
+    field = lambda cid, label, style, most: {"type": 1, "components": [  # noqa: E731
+        {"type": 4, "custom_id": cid, "label": label, "style": style, "max_length": most, "required": True}]}
+    return {"type": 9, "data": {"custom_id": "support", "title": "Message Rotaidem support",
+                                "components": [field("subject", "Subject", 1, 100), field("message", "How can we help?", 2, 2000)]}}
+
+
+def discord_cmd_help(event):
+    lines = [f"`/{c['name']}` {c['description']}" for c in DISCORD_COMMANDS]
+    return discord_reply("\n".join(lines), components=discord_link_row(("Help and FAQ", "/support"), ("Contact", "/contact")))
+
+
+def discord_support_submit(event):
+    discord_id, name, user = discord_member(event)
+    values = {c["custom_id"]: str(c.get("value") or "").strip() for row in (event.get("data") or {}).get("components") or []
+              for c in row.get("components") or []}
+    if not values.get("message"):
+        return discord_reply("The message was empty, so nothing was sent.")
+    if not discord_claim(f"support.{discord_id}.{int(time.time()) // 600}"):
+        return discord_reply("You sent a message a moment ago. We will answer it; please wait a little before sending another.")
+    email = (user or {}).get("email") or f"Discord: {name}"
+    text = f"[Discord /support] {values.get('subject', '')}\n\n{values['message']}"[:5000]
+    db().run("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)", (user or {}).get("name") or name, email, text)
+    discord_team_message(name, values.get("subject") or values["message"], "Discord /support")
+    return discord_reply("Thanks, we got your message." + ("" if user else " Link Discord on your Rotaidem account so we can answer by email too."))
+
+
+DISCORD_HANDLERS = {"status": discord_cmd_status, "version": discord_cmd_version, "licence": discord_cmd_licence, "download": discord_cmd_download,
+                    "profile": discord_cmd_profile, "support": discord_cmd_support, "help": discord_cmd_help}
+
+
+def discord_interaction(event):
+    """Every slash command except /verify, and the /support form. Answers within Discord's 3 seconds: no slow calls here."""
+    data = event.get("data") or {}
+    try:
+        if event.get("type") == 5 and data.get("custom_id") == "support":
+            return discord_support_submit(event)
+        handler = DISCORD_HANDLERS.get(data.get("name"))
+        return handler(event) if handler else discord_reply("I do not know that one. Try /help.")
+    except Exception:  # noqa: BLE001 - the member gets an answer, the log gets the reason
+        app.logger.exception("Discord command %s failed", data.get("name") or data.get("custom_id"))
+        return discord_reply("Something went wrong on our side. Please try again in a minute.")
+
+
+def discord_team_message(who, text, source):
+    """A short note in the team channel about a new message. Never fails the caller."""
+    first = " ".join(str(text or "").split())[:180]
+    discord_auto("team", {"text": f"📨 New message from **{str(who)[:80]}** ({source}): {first}", "buttons": [{"label": "Open inbox", "url": "/admin#messages"}]})
+
+
+def discord_welcome(discord_id, buyer):
+    discord_auto("welcome", {"text": f"👋 Welcome <@{discord_id}>!" + (" You have the Verified buyer role: the buyer channels are open." if buyer else
+                                                                      " Type /help to see what the Rotaidem bot can do.")})
+
+
+def discord_weekly_report():
+    """Monday from 08:00 UTC: last week's numbers in the team channel, once per week."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 0 or now.hour < 8 or not discord_settings()["team_channel"]:
+        return
+    year, week, _ = now.isocalendar()
+    if not discord_claim(f"weekly.{year}.{week}"):
+        return
+    since = utc_stamp(7 * 86400)
+    n = lambda sql, *args: int((db().first(sql, *args) or {}).get("n") or 0)  # noqa: E731
+    money = db().all("SELECT COALESCE(currency, '') AS currency, COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total FROM orders "
+                     "WHERE created_at >= ? AND payment_status = 'Paid' GROUP BY currency", since)
+    sales = ", ".join(f"{float(r['total']):.2f} {(r['currency'] or 'usd').upper()}" for r in money) or "none"
+    accounts = n("SELECT COUNT(*) AS n FROM users WHERE created_at >= ?", since)
+    downloads = n("SELECT COUNT(*) AS n FROM downloads WHERE created_at >= ?", since)
+    activations = n("SELECT COUNT(*) AS n FROM license_activation_log WHERE created_at >= ?", since)
+    open_messages = n("SELECT COUNT(*) AS n FROM messages WHERE handled = 0 OR handled IS NULL")
+    linked = n("SELECT COUNT(*) AS n FROM users WHERE discord_id IS NOT NULL AND discord_id <> ''")
+    lines = [f"🛒 Orders: **{sum(int(r['n']) for r in money)}** ({sales})", f"🧑‍✈️ New accounts: **{accounts}**",
+             f"⬇️ Downloads: **{downloads}**", f"🔑 New computers activated: **{activations}**",
+             f"📨 Open messages: **{open_messages}**", f"🔗 Discord accounts linked: **{linked}**"]
+    discord_auto("team", {"embed": {"title": f"Weekly report, week {week}", "description": "\n".join(lines), "color": "#aab6c2"},
+                          "buttons": [{"label": "Open the admin", "url": "/admin"}]})
+
+
+@app.post("/api/admin/discord/invite")
+def admin_discord_invite():
+    """An invite link to a channel: how long it works and how many people may use it."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel = str(b.get("channel_id") or "")
+    if not SNOWFLAKE.match(channel):
+        return err("Choose a channel", 400)
+    age, uses = clamp_int(b.get("max_age"), 86400, 0, 604800), clamp_int(b.get("max_uses"), 0, 0, 100)
+    invite, error, _ = discord_call("POST", f"/channels/{channel}/invites", payload={"max_age": age, "max_uses": uses, "unique": True})
+    if error:
+        return err(error, 502)
+    audit(user, "discord_invite", f"{invite.get('code')} ({age // 3600} h, {uses or 'any'} uses)")
+    return jsonify({"ok": True, "url": "https://discord.gg/" + str(invite.get("code") or "")})
+
+
+@app.get("/api/admin/discord/events")
+def admin_discord_events():
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    events, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/scheduled-events?with_user_count=true", timeout=10)
+    if error:
+        return err(error, 502)
+    return jsonify({"events": [{k: e.get(k) for k in ("id", "name", "description", "scheduled_start_time", "scheduled_end_time", "user_count")}
+                               | {"location": (e.get("entity_metadata") or {}).get("location", "")} for e in events or []]})
+
+
+@app.post("/api/admin/discord/events")
+def admin_discord_event_create():
+    """A server event (for example a group flight): shows at the top of the server and members can say they are interested."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    name, location = str(b.get("name") or "").strip()[:100], str(b.get("location") or "").strip()[:100]
+    try:
+        start = datetime.fromisoformat(str(b.get("start") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(b.get("end") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return err("Choose when it starts and ends", 400)
+    if not name or not location:
+        return err("Give the event a name and a place (e.g. EGLL to KJFK, or VATSIM)", 400)
+    if start.tzinfo is None or start <= datetime.now(timezone.utc) or end <= start:
+        return err("The start must be in the future and the end after the start", 400)
+    payload = {"name": name, "description": str(b.get("description") or "")[:1000], "privacy_level": 2, "entity_type": 3,
+               "entity_metadata": {"location": location}, "scheduled_start_time": start.isoformat(), "scheduled_end_time": end.isoformat()}
+    event, error, _ = discord_call("POST", f"/guilds/{discord_settings()['guild_id']}/scheduled-events", payload=payload)
+    if error:
+        return err(error + (" The bot needs Manage Events: invite it again with the button under Set-up." if "Missing Permissions" in error else ""), 502)
+    audit(user, "discord_event", name)
+    return jsonify({"ok": True, "id": event.get("id")})
+
+
+@app.delete("/api/admin/discord/events/<event_id>")
+def admin_discord_event_delete(event_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not SNOWFLAKE.match(event_id) or not discord_ready():
+        return err("Unknown event", 400)
+    _, error, _ = discord_call("DELETE", f"/guilds/{discord_settings()['guild_id']}/scheduled-events/{event_id}")
+    if error:
+        return err(error, 502)
+    audit(user, "discord_event_delete", event_id)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/discord/dm")
+def admin_discord_dm():
+    """A direct message from the bot to a member who linked Discord (they must share the server with the bot)."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    b = body()
+    member = db().first("SELECT id, name, discord_id, discord_name FROM users WHERE id = ?", clamp_int(b.get("user_id"), 0, 0, 2 ** 31))
+    text = str(b.get("text") or "").strip()[:1900]
+    if not member or not member.get("discord_id"):
+        return err("That account has not linked Discord", 400)
+    if not text:
+        return err("Write the message", 400)
+    dm, error, _ = discord_call("POST", "/users/@me/channels", payload={"recipient_id": member["discord_id"]})
+    if not error:
+        _, error, _ = discord_call("POST", f"/channels/{dm['id']}/messages", payload={"content": text, "allowed_mentions": {"parse": []}})
+    if error:
+        return err(error + (" They may have DMs from server members turned off." if "50007" in error or "Cannot send" in error else ""), 502)
+    audit(user, "discord_dm", member["discord_name"] or member["discord_id"])
+    return jsonify({"ok": True})
+
+
+DISCORD_MESSAGE_LINK = re.compile(r"/channels/\d+/(\d{15,22})/(\d{15,22})")
+
+
+@app.post("/api/admin/discord/giveaway")
+def admin_discord_giveaway():
+    """Fair random winners among everyone who reacted to a message with an emoji; the bot can announce them."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    m = DISCORD_MESSAGE_LINK.search(str(b.get("link") or ""))
+    emoji = str(b.get("emoji") or "").strip()
+    if not m:
+        return err("Paste the message link: right-click the message in Discord, Copy Message Link", 400)
+    if not emoji or len(emoji) > 64:
+        return err("Which reaction counts? Paste the emoji, e.g. 🎉", 400)
+    channel, message = m.groups()
+    people, after = {}, "0"
+    for _ in range(10):  # up to 1000 entries
+        page, error, _ = discord_call("GET", f"/channels/{channel}/messages/{message}/reactions/{urllib.parse.quote(emoji)}?limit=100&after={after}")
+        if error:
+            return err(error, 502)
+        for u in page or []:
+            if not u.get("bot"):
+                people[u["id"]] = u.get("global_name") or u.get("username") or u["id"]
+        if len(page or []) < 100:
+            break
+        after = page[-1]["id"]
+    count = clamp_int(b.get("winners"), 1, 1, 20)
+    if not people:
+        return err("Nobody (except bots) reacted with that emoji yet", 400)
+    winners = secrets.SystemRandom().sample(sorted(people), min(count, len(people)))
+    if b.get("announce"):
+        prize = str(b.get("prize") or "").strip()[:200]
+        text = f"🎉 Congratulations {', '.join(f'<@{w}>' for w in winners)}!" + (f" You won **{prize}**." if prize else "") + f" ({len(people)} entered)"
+        _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload={
+            "content": text, "message_reference": {"message_id": message, "fail_if_not_exists": False}, "allowed_mentions": {"users": winners}})
+        if error:
+            return err("Winners picked but not announced: " + error, 502)
+    audit(user, "discord_giveaway", f"{len(winners)} of {len(people)}: " + ", ".join(people[w] for w in winners))
+    return jsonify({"ok": True, "entered": len(people), "winners": [{"id": w, "name": people[w]} for w in winners]})
+
+
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
 
 HUB_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
@@ -3899,11 +4224,11 @@ def files_dir():
     return folder
 
 
-def file_row(name):
-    path = os.path.join(files_dir(), name)
+def file_row(name, folder=None):
+    path = os.path.join(folder or files_dir(), name)
     st = os.stat(path)
     return {"name": name, "size": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "url": f"/files/{name}?v={int(st.st_mtime):x}"}
+            "url": "" if folder else f"/files/{name}?v={int(st.st_mtime):x}"}
 
 
 @app.get("/api/admin/files")
@@ -3916,7 +4241,8 @@ def admin_files():
 
 @app.post("/api/admin/files")
 def admin_upload_file():
-    """One piece of a file: {name, upload_id, index, total, data (base64)}. The last piece puts the file in place."""
+    """One piece of a file: {name, upload_id, index, total, data (base64), private}. The last piece puts the file in
+    place: the public files/ folder, or with "private" the testers' folder that only signed tester links reach."""
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can upload files", 403)
@@ -3952,7 +4278,8 @@ def admin_upload_file():
     if not head.startswith(magic):
         os.remove(part)
         return err(f"That does not look like a real {os.path.splitext(name)[1]} file. Nothing was saved.", 400)
-    target = os.path.join(files_dir(), name)
+    folder = tester_dir() if b.get("private") else None
+    target = os.path.join(folder or files_dir(), name)
     digest = hashlib.sha256()
     with open(part, "rb") as fh:
         for block in iter(lambda: fh.read(1024 * 1024), b""):
@@ -3960,8 +4287,8 @@ def admin_upload_file():
     os.chmod(part, 0o644)
     shutil.move(part, target)
     write_sha256(target, digest.hexdigest())  # RotaHub checks downloads against it
-    audit(user, "upload_file", name)
-    return jsonify({"ok": True, "file": file_row(name)})
+    audit(user, "upload_file", name + (" (tester app)" if folder else ""))
+    return jsonify({"ok": True, "file": file_row(name, folder)})
 
 
 @app.delete("/api/admin/files/<name>")
@@ -4511,6 +4838,166 @@ def site_settings_js():
 def publish_site_settings():
     write_public("site-settings.js", site_settings_js().encode())
     publish_share_tags()
+
+
+# ---------- testers (Admin -> Testers) ----------
+# Testers are email addresses added in the admin (an account can come later). Logged in with that
+# email, My account shows Tester downloads. Tester apps are uploaded in pieces like other files, but
+# into the private data folder, which the web server never serves: a download is a link signed for
+# one tester that works for a few minutes, and the tester is checked again when it is used.
+TESTER_LINK_SECONDS = 15 * 60
+
+
+def tester_dir():
+    folder = os.path.join(str(DATA_DIR), "tester-files")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def tester_list():
+    return get_setting("testers.list", []) or []
+
+
+def tester_apps():
+    return get_setting("testers.apps", []) or []
+
+
+def is_tester(user):
+    """On the tester list, or Owner/Admin (so they can check what testers get)."""
+    if not user:
+        return False
+    return user.get("role") in ("Owner", "Admin") or (user.get("email") or "").lower() in {t["email"] for t in tester_list()}
+
+
+def tester_signature(app_id, user_id, expires):
+    return hmac.new(SECRET_KEY.encode(), f"tester:{app_id}:{user_id}:{expires}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def public_tester_app(a):
+    return {k: a.get(k) for k in ("id", "name", "version", "notes", "size", "created_at")}
+
+
+@app.get("/api/admin/testers")
+def admin_testers():
+    if not manager_user():
+        return err("Only the Owner or an Admin can manage testers", 403)
+    people = []
+    for t in tester_list():
+        account = db().first("SELECT id, name FROM users WHERE LOWER(email) = ?", t["email"])
+        people.append({**t, "account": (account or {}).get("name") or "", "has_account": bool(account)})
+    counts = {r["product_id"]: r for r in db().all(
+        "SELECT product_id, COUNT(*) AS n, COUNT(DISTINCT user_id) AS people FROM downloads WHERE product_id LIKE ? GROUP BY product_id", "tester:%")}
+    apps = [{**a, "downloads": int((counts.get("tester:" + a["id"]) or {}).get("n") or 0),
+             "people": int((counts.get("tester:" + a["id"]) or {}).get("people") or 0)} for a in tester_apps()]
+    return jsonify({"testers": people, "apps": apps})
+
+
+@app.post("/api/admin/testers")
+def admin_add_tester():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can manage testers", 403)
+    b = body()
+    email, note = str(b.get("email") or "").strip().lower(), str(b.get("note") or "").strip()[:120]
+    if not EMAIL_RE.match(email) or len(email) > 200:
+        return err("Enter the tester's email address", 400)
+    people = [t for t in tester_list() if t["email"] != email]
+    set_setting("testers.list", [{"email": email, "note": note, "added_at": utc_stamp(), "added_by": user["name"]}] + people)
+    audit(user, "add_tester", email)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/testers/remove")
+def admin_remove_tester():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can manage testers", 403)
+    email = str(body().get("email") or "").strip().lower()
+    set_setting("testers.list", [t for t in tester_list() if t["email"] != email])
+    audit(user, "remove_tester", email)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/tester-apps")
+def admin_add_tester_app():
+    """A tester app from a file uploaded with "private": name, version and what to test."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can add tester apps", 403)
+    b = body()
+    name, version = str(b.get("name") or "").strip()[:80], str(b.get("version") or "").strip()[:40]
+    notes, file = str(b.get("notes") or "").strip()[:2000], str(b.get("file") or "")
+    if not name:
+        return err("Give the app a name", 400)
+    if not FILE_NAME.match(file) or not os.path.isfile(os.path.join(tester_dir(), file)):
+        return err("Upload the file first", 400)
+    item = {"id": secrets.token_hex(6), "name": name, "version": version, "notes": notes, "file": file,
+            "size": os.path.getsize(os.path.join(tester_dir(), file)), "created_at": utc_stamp(), "created_by": user["name"]}
+    set_setting("testers.apps", [item] + tester_apps())
+    audit(user, "add_tester_app", f"{name} {version}".strip())
+    return jsonify({"ok": True, "app": item})
+
+
+@app.delete("/api/admin/tester-apps/<app_id>")
+def admin_delete_tester_app(app_id):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can delete tester apps", 403)
+    apps = tester_apps()
+    gone = next((a for a in apps if a["id"] == app_id), None)
+    if not gone:
+        return err("Tester app not found", 404)
+    left = [a for a in apps if a["id"] != app_id]
+    set_setting("testers.apps", left)
+    path = os.path.join(tester_dir(), gone["file"])
+    if not any(a["file"] == gone["file"] for a in left) and os.path.isfile(path):
+        os.remove(path)
+        if os.path.exists(path + ".sha256"):
+            os.remove(path + ".sha256")
+    audit(user, "delete_tester_app", f"{gone['name']} {gone.get('version') or ''}".strip())
+    return jsonify({"ok": True})
+
+
+@app.get("/api/account/tester")
+def account_tester():
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not is_tester(user):
+        return jsonify({"tester": False, "apps": []})
+    return jsonify({"tester": True, "apps": [public_tester_app(a) for a in tester_apps()]})
+
+
+@app.post("/api/account/tester/<app_id>/link")
+def account_tester_link(app_id):
+    """A download link for this tester only, valid for a few minutes (a browser download cannot send the login)."""
+    user = current_user()
+    if not user:
+        return err("Unauthorized", 401)
+    if not is_tester(user):
+        return err("Tester downloads are for testers", 403)
+    if not any(a["id"] == app_id for a in tester_apps()):
+        return err("That tester app is no longer available", 404)
+    expires = int(time.time()) + TESTER_LINK_SECONDS
+    query = urllib.parse.urlencode({"u": user["id"], "e": expires, "s": tester_signature(app_id, user["id"], expires)})
+    return jsonify({"url": f"/api/tester/download/{app_id}?{query}"})
+
+
+@app.get("/api/tester/download/<app_id>")
+def tester_download(app_id):
+    try:
+        user_id, expires = int(request.args.get("u", "")), int(request.args.get("e", ""))
+    except ValueError:
+        return err("This download link is not valid", 403)
+    if expires < time.time() or not hmac.compare_digest(tester_signature(app_id, user_id, expires), str(request.args.get("s", ""))):
+        return err("This download link has expired. Open My account and press Download again.", 403)
+    user = db().first("SELECT id, email, role FROM users WHERE id = ?", user_id)
+    item = next((a for a in tester_apps() if a["id"] == app_id), None)
+    if not is_tester(user) or not item or not os.path.isfile(os.path.join(tester_dir(), item["file"])):
+        return err("This tester download is no longer available to you", 403)
+    db().run("INSERT INTO downloads (product_id, user_id, ip_address, created_at) VALUES (?, ?, ?, ?)",
+             "tester:" + app_id, user_id, request.remote_addr or "", utc_stamp())
+    return send_from_directory(tester_dir(), item["file"], as_attachment=True)
 
 
 # ---------- link previews (Admin -> Site settings -> Link previews) ----------
