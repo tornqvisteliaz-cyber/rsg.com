@@ -326,6 +326,21 @@
             .form-grid, #order-form .form-grid { grid-template-columns: 1fr !important; }
             .search { width: 100%; }
         }
+        .dc-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 20px; }
+        .dc-nav button { all: unset; cursor: pointer; padding: 8px 14px; border-radius: 999px; font-size: 14px; border: 1px solid var(--line, #2a2f36); color: inherit; opacity: .8; }
+        .dc-nav button:hover { opacity: 1; }
+        .dc-nav button.active { background: var(--accent, #aab6c2); color: #0b0d10; border-color: transparent; opacity: 1; font-weight: 600; }
+        .dc-nav .n { font-size: 12px; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: rgba(229,72,77,.9); color: #fff; }
+        .dsec-off { display: none !important; }
+        .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
+        .dc-grid h3 { margin: 0 0 10px; font-size: 15px; }
+        .dc-mini { font-size: 14px; }
+        .dc-mini .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 7px 0; border-top: 1px solid var(--line, #2a2f36); }
+        .dc-bars div { display: grid; grid-template-columns: 160px 1fr 48px; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0; }
+        .dc-bars i { display: block; height: 8px; border-radius: 4px; background: var(--accent, #aab6c2); }
+        .dc-emojis { display: flex; flex-wrap: wrap; gap: 10px; }
+        .dc-emojis span { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; width: 76px; text-align: center; }
+        .dc-emojis img { width: 32px; height: 32px; object-fit: contain; }
     </style>
 </head>
 <body data-layout="off">
@@ -656,6 +671,15 @@
 
     <section class="pane" id="pane-discord" data-title="Discord">
         <p class="notice" id="dc-off" hidden>Discord linking runs on the STRATO website. This copy of the site cannot do it.</p>
+        <nav class="dc-nav" id="dc-nav" aria-label="Discord sections">
+            <button type="button" data-dsec="post">📣 Post</button>
+            <button type="button" data-dsec="support">🎫 Support<span class="n" id="dc-n-support" hidden></span></button>
+            <button type="button" data-dsec="mod">🛡️ Moderation<span class="n" id="dc-n-mod" hidden></span></button>
+            <button type="button" data-dsec="community">🎉 Community</button>
+            <button type="button" data-dsec="server">🧰 Server</button>
+            <button type="button" data-dsec="insights">📊 Insights</button>
+            <button type="button" data-dsec="setup">⚙️ Set-up</button>
+        </nav>
         <div class="panel" style="margin-bottom:24px" id="dp-panel">
             <div class="panel-head"><h2 id="dp-head">Post to Discord</h2><span class="muted" id="dc-stats" style="font-size:13px;margin-left:auto;margin-right:12px"></span><select id="dp-start" style="width:auto;padding:8px 12px" aria-label="Start from"></select></div>
             <div class="panel-body dp-grid">
@@ -717,7 +741,7 @@
                 <button class="btn" type="submit">Save</button>
             </div>
         </form>
-        <div class="panel" style="margin-bottom:24px">
+        <div class="panel" style="margin-bottom:24px" id="dc-setup-panel">
             <div class="panel-head"><h2>Set-up</h2><div class="actions"><span id="dc-ready"></span><button class="btn btn-sm" type="button" id="dc-check">Check set-up</button></div></div>
             <ul class="dc-checks" id="dc-checks" hidden></ul>
             <div class="panel-body">
@@ -733,7 +757,7 @@
                 </form>
             </div>
         </div>
-        <div class="panel" style="margin-bottom:24px">
+        <div class="panel" style="margin-bottom:24px" id="dc-in-panel">
             <div class="panel-head"><h2>In Discord</h2></div>
             <div class="panel-body">
                 <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the slash commands</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
@@ -864,7 +888,168 @@
                 </form>
             </div>
         </div>
-        <div class="panel">
+        <div class="panel" style="margin-bottom:24px" id="dr-panel">
+            <div class="panel-head"><h2>Repeating posts</h2><span class="muted" style="font-size:13px">e.g. “Screenshot Saturday” every week</span></div>
+            <div class="panel-body dc-grid">
+                <form id="dr-form">
+                    <div class="field"><label for="dr-channel">Channel</label><select id="dr-channel" data-dc-ch="Choose a channel"></select></div>
+                    <div class="field"><label for="dr-title">Card title (optional)</label><input id="dr-title" maxlength="256" placeholder="📸 Screenshot Saturday"></div>
+                    <div class="field"><label for="dr-text">Message</label><textarea id="dr-text" rows="3" maxlength="1800" placeholder="Share your best shots from this week in #screenshots!"></textarea></div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
+                        <div class="field"><label for="dr-every">How often</label><select id="dr-every"><option value="week">Every week</option><option value="day">Every day</option></select></div>
+                        <div class="field"><label for="dr-day">Day</label><select id="dr-day"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5" selected>Saturday</option><option value="6">Sunday</option></select></div>
+                        <div class="field"><label for="dr-time">Time (your time)</label><input id="dr-time" type="time" value="12:00"></div>
+                    </div>
+                    <div class="field"><label for="dr-ping">Ping</label><select id="dr-ping"><option value="none">Nobody</option><option value="buyers">Verified buyers</option><option value="here">@here</option></select></div>
+                    <button class="btn btn-sm" type="submit">Add repeating post</button>
+                </form>
+                <div class="dc-mini" id="dr-list"></div>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="ds-panel">
+            <div class="panel-head"><h2>Suggestions, reports &amp; forms</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="ds-settings">
+                    <h3>Support settings</h3>
+                    <div class="field"><label for="ds-cats">Ticket topics (one per line)</label><textarea id="ds-cats" rows="4" placeholder="Technical help&#10;Licence &amp; activation&#10;Billing"></textarea><div class="hint">The ticket panel becomes a menu with these topics. Empty: a plain “Open a ticket” button. Post the panel again after changing them (Set-up → In Discord).</div></div>
+                    <div class="field"><label for="ds-autoclose">Close tickets with no reply after</label><select id="ds-autoclose"><option value="0">Never</option><option value="2">2 days</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option></select></div>
+                    <div class="field"><label for="ds-sugg">Suggestions channel</label><select id="ds-sugg" data-dc-ch="Off (no /suggest)"></select><div class="hint">/suggest posts ideas here with 👍 👎 for voting.</div></div>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <div><h3>Suggestions</h3><div class="dc-mini" id="ds-sugg-list"></div></div>
+                <div><h3>Reports <span class="muted" style="font-size:13px;font-weight:400">(right-click a message → Apps → Report to staff)</span></h3><div class="dc-mini" id="ds-reports"></div></div>
+                <form id="df-form">
+                    <h3>Forms <span class="muted" style="font-size:13px;font-weight:400">(applications, sign-ups)</span></h3>
+                    <input type="hidden" id="df-id">
+                    <div class="field"><label for="df-title">Title</label><input id="df-title" maxlength="45" placeholder="Beta tester application"></div>
+                    <div id="df-questions"></div>
+                    <div class="field"><label for="df-role">Role when approved (optional)</label><select id="df-role" data-dc-role="No role"></select></div>
+                    <div class="field"><label for="df-thanks">Thank-you text (optional)</label><input id="df-thanks" maxlength="300" placeholder="Thanks! We answer within a few days."></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Save form</button><button class="btn btn-ghost btn-sm" type="button" id="df-new">New form</button></div>
+                    <div class="dc-mini" id="df-list" style="margin-top:12px"></div>
+                </form>
+            </div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Application</th><th>From</th><th>Answers</th><th>Status</th><th></th></tr></thead><tbody id="df-apps"></tbody></table></div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dw-panel">
+            <div class="panel-head"><h2>Warnings, mod log &amp; audit log</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="dw-settings">
+                    <h3>Moderation settings</h3>
+                    <div class="field"><label for="dw-modlog">Mod log channel (staff only)</label><select id="dw-modlog" data-dc-ch="Off"></select><div class="hint">Every timeout, kick, ban, warning, clean-up, lock, report and application is posted here.</div></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dw-limit">Warnings before timeout</label><select id="dw-limit"><option value="0">Never</option><option value="2">2</option><option value="3">3</option><option value="5">5</option></select></div>
+                        <div class="field"><label for="dw-mins">Timeout</label><select id="dw-mins"><option value="10">10 min</option><option value="60">1 hour</option><option value="1440">1 day</option><option value="10080">1 week</option></select></div>
+                    </div>
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dw-staff" style="margin-top:3px"> <span>Staff commands in Discord<br><span class="hint" style="margin:0">/warn, /warnings, /timeout, /clear, /slowmode, /lock, /unlock and right-click → User info. Only members with the matching permission see and can use them.</span></span></label>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <div><h3>Active warnings</h3><div class="dc-mini" id="dw-list"></div></div>
+            </div>
+            <div class="panel-head" style="border-top:1px solid var(--line)"><h2 style="font-size:16px">Discord audit log</h2><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="dw-audit-btn">Show the latest 50</button></div></div>
+            <div class="table-wrap" id="dw-audit-wrap" hidden><table class="table"><thead><tr><th>When</th><th>Who</th><th>Did</th><th>To</th><th>Reason</th></tr></thead><tbody id="dw-audit"></tbody></table></div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dg-panel">
+            <div class="panel-head"><h2>Giveaways &amp; saved answers</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="dg-form">
+                    <h3>Button giveaway</h3>
+                    <p class="hint" style="margin:0 0 10px">Members press 🎉 Enter. Winners are drawn by themselves when time is up.</p>
+                    <div class="field"><label for="dg-channel">Channel</label><select id="dg-channel" data-dc-ch="Choose a channel"></select></div>
+                    <div class="field"><label for="dg-prize">Prize</label><input id="dg-prize" maxlength="200" placeholder="A HeavyPro licence"></div>
+                    <div class="field"><label for="dg-desc">Text (optional)</label><textarea id="dg-desc" rows="2" maxlength="1000"></textarea></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dg-hours">Runs for</label><select id="dg-hours"><option value="1">1 hour</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></div>
+                        <div class="field"><label for="dg-n">Winners</label><input id="dg-n" type="number" min="1" max="20" value="1"></div>
+                    </div>
+                    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dg-buyers"> Only verified buyers can enter</label>
+                    <button class="btn btn-sm" type="submit">Start giveaway</button>
+                    <div class="dc-mini" id="dg-list" style="margin-top:12px"></div>
+                </form>
+                <form id="dtag-form">
+                    <h3>Saved answers <span class="muted" style="font-size:13px;font-weight:400">(/tag)</span></h3>
+                    <p class="hint" style="margin:0 0 10px">As many as you like: members type <code>/tag</code> and pick one, e.g. <em>install</em>, <em>refund</em>, <em>vatsim</em>. They can mention someone with it.</p>
+                    <input type="hidden" id="dtag-id">
+                    <div class="field"><label for="dtag-name">Name</label><input id="dtag-name" maxlength="60" placeholder="install"></div>
+                    <div class="field"><label for="dtag-text">Answer</label><textarea id="dtag-text" rows="3" maxlength="2000"></textarea></div>
+                    <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px"><div class="field"><label for="dtag-bl">Button text</label><input id="dtag-bl" maxlength="80" placeholder="optional"></div><div class="field"><label for="dtag-bu">Button link</label><input id="dtag-bu" placeholder="/installation"></div></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Save answer</button><button class="btn btn-ghost btn-sm" type="button" id="dtag-new">New</button><input id="dtag-filter" placeholder="Filter…" style="width:auto;padding:6px 10px;font-size:13px"></div>
+                    <div class="dc-mini" id="dtag-list" style="margin-top:12px;max-height:320px;overflow:auto"></div>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dsv-panel">
+            <div class="panel-head"><h2>Server management</h2></div>
+            <div class="panel-body dc-grid">
+                <div>
+                    <h3>Roles</h3>
+                    <form id="dro-form" style="display:grid;grid-template-columns:1fr 56px auto;gap:8px;align-items:end;margin-bottom:8px">
+                        <div class="field" style="margin:0"><label for="dro-name">New role</label><input id="dro-name" maxlength="100" placeholder="MSFS 2024"></div>
+                        <input id="dro-color" type="color" value="#aab6c2" style="height:42px;padding:2px" aria-label="Colour">
+                        <button class="btn btn-sm" type="submit" style="margin-bottom:2px">Create</button>
+                    </form>
+                    <p class="hint" style="margin:0 0 6px">New roles have no permissions: safe for role buttons and pings.</p>
+                    <div class="dc-mini" id="dro-list" style="max-height:340px;overflow:auto"></div>
+                </div>
+                <form id="dch-form">
+                    <h3>Create a channel</h3>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dch-name">Name</label><input id="dch-name" maxlength="100" placeholder="screenshots"></div>
+                        <div class="field"><label for="dch-kind">Kind</label><select id="dch-kind"><option value="text">Text</option><option value="voice">Voice</option><option value="announcement">Announcement</option><option value="forum">Forum</option><option value="category">Category</option></select></div>
+                    </div>
+                    <div class="field"><label for="dch-cat">In category</label><select id="dch-cat" data-dc-cat="No category"></select></div>
+                    <div class="field"><label for="dch-topic">Topic (optional)</label><input id="dch-topic" maxlength="1024"></div>
+                    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dch-buyers"> Only verified buyers can see it</label>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Create channel</button></div>
+                    <div class="field" style="margin-top:16px"><label for="dch-del">Delete a channel</label><div style="display:flex;gap:8px"><select id="dch-del" data-dc-ch="Choose a channel"></select><button class="btn btn-danger btn-sm" type="button" id="dch-del-btn">Delete</button></div></div>
+                </form>
+                <form id="dem-form">
+                    <h3>Custom emojis</h3>
+                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+                        <div class="field" style="margin:0"><label for="dem-name">Name</label><input id="dem-name" maxlength="32" placeholder="heavypro"></div>
+                        <label class="btn btn-ghost btn-sm" style="margin-bottom:2px">Picture<input id="dem-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label>
+                    </div>
+                    <p class="hint" id="dem-picked" style="margin:6px 0 10px">PNG, JPG, GIF or WebP up to 256 KB (128×128 looks best).</p>
+                    <button class="btn btn-sm" type="submit">Upload emoji</button>
+                    <div class="dc-emojis" id="dem-list" style="margin-top:14px"></div>
+                </form>
+                <div>
+                    <h3>Invites <button class="btn btn-ghost btn-sm" type="button" id="dinv-btn" style="margin-left:8px">Load</button></h3>
+                    <div class="dc-mini" id="dinv-list"><span class="muted">Who invites the most people, and old invites to clean up.</span></div>
+                </div>
+                <form id="dst-form">
+                    <h3>Live stat channels</h3>
+                    <p class="hint" style="margin:0 0 10px">The bot renames channels with live numbers, about every 30 minutes. Use voice channels nobody joins, e.g. <code>👥 Members: {members}</code>. Numbers: {members}, {online}, {linked}, {buyers}, {licences}.</p>
+                    <div id="dst-rows"></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="dst-add">Add a stat channel</button><button class="btn btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="dst-now">Update now</button></div>
+                </form>
+                <form id="dpr-form">
+                    <h3>Product roles</h3>
+                    <p class="hint" style="margin:0 0 10px">Besides the buyer role: an extra role per product (e.g. <em>HeavyPro owner</em>). Given and taken with the licence, like the buyer role.</p>
+                    <div id="dpr-rows"></div>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <form id="dbr-form">
+                    <h3>Give a role to many people</h3>
+                    <div class="field"><label for="dbr-role">Role</label><select id="dbr-role" data-dc-role="Choose a role" data-safe="1"></select></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dbr-action">Do</label><select id="dbr-action"><option value="add">Give it</option><option value="remove">Take it away</option></select></div>
+                        <div class="field"><label for="dbr-who">For</label><select id="dbr-who"><option value="linked">Everyone linked</option><option value="buyers">Linked with a licence</option><option value="others">Linked, no licence</option></select></div>
+                    </div>
+                    <button class="btn btn-sm" type="submit">Run</button>
+                    <p class="hint" id="dbr-out" style="margin:8px 0 0"></p>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="di-panel">
+            <div class="panel-head"><h2>Insights</h2><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="di-reload">Refresh</button></div></div>
+            <div class="panel-body dc-grid">
+                <div><h3>Waiting for you</h3><div class="dc-mini" id="di-totals"></div></div>
+                <div><h3>Most used commands &amp; buttons</h3><div class="dc-bars" id="di-usage"></div></div>
+                <div><h3>Bot use, last 30 days</h3><div class="dc-bars" id="di-days"></div></div>
+            </div>
+        </div>
+        <div class="panel" id="dc-linked-panel">
             <div class="panel-head"><h2>Linked members</h2><span class="muted" style="font-size:13px" id="dc-count"></span></div>
             <div class="table-wrap"><table class="table"><thead><tr><th>Website account</th><th>Discord</th><th>Buyer role</th><th>Last result</th><th>Linked</th><th></th></tr></thead><tbody id="dc-members"></tbody></table></div>
         </div>
@@ -2623,13 +2808,14 @@ function renderDiscord() {
         || empty(6, "Nobody has linked Discord yet. Customers do it under My account.");
     $("dt-panel").hidden = $("dk-panel").hidden = $("dm-panel").hidden = $("dx-panel").hidden = !dc.ready;
     if (dc.ready && !state.dtLoaded) { state.dtLoaded = true; loadDtEvents(); loadTickets(); loadDxRoles(); loadDxCommands(); loadDxAuto(); }
+    dcStartSection();
 }
 // Post to Discord: the bot posts what you write here; what it posted can be edited or deleted
 state.dp = { image: "", buttons: [], editing: null, channels: [] };
 async function loadDpChannels() {
     try {
         const d = await api("/api/admin/discord/channels");
-        state.dp.channels = d.channels || [];
+        state.dp.channels = d.channels || []; state.dp.voice = d.voice || []; state.dp.categories = d.categories || [];
         let cat = null;
         const opts = sel => `<option value="">${sel}</option>` + state.dp.channels.map(c => `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`).join("");
         $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
@@ -2637,7 +2823,7 @@ async function loadDpChannels() {
         $("dt-inv-channel").innerHTML = opts("Choose a channel");
         for (const id of ["dx-roles-channel", "dx-purge-channel", "dx-chan-channel"]) $(id).innerHTML = opts("Choose a channel");
         $("dx-auto-ms-channel").innerHTML = opts("The Welcome channel");
-        renderAuto(); renderDxAuto(); dxChanNow();
+        renderAuto(); renderDxAuto(); dxChanNow(); fillDcSelects();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
             const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
             cat = c.category;
@@ -2947,7 +3133,7 @@ $("dm-search").onsubmit = async e => {
                 `<td class="muted">${esc(m.joined)}</td><td>${timedOut ? `<span class="badge in_development">Timed out until ${esc(new Date(m.timeout_until).toLocaleString([], { dateStyle: "short", timeStyle: "short" }))}</span>` : '<span class="muted">OK</span>'}</td>` +
                 `<td><div class="actions" style="flex-wrap:wrap">` + (timedOut ? `<button class="btn btn-ghost btn-sm" type="button" data-dm-act="untimeout" data-dm-id="${esc(m.id)}">End timeout</button>`
                     : `<select class="dm-timeout" data-dm-id="${esc(m.id)}" style="width:auto;padding:6px 8px;font-size:13px"><option value="">Timeout…</option><option value="10">10 min</option><option value="60">1 hour</option><option value="1440">1 day</option><option value="10080">1 week</option></select>`) +
-                `<button class="btn btn-ghost btn-sm" type="button" data-dm-act="kick" data-dm-id="${esc(m.id)}">Kick</button><button class="btn btn-danger btn-sm" type="button" data-dm-act="ban" data-dm-id="${esc(m.id)}">Ban</button></div></td></tr>`;
+                `<button class="btn btn-ghost btn-sm" type="button" data-dm-warn="${esc(m.id)}" data-name="${esc(m.name)}">Warn</button><button class="btn btn-ghost btn-sm" type="button" data-dm-act="kick" data-dm-id="${esc(m.id)}">Kick</button><button class="btn btn-danger btn-sm" type="button" data-dm-act="ban" data-dm-id="${esc(m.id)}">Ban</button></div></td></tr>`;
         }).join("") || empty(5, "Nobody found. Search by the start of their name or username, or paste their user ID.");
     } catch (err) { toast(err.message, true); }
 };
@@ -3076,6 +3262,340 @@ async function dxNick(nickname) {
 }
 $("dx-nick").onsubmit = e => { e.preventDefault(); dxNick($("dx-nick-name").value); };
 $("dx-nick-reset").onclick = () => dxNick("");
+
+// Discord sections: the tab is split into Post, Support, Moderation, Community, Server, Insights and Set-up
+const DSEC = { "dp-panel": "post", "da-form": "post", "dr-panel": "post", "dk-panel": "support", "ds-panel": "support", "dm-panel": "mod", "dw-panel": "mod",
+    "dt-panel": "community", "dg-panel": "community", "dx-panel": "server", "dsv-panel": "server", "di-panel": "insights",
+    "dc-setup-panel": "setup", "dc-in-panel": "setup", "dc-linked-panel": "setup" };
+const DSEC_LOAD = { post: () => loadDr(), support: () => { loadDs(); loadForms(); }, mod: () => loadWarnings(), community: () => { loadGiveaways(); loadTags(); },
+    server: () => loadEmojis(), insights: () => loadInsights() };
+state.dsecLoaded = new Set();
+function showDsec(sec) {
+    const ready = !!(state.discord || {}).ready;
+    if (!ready) sec = "setup";
+    $("dc-nav").hidden = !ready;
+    for (const [id, s] of Object.entries(DSEC)) { const el = $(id); if (el) el.classList.toggle("dsec-off", s !== sec); }
+    document.querySelectorAll("#dc-nav [data-dsec]").forEach(b => b.classList.toggle("active", b.dataset.dsec === sec));
+    state.dsec = sec;
+    try { localStorage.setItem("rsg_dsec", sec); } catch (err) {}
+    if (ready && !state.dsecLoaded.has(sec) && DSEC_LOAD[sec]) { state.dsecLoaded.add(sec); DSEC_LOAD[sec](); }
+}
+$("dc-nav").onclick = e => { const b = e.target.closest("[data-dsec]"); if (b) showDsec(b.dataset.dsec); };
+function dcStartSection() {
+    let saved = "";
+    try { saved = localStorage.getItem("rsg_dsec") || ""; } catch (err) {}
+    showDsec(state.dsec || saved || "post");
+    if ((state.discord || {}).ready && !state.extraLoaded) { state.extraLoaded = true; loadExtra(); loadInsights(true); loadAllRoles(); }
+}
+const dcOpts = (first, list) => `<option value="">${esc(first)}</option>` + list.map(c => `<option value="${esc(c.id)}">${esc(c.label || ("# " + c.name))}</option>`).join("");
+function fillDcSelects() {
+    const ch = state.dp.channels || [];
+    document.querySelectorAll("select[data-dc-ch]").forEach(sel => { const v = sel.value; sel.innerHTML = dcOpts(sel.dataset.dcCh, ch.map(c => ({ id: c.id, label: (c.announcement ? "📢 " : "# ") + c.name }))); sel.value = v; });
+    document.querySelectorAll("select[data-dc-cat]").forEach(sel => { const v = sel.value; sel.innerHTML = dcOpts(sel.dataset.dcCat, (state.dp.categories || []).map(c => ({ id: c.id, label: "📁 " + c.name }))); sel.value = v; });
+    renderExtra(); renderDst();
+}
+function fillRoleSelects() {
+    const roles = (state.allRoles || []).filter(r => !r.managed && !r.buyer);
+    document.querySelectorAll("select[data-dc-role]").forEach(sel => {
+        const v = sel.value, list = sel.dataset.safe ? roles.filter(r => r.safe) : roles.filter(r => !r.powers);
+        sel.innerHTML = dcOpts(sel.dataset.dcRole, list.map(r => ({ id: r.id, label: "@" + r.name }))); sel.value = v;
+    });
+    renderDpr();
+}
+const dcDo = async (fn, ok) => { try { const r = await fn(); if (ok) toast(typeof ok === "function" ? ok(r) : ok); loadAudit(); return r || {}; } catch (err) { toast(err.message, true); return null; } };
+const dcAgo = s => s ? new Date(String(s).replace(" ", "T") + (String(s).includes("Z") ? "" : "Z")).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+
+// settings for part 3 (support, moderation, stats, product roles)
+async function loadExtra() {
+    try { state.extra = await api("/api/admin/discord/extra"); } catch (err) { state.extra = {}; }
+    state.dstRows = null; renderExtra(); renderDst(); renderDpr();
+}
+function renderExtra() {
+    const x = state.extra || {};
+    if (!x.ticket_categories) return;
+    $("ds-cats").value = (x.ticket_categories || []).join("\n"); $("ds-autoclose").value = String(x.ticket_autoclose_days || 0); $("ds-sugg").value = x.suggestions_channel || "";
+    $("dw-modlog").value = x.modlog_channel || ""; $("dw-limit").value = String(x.warn_limit ?? 3); $("dw-mins").value = String(x.warn_timeout_minutes || 60); $("dw-staff").checked = !!x.staff_commands;
+}
+async function saveExtra(change, msg) {
+    const r = await dcDo(() => post("/api/admin/discord/extra", change), d => msg + (d.registered ? "" : " (press Add the slash commands under Set-up to update Discord)"));
+    if (r) state.extra = { ...state.extra, ...r };
+    return r;
+}
+$("ds-settings").onsubmit = e => { e.preventDefault(); saveExtra({ ticket_categories: $("ds-cats").value.split("\n"), ticket_autoclose_days: Number($("ds-autoclose").value), suggestions_channel: $("ds-sugg").value }, "Support settings saved"); };
+$("dw-settings").onsubmit = e => { e.preventDefault(); saveExtra({ modlog_channel: $("dw-modlog").value, warn_limit: Number($("dw-limit").value), warn_timeout_minutes: Number($("dw-mins").value), staff_commands: $("dw-staff").checked }, "Moderation settings saved"); };
+
+// repeating posts
+async function loadDr() {
+    let d = {};
+    try { d = await api("/api/admin/discord/recurring"); } catch (err) {}
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], chName = id => ((state.dp.channels || []).find(c => c.id === id) || {}).name || id;
+    $("dr-list").innerHTML = (d.recurring || []).map(r => `<div class="row"><span><strong>${esc((r.post.embed || {}).title || r.post.text || "").slice(0, 60)}</strong><br>` +
+        `<span class="muted">#${esc(chName(r.post.channel_id))} · ${r.every === "day" ? "every day" : "every " + days[r.weekday]} · next ${esc(dcAgo(r.due))} · sent ${esc(r.sent || 0)}×${r.status === "paused" ? " · paused" : ""}</span></span>` +
+        `<span class="actions"><button class="btn btn-ghost btn-sm" type="button" data-dr-toggle="${esc(r.id)}" data-on="${r.status === "paused" ? 1 : 0}">${r.status === "paused" ? "Resume" : "Pause"}</button>` +
+        `<button class="btn btn-danger btn-sm" type="button" data-dr-del="${esc(r.id)}">Delete</button></span></div>`).join("") || '<span class="muted">No repeating posts yet.</span>';
+}
+$("dr-every").onchange = () => { $("dr-day").disabled = $("dr-every").value === "day"; };
+$("dr-form").onsubmit = async e => {
+    e.preventDefault();
+    // your local day and time -> UTC, as the server keeps them
+    const [h, m] = ($("dr-time").value || "12:00").split(":").map(Number), ref = new Date();
+    const want = Number($("dr-day").value), jsDay = (want + 1) % 7;
+    ref.setDate(ref.getDate() + ((jsDay - ref.getDay() + 7) % 7)); ref.setHours(h, m, 0, 0);
+    const utcWeekday = (ref.getUTCDay() + 6) % 7, time = String(ref.getUTCHours()).padStart(2, "0") + ":" + String(ref.getUTCMinutes()).padStart(2, "0");
+    const title = $("dr-title").value.trim();
+    const r = await dcDo(() => post("/api/admin/discord/recurring", { every: $("dr-every").value, weekday: utcWeekday, time,
+        post: { channel_id: $("dr-channel").value, text: $("dr-text").value, ping: $("dr-ping").value, embed: title ? { title } : {} } }), "Repeating post added");
+    if (r) { $("dr-form").reset(); loadDr(); }
+};
+$("dr-list").onclick = async e => {
+    const t = e.target.closest("[data-dr-toggle]"), d = e.target.closest("[data-dr-del]");
+    if (t) { await dcDo(() => post("/api/admin/discord/recurring/" + t.dataset.drToggle, { active: t.dataset.on === "1" }), t.dataset.on === "1" ? "Resumed" : "Paused"); loadDr(); }
+    if (d && await confirmBox("Delete this repeating post?", "It will not be posted again. Posts already in Discord stay.", "Delete", true)) { await dcDo(() => api("/api/admin/discord/recurring/" + d.dataset.drDel, { method: "DELETE" }), "Deleted"); loadDr(); }
+};
+
+// suggestions and reports
+const SUGG = { open: "💡 Open", planned: "🗺️ Planned", accepted: "✅ Accepted", declined: "❌ Declined", done: "🚀 Done" };
+async function loadDs() {
+    let d = {};
+    try { d = await api("/api/admin/discord/suggestions"); } catch (err) { $("ds-sugg-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; return; }
+    $("ds-sugg-list").innerHTML = (d.suggestions || []).map(s => `<div class="row"><span>${esc(s.text.slice(0, 160))}<br><span class="muted">${esc(s.name || "")} · ${esc(dcAgo(s.created_at))}${s.note ? " · " + esc(s.note) : ""}</span></span>` +
+        `<select data-ds-status="${esc(s.id)}" style="width:auto;padding:6px 8px;font-size:13px">${Object.entries(SUGG).map(([k, v]) => `<option value="${k}"${k === (s.status || "open") ? " selected" : ""}>${v}</option>`).join("")}</select></div>`).join("")
+        || '<span class="muted">No suggestions yet. Choose a suggestions channel to turn on /suggest.</span>';
+    const open = (d.reports || []).filter(r => r.status === "open");
+    $("ds-reports").innerHTML = (d.reports || []).slice(0, 30).map(r => `<div class="row"><span>${r.status === "open" ? "🚩" : "✔️"} <strong>${esc(r.author)}</strong>: ${esc((r.text || "(no text)").slice(0, 140))}<br>` +
+        `<span class="muted">reported by ${esc(r.by)} · ${esc(dcAgo(r.created_at))}${r.handled_by ? " · handled by " + esc(r.handled_by) : ""}</span></span>` +
+        `<span class="actions"><a class="btn btn-ghost btn-sm" href="${esc(r.link)}" target="_blank" rel="noopener">Open</a>${r.status === "open" ? `<button class="btn btn-sm" type="button" data-ds-done="${esc(r.id)}">Handled</button>` : ""}</span></div>`).join("")
+        || '<span class="muted">No reports. Choose a mod log channel (Moderation) to turn on Report to staff.</span>';
+    dcBadge("support", open.length + (state.appsWaiting || 0));
+}
+function dcBadge(sec, n) { const el = $("dc-n-" + sec); if (el) { el.hidden = !n; el.textContent = n; } }
+$("ds-sugg-list").onchange = async e => {
+    const s = e.target.closest("[data-ds-status]");
+    if (!s) return;
+    const note = s.value === "open" ? "" : (prompt("A short note for the post (optional):", "") || "");
+    const r = await dcDo(() => post("/api/admin/discord/suggestions/" + s.dataset.dsStatus, { status: s.value, note }), "Suggestion updated in Discord");
+    if (r && r.warning) toast("Saved, but the Discord post could not be changed: " + r.warning, true);
+    loadDs();
+};
+$("ds-reports").onclick = async e => { const b = e.target.closest("[data-ds-done]"); if (b) { await dcDo(() => post("/api/admin/discord/reports/" + b.dataset.dsDone, { resolved: true }), "Marked as handled"); loadDs(); } };
+
+// forms and applications
+function renderDfQuestions(qs) {
+    qs = (qs || []).concat(Array(5).fill({})).slice(0, 5);
+    $("df-questions").innerHTML = qs.map((q, i) => `<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-bottom:6px">` +
+        `<input data-dfq="${i}" maxlength="45" placeholder="Question ${i + 1}${i ? " (optional)" : ""}" value="${esc(q.label || "")}" style="padding:7px 10px">` +
+        `<label style="display:flex;gap:6px;align-items:center;font-weight:400;margin:0;font-size:13px"><input type="checkbox" data-dfl="${i}"${q.long ? " checked" : ""}> long</label></div>`).join("");
+}
+async function loadForms() {
+    let d = {};
+    try { d = await api("/api/admin/discord/forms"); } catch (err) { return; }
+    state.forms = d.forms || [];
+    if (!$("df-questions").innerHTML) renderDfQuestions([]);
+    $("df-list").innerHTML = state.forms.map(f => `<div class="row"><span><strong>${esc(f.title)}</strong><br><span class="muted">${f.questions.length} question(s)</span></span>` +
+        `<span class="actions"><select data-df-ch="${esc(f.id)}" style="width:auto;padding:6px 8px;font-size:13px">${dcOpts("Post in…", (state.dp.channels || []).map(c => ({ id: c.id, name: c.name })))}</select>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-df-edit="${esc(f.id)}">Edit</button><button class="btn btn-danger btn-sm" type="button" data-df-del="${esc(f.id)}">Delete</button></span></div>`).join("");
+    const apps = d.applications || [];
+    state.appsWaiting = apps.filter(a => a.status === "pending").length;
+    $("df-apps").innerHTML = apps.map(a => `<tr><td>${esc(a.form)}<div class="muted" style="font-size:13px">${esc(dcAgo(a.created_at))}</div></td><td>${esc(a.name)}<div class="muted" style="font-size:12px">${esc(a.member)}</div></td>` +
+        `<td style="font-size:13px;max-width:420px">${(a.answers || []).map(x => `<strong>${esc(x.q)}</strong><br>${esc(x.a)}`).join("<br>")}</td>` +
+        `<td>${a.status === "pending" ? '<span class="badge in_development">Waiting</span>' : a.status === "approved" ? '<span class="badge published">Approved</span>' : '<span class="badge">Declined</span>'}</td>` +
+        `<td>${a.status === "pending" ? `<div class="actions"><button class="btn btn-sm" type="button" data-df-app="approve" data-id="${esc(a.id)}">Approve</button><button class="btn btn-ghost btn-sm" type="button" data-df-app="decline" data-id="${esc(a.id)}">Decline</button></div>` : ""}</td></tr>`).join("")
+        || empty(5, "No applications yet. Make a form, then post its button in a channel.");
+    dcBadge("support", state.appsWaiting);
+}
+$("df-new").onclick = () => { $("df-form").reset(); $("df-id").value = ""; renderDfQuestions([]); };
+$("df-form").onsubmit = async e => {
+    e.preventDefault();
+    const questions = [0, 1, 2, 3, 4].map(i => ({ label: document.querySelector(`[data-dfq="${i}"]`).value, long: document.querySelector(`[data-dfl="${i}"]`).checked })).filter(q => q.label.trim());
+    const r = await dcDo(() => post("/api/admin/discord/forms", { id: $("df-id").value, title: $("df-title").value, questions, role_id: $("df-role").value, thanks: $("df-thanks").value }), "Form saved");
+    if (r) { $("df-new").onclick(); loadForms(); }
+};
+$("df-list").onclick = async e => {
+    const ed = e.target.closest("[data-df-edit]"), del = e.target.closest("[data-df-del]");
+    if (ed) { const f = state.forms.find(x => x.id === ed.dataset.dfEdit); $("df-id").value = f.id; $("df-title").value = f.title; $("df-role").value = f.role_id || ""; $("df-thanks").value = f.thanks || ""; renderDfQuestions(f.questions); }
+    if (del && await confirmBox("Delete this form?", "Its buttons in Discord stop working. Answers already sent stay here.", "Delete", true)) { await dcDo(() => api("/api/admin/discord/forms/" + del.dataset.dfDel, { method: "DELETE" }), "Form deleted"); loadForms(); }
+};
+$("df-list").onchange = async e => { const s = e.target.closest("[data-df-ch]"); if (s && s.value) { await dcDo(() => post(`/api/admin/discord/forms/${s.dataset.dfCh}/post`, { channel_id: s.value }), "Form button posted"); s.value = ""; } };
+$("df-apps").onclick = async e => {
+    const b = e.target.closest("[data-df-app]");
+    if (!b) return;
+    const note = prompt(b.dataset.dfApp === "approve" ? "A note for them (optional):" : "Why not? (optional, they get it by DM)", "");
+    if (note === null) return;
+    const r = await dcDo(() => post("/api/admin/discord/applications/" + b.dataset.id, { action: b.dataset.dfApp, note }), b.dataset.dfApp === "approve" ? "Approved" : "Declined");
+    if (r && r.warning) toast(r.warning, true);
+    loadForms();
+};
+
+// warnings and audit log
+async function loadWarnings() {
+    let d = {};
+    try { d = await api("/api/admin/discord/warnings"); } catch (err) { $("dw-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; return; }
+    $("dw-list").innerHTML = (d.warnings || []).map(w => `<div class="row"><span>⚠️ <strong>${esc(w.name || w.member)}</strong>: ${esc(w.reason)}<br><span class="muted">${esc(w.by)} · ${esc(dcAgo(w.created_at))}</span></span>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-dw-del="${esc(w.id)}">Remove</button></div>`).join("") || '<span class="muted">No active warnings. Warn from Members (above) or with /warn in Discord.</span>';
+}
+$("dw-list").onclick = async e => { const b = e.target.closest("[data-dw-del]"); if (b) { await dcDo(() => api("/api/admin/discord/warnings/" + b.dataset.dwDel, { method: "DELETE" }), "Warning removed"); loadWarnings(); } };
+$("dw-audit-btn").onclick = async () => {
+    const d = await dcDo(() => api("/api/admin/discord/audit-log"));
+    if (!d) return;
+    $("dw-audit-wrap").hidden = false;
+    $("dw-audit").innerHTML = (d.entries || []).map(x => `<tr><td class="muted" style="white-space:nowrap">${esc(dcAgo(x.at))}</td><td>${esc(x.who)}</td><td>${esc(x.what)}</td><td>${esc(x.target)}</td><td class="muted">${esc(x.reason)}</td></tr>`).join("") || empty(5, "Nothing yet.");
+};
+// a Warn button for members found in Members & moderation
+$("dm-list").addEventListener("click", async e => {
+    const b = e.target.closest("[data-dm-warn]");
+    if (!b) return;
+    const reason = prompt("Warning for " + b.dataset.name + ". Reason (they get it by DM):", $("dm-reason").value);
+    if (!reason || !reason.trim()) return;
+    const r = await dcDo(() => post("/api/admin/discord/warnings", { member_id: b.dataset.dmWarn, name: b.dataset.name, reason }), d => `Warned (${d.count} warning${d.count === 1 ? "" : "s"})${d.timed_out ? ", timed out" : ""}`);
+    if (r) loadWarnings();
+});
+
+// button giveaways
+async function loadGiveaways() {
+    let d = {};
+    try { d = await api("/api/admin/discord/giveaways"); } catch (err) { return; }
+    $("dg-list").innerHTML = (d.giveaways || []).map(g => `<div class="row"><span>🎁 <strong>${esc(g.prize)}</strong><br><span class="muted">${esc(g.entries)} entries · ` +
+        (g.status === "running" ? `ends ${esc(dcAgo(g.due))}` : `ended · won by ${esc((g.winner_ids || []).length ? (g.winner_ids || []).length + " member(s)" : "nobody")}`) + `</span></span>` +
+        `<span class="actions">${g.status === "running" ? `<button class="btn btn-ghost btn-sm" type="button" data-dg="end" data-id="${esc(g.id)}">End now</button>` : `<button class="btn btn-ghost btn-sm" type="button" data-dg="reroll" data-id="${esc(g.id)}">Re-draw</button>`}</span></div>`).join("");
+}
+$("dg-form").onsubmit = async e => {
+    e.preventDefault();
+    const r = await dcDo(() => post("/api/admin/discord/giveaways", { channel_id: $("dg-channel").value, prize: $("dg-prize").value, description: $("dg-desc").value,
+        hours: Number($("dg-hours").value), winners: Number($("dg-n").value), buyers_only: $("dg-buyers").checked }), "Giveaway started in Discord");
+    if (r) { $("dg-prize").value = $("dg-desc").value = ""; loadGiveaways(); }
+};
+$("dg-list").onclick = async e => {
+    const b = e.target.closest("[data-dg]");
+    if (!b || !(await confirmBox(b.dataset.dg === "end" ? "End the giveaway now?" : "Draw new winners?", b.dataset.dg === "end" ? "Winners are drawn and announced now." : "New winners are drawn from the other entries and announced.", b.dataset.dg === "end" ? "End now" : "Re-draw"))) return;
+    await dcDo(() => post(`/api/admin/discord/giveaways/${b.dataset.id}/${b.dataset.dg}`, {}), d => d.winners.length ? `${d.winners.length} winner(s) announced` : "Nobody to draw");
+    loadGiveaways();
+};
+
+// saved answers (/tag)
+async function loadTags() {
+    try { state.tags = (await api("/api/admin/discord/tags")).tags || []; } catch (err) { state.tags = []; }
+    renderTags();
+}
+function renderTags() {
+    const f = $("dtag-filter").value.trim().toLowerCase(), list = (state.tags || []).filter(t => !f || t.ref.includes(f) || (t.text || "").toLowerCase().includes(f));
+    $("dtag-list").innerHTML = list.map(t => `<div class="row"><span><code>${esc(t.ref)}</code> <span class="muted">${esc((t.text || "").slice(0, 70))}${t.uses ? ` · used ${esc(t.uses)}×` : ""}</span></span>` +
+        `<span class="actions"><button class="btn btn-ghost btn-sm" type="button" data-tag-edit="${esc(t.id)}">Edit</button><button class="btn btn-danger btn-sm" type="button" data-tag-del="${esc(t.id)}">Delete</button></span></div>`).join("")
+        || `<span class="muted">${state.tags && state.tags.length ? "No match." : "No saved answers yet."}</span>`;
+}
+$("dtag-filter").oninput = renderTags;
+$("dtag-new").onclick = () => { $("dtag-form").reset(); $("dtag-id").value = ""; renderTags(); };
+$("dtag-form").onsubmit = async e => {
+    e.preventDefault();
+    const r = await dcDo(() => post("/api/admin/discord/tags", { id: $("dtag-id").value, name: $("dtag-name").value, text: $("dtag-text").value, button_label: $("dtag-bl").value, button_url: $("dtag-bu").value }), "Saved: /tag " + $("dtag-name").value.trim().toLowerCase());
+    if (r) { $("dtag-new").onclick(); loadTags(); }
+};
+$("dtag-list").onclick = async e => {
+    const ed = e.target.closest("[data-tag-edit]"), del = e.target.closest("[data-tag-del]");
+    if (ed) { const t = state.tags.find(x => x.id === ed.dataset.tagEdit); $("dtag-id").value = t.id; $("dtag-name").value = t.ref; $("dtag-text").value = t.text; $("dtag-bl").value = t.button_label || ""; $("dtag-bu").value = t.button_url || ""; $("dtag-name").focus(); }
+    if (del && await confirmBox("Delete this saved answer?", "/tag will no longer offer it.", "Delete", true)) { await dcDo(() => api("/api/admin/discord/tags/" + del.dataset.tagDel, { method: "DELETE" }), "Deleted"); loadTags(); }
+};
+
+// server management: roles, channels, emojis, invites, stat channels, product roles, bulk roles
+async function loadAllRoles() {
+    try { state.allRoles = (await api("/api/admin/discord/roles/all")).roles || []; } catch (err) { $("dro-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; return; }
+    $("dro-list").innerHTML = state.allRoles.map(r => `<div class="row"><span style="display:flex;gap:8px;align-items:center"><input type="color" value="${esc(r.color || "#99aab5")}" data-ro-color="${esc(r.id)}" ${r.managed ? "disabled" : ""} style="width:28px;height:24px;padding:0;border:0;background:none" aria-label="Colour of ${esc(r.name)}">` +
+        `<span>@${esc(r.name)}${r.buyer ? ' <span class="badge published">buyer role</span>' : ""}${r.managed ? ' <span class="badge">bot/integration</span>' : ""}${r.powers ? ' <span class="badge in_development">moderator powers</span>' : ""}</span></span>` +
+        (r.managed || r.buyer ? "" : `<span class="actions"><button class="btn btn-ghost btn-sm" type="button" data-ro-rename="${esc(r.id)}" data-name="${esc(r.name)}">Rename</button><button class="btn btn-danger btn-sm" type="button" data-ro-del="${esc(r.id)}" data-name="${esc(r.name)}">Delete</button></span>`) + `</div>`).join("");
+    fillRoleSelects();
+}
+$("dro-form").onsubmit = async e => { e.preventDefault(); const r = await dcDo(() => post("/api/admin/discord/roles/create", { name: $("dro-name").value, color: $("dro-color").value }), "Role created"); if (r) { $("dro-name").value = ""; loadAllRoles(); loadDxRoles(); } };
+$("dro-list").onchange = async e => { const c = e.target.closest("[data-ro-color]"); if (c) await dcDo(() => post("/api/admin/discord/roles/" + c.dataset.roColor, { color: c.value }), "Colour changed"); };
+$("dro-list").onclick = async e => {
+    const rn = e.target.closest("[data-ro-rename]"), del = e.target.closest("[data-ro-del]");
+    if (rn) { const name = prompt("New name for @" + rn.dataset.name, rn.dataset.name); if (name && name.trim()) { await dcDo(() => post("/api/admin/discord/roles/" + rn.dataset.roRename, { name }), "Role renamed"); loadAllRoles(); } }
+    if (del && await confirmBox(`Delete @${del.dataset.name}?`, "Everyone loses this role. This cannot be undone.", "Delete role", true)) { await dcDo(() => api("/api/admin/discord/roles/" + del.dataset.roDel, { method: "DELETE" }), "Role deleted"); loadAllRoles(); }
+};
+$("dch-form").onsubmit = async e => {
+    e.preventDefault();
+    const r = await dcDo(() => post("/api/admin/discord/channels/create", { name: $("dch-name").value, kind: $("dch-kind").value, category_id: $("dch-cat").value, topic: $("dch-topic").value, buyers_only: $("dch-buyers").checked }), d => "Created #" + d.name);
+    if (r) { $("dch-form").reset(); loadDpChannels(); }
+};
+$("dch-del-btn").onclick = async () => {
+    const sel = $("dch-del");
+    if (!sel.value || !(await confirmBox("Delete " + sel.selectedOptions[0].textContent + "?", "The channel and all its messages are gone for good.", "Delete channel", true))) return;
+    if (await dcDo(() => api("/api/admin/discord/channels/" + sel.value, { method: "DELETE" }), "Channel deleted")) loadDpChannels();
+};
+async function loadEmojis() {
+    try {
+        const d = await api("/api/admin/discord/emojis");
+        $("dem-list").innerHTML = (d.emojis || []).map(x => `<span><img src="${esc(x.url)}" alt="" loading="lazy">:${esc(x.name)}:<button class="btn btn-ghost btn-sm" type="button" data-em-del="${esc(x.id)}" style="padding:2px 8px">Delete</button></span>`).join("") || '<p class="muted" style="margin:0">No custom emojis yet.</p>';
+    } catch (err) { $("dem-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; }
+}
+$("dem-file").onchange = () => {
+    const f = $("dem-file").files[0];
+    if (!f) return;
+    if (f.size > 256 * 1024) { toast("That picture is over 256 KB", true); $("dem-file").value = ""; return; }
+    const rd = new FileReader();
+    rd.onload = () => { state.emoji = rd.result; $("dem-picked").textContent = "Picked: " + f.name; if (!$("dem-name").value) $("dem-name").value = f.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32); };
+    rd.readAsDataURL(f);
+};
+$("dem-form").onsubmit = async e => {
+    e.preventDefault();
+    if (!state.emoji) return toast("Pick a picture first", true);
+    if (await dcDo(() => post("/api/admin/discord/emojis", { name: $("dem-name").value, image: state.emoji }), "Emoji added")) { state.emoji = ""; $("dem-form").reset(); $("dem-picked").textContent = "PNG, JPG, GIF or WebP up to 256 KB."; loadEmojis(); }
+};
+$("dem-list").onclick = async e => { const b = e.target.closest("[data-em-del]"); if (b && await confirmBox("Delete this emoji?", "It disappears from all messages.", "Delete", true)) { await dcDo(() => api("/api/admin/discord/emojis/" + b.dataset.emDel, { method: "DELETE" }), "Emoji deleted"); loadEmojis(); } };
+$("dinv-btn").onclick = async () => {
+    const d = await dcDo(() => api("/api/admin/discord/invites"));
+    if (!d) return;
+    $("dinv-list").innerHTML = (d.invites || []).map(i => `<div class="row"><span><code>${esc(i.code)}</code> #${esc(i.channel)}<br><span class="muted">${esc(i.uses)} use(s)${i.max_uses ? " of " + esc(i.max_uses) : ""} · by ${esc(i.by || "?")}${i.expires ? " · ends " + esc(i.expires) : " · never ends"}</span></span>` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-inv-del="${esc(i.code)}">Delete</button></div>`).join("") || '<span class="muted">No invites.</span>';
+};
+$("dinv-list").onclick = async e => { const b = e.target.closest("[data-inv-del]"); if (b && await confirmBox("Delete invite " + b.dataset.invDel + "?", "The link stops working.", "Delete", true)) { await dcDo(() => api("/api/admin/discord/invites/" + b.dataset.invDel, { method: "DELETE" }), "Invite deleted"); $("dinv-btn").onclick(); } };
+function renderDst() {
+    const rows = state.dstRows || (state.dstRows = ((state.extra || {}).stat_channels || []).map(s => ({ ...s })));
+    const all = [...(state.dp.voice || []).map(c => ({ id: c.id, label: "🔊 " + c.name })), ...(state.dp.channels || []).map(c => ({ id: c.id, label: "# " + c.name }))];
+    $("dst-rows").innerHTML = rows.map((s, i) => `<div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:6px"><select data-dst="channel_id" data-i="${i}" style="padding:7px">${dcOpts("Channel", all)}</select>` +
+        `<input data-dst="template" data-i="${i}" maxlength="100" value="${esc(s.template)}" placeholder="👥 Members: {members}" style="padding:7px 10px"><button class="btn btn-ghost btn-sm" type="button" data-dst-del="${i}">✕</button></div>`).join("") || '<p class="muted" style="margin:0 0 10px;font-size:14px">None yet.</p>';
+    rows.forEach((s, i) => { const sel = document.querySelector(`[data-dst="channel_id"][data-i="${i}"]`); if (sel) sel.value = s.channel_id; });
+}
+$("dst-rows").oninput = $("dst-rows").onchange = e => { const f = e.target.closest("[data-dst]"); if (f) state.dstRows[Number(f.dataset.i)][f.dataset.dst] = f.value; };
+$("dst-rows").onclick = e => { const d = e.target.closest("[data-dst-del]"); if (d) { state.dstRows.splice(Number(d.dataset.dstDel), 1); renderDst(); } };
+$("dst-add").onclick = () => { state.dstRows = state.dstRows || []; if (state.dstRows.length >= 5) return toast("Up to 5", true); state.dstRows.push({ channel_id: "", template: "👥 Members: {members}" }); renderDst(); };
+$("dst-form").onsubmit = e => { e.preventDefault(); saveExtra({ stat_channels: state.dstRows || [] }, "Stat channels saved"); };
+$("dst-now").onclick = () => dcDo(() => post("/api/admin/discord/stats/update", {}), d => d.channels.length ? "Updated: " + d.channels.map(c => c.error ? "failed (" + c.error + ")" : c.name).join(", ") : "Save some stat channels first");
+function renderDpr() {
+    const map = (state.extra || {}).product_roles || {}, roles = (state.allRoles || []).filter(r => !r.managed && !r.buyer && !r.powers);
+    $("dpr-rows").innerHTML = (state.products || []).map(p => `<div class="field"><label>${esc(p.name)}</label><select data-dpr="${esc(p.id)}">${dcOpts("No extra role", roles.map(r => ({ id: r.id, label: "@" + r.name })))}</select></div>`).join("") || '<p class="muted">No products yet.</p>';
+    document.querySelectorAll("[data-dpr]").forEach(s => { s.value = map[s.dataset.dpr] || ""; });
+}
+$("dpr-form").onsubmit = e => { e.preventDefault(); const m = {}; document.querySelectorAll("[data-dpr]").forEach(s => { if (s.value) m[s.dataset.dpr] = s.value; }); saveExtra({ product_roles: m }, "Product roles saved. Check everyone again (Set-up) to hand them out now."); };
+$("dbr-form").onsubmit = async e => {
+    e.preventDefault();
+    let after = 0, done = 0, failed = 0;
+    $("dbr-out").textContent = "Working…";
+    for (let i = 0; i < 40; i++) {
+        const r = await dcDo(() => post("/api/admin/discord/bulk-role", { role_id: $("dbr-role").value, action: $("dbr-action").value, who: $("dbr-who").value, after }));
+        if (!r) break;
+        done += r.done; failed += r.failed;
+        $("dbr-out").textContent = `${done} done${failed ? `, ${failed} failed (not in the server?)` : ""}${r.next ? "…" : "."}`;
+        if (!r.next) break;
+        after = r.next;
+    }
+};
+
+// insights
+const STAT_LABELS = { tags: "Saved answers", reminders_waiting: "Reminders waiting", suggestions_open: "Open suggestions", reports_open: "Open reports",
+    applications_waiting: "Applications waiting", warnings: "Active warnings", giveaways_running: "Giveaways running", repeating_posts: "Repeating posts" };
+async function loadInsights(badgesOnly) {
+    let d;
+    try { d = await api("/api/admin/discord/insights"); } catch (err) { return; }
+    const t = d.totals || {};
+    dcBadge("support", (t.reports_open || 0) + (t.applications_waiting || 0)); dcBadge("mod", 0);
+    if (badgesOnly) return;
+    $("di-totals").innerHTML = Object.entries(STAT_LABELS).map(([k, label]) => `<div class="row"><span>${label}</span><strong>${esc(t[k] || 0)}</strong></div>`).join("");
+    const bars = (el, entries) => { const max = Math.max(1, ...entries.map(e => e[1])); $(el).innerHTML = entries.map(([k, v]) => `<div><span>${esc(k)}</span><i style="width:${Math.max(2, v / max * 100)}%"></i><span class="muted">${esc(v)}</span></div>`).join("") || '<span class="muted">Nothing yet.</span>'; };
+    const NAMES = { gw: "🎉 Giveaway entries", role: "Role buttons", form: "Form buttons", open_ticket: "Ticket button", ticket_cat: "Ticket menu", claim_ticket: "Claim ticket",
+        close_ticket: "Close ticket", suggest: "Suggestions sent", support: "Support forms sent" };
+    bars("di-usage", Object.entries(d.usage || {}).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => [NAMES[k] || k, v]));
+    bars("di-days", Object.entries(d.days || {}).sort().slice(-14).map(([k, v]) => [new Date(k + "T12:00:00Z").toLocaleDateString([], { month: "short", day: "numeric" }), v]));
+}
+$("di-reload").onclick = () => loadInsights();
 
 // Shop: Stripe set-up, discount codes, prices, sales and revenue per product
 function shopMoney(cents, currency) {

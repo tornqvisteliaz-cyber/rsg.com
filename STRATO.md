@@ -240,7 +240,43 @@ Settings → Roles.
   milestones (25, 50, 100, 250, 500, 1,000 …) in a channel you choose.
 - **Bot nickname:** what the bot is called in your server.
 
-These need **Timeout Members**, **Kick Members**, **Ban Members**, **Manage Channels** and **Change
+**Even more (Admin → Discord is split into Post, Support, Moderation, Community, Server, Insights and
+Set-up):**
+
+- **Saved answers** (`/tag`): as many as you like (install, refund, vatsim…). Members start typing and
+  Discord suggests them; `/tag install for:@someone` mentions that person. Uses are counted.
+- **Reminders** (`/remind in:2h about:Group flight`): the bot DMs them when it is time (or pings them in
+  the channel if DMs are closed). Up to 30 days, 10 waiting per member.
+- **Suggestions** (`/suggest`, when a suggestions channel is chosen): posted with 👍 👎; set Planned,
+  Accepted, Declined or Done with a note in the admin, and the post in Discord changes with it.
+- **Report to staff**: right-click any message → Apps → *Report to staff* (when a mod log channel is
+  chosen). It goes to the mod log with a link; the admin lists reports to mark handled.
+- **Forms** (e.g. a beta tester application, up to 5 questions): post its button; answers come to
+  the admin; **Approve** can give a role, and the member gets a DM either way.
+- **Button giveaways**: members press 🎉 Enter (optionally verified buyers only); winners are drawn
+  by themselves when the time is up, with *End now* and *Re-draw*.
+- **Ticket topics, Claim and auto-close**: the ticket panel becomes a topic menu (Technical help,
+  Licence, Billing…), the team can **Claim** a ticket, and tickets with no reply for N days close.
+- **Staff commands in Discord**: `/warn`, `/warnings`, `/timeout`, `/clear`, `/slowmode`, `/lock`,
+  `/unlock` and right-click a member → Apps → *User info* (linked account, licences, warnings).
+  Only members with the matching Discord permission see them.
+- **Warnings**: a DM to the member; at the limit (e.g. 3) they are timed out automatically.
+- **Mod log**: every timeout, kick, ban, warning, clean-up, lock, report, application and giveaway.
+- **Server management**: create roles (always without permissions), rename/recolour/delete them;
+  create channels (optionally only for verified buyers) and delete them; upload custom emojis; list
+  and delete invites; read Discord's audit log.
+- **Live stat channels**: e.g. `👥 Members: {members}` or `✈️ Pilots: {buyers}`, renamed about every
+  30 minutes.
+- **Product roles**: an extra role per product (e.g. *HeavyPro owner*) that follows the licence.
+- **Repeating posts**: every day or every week at a time you choose (e.g. *Screenshot Saturday*).
+- **Give a role to many people**: everyone linked, only licence holders, or only those without.
+- **Insights**: what is waiting for you, the most used commands and buttons, and use per day.
+
+Timed things (reminders, giveaways, repeating posts, stat channels, auto-close) run at the first
+visit to the website after they are due, like scheduled posts.
+
+These need **Timeout Members**, **Kick Members**, **Ban Members**, **Manage Channels**, **Manage
+Server** (to list invites), **View Audit Log**, **Manage Expressions** (emojis) and **Change
 Nickname** as well. The invite link asks for them; a bot invited earlier: press **Invite the bot**
 again and accept (or give its role those permissions). The bot's role must be above the roles it
 gives and the members it moderates.
