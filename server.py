@@ -3064,7 +3064,7 @@ SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
 # Add Reactions, Manage Messages (pins), Read Message History, Send Polls, Manage Events
-DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38))  # + create private threads, send in threads (support tickets)
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38) | (1 << 34))  # + create private threads, send in threads, manage threads (support tickets)
 
 
 def discord_settings():
@@ -3306,7 +3306,7 @@ def discord_interactions():
     if event.get("type") == 1:  # Discord checking the address
         return jsonify({"type": 1})
     data = event.get("data") or {}
-    if event.get("type") == 5 or (event.get("type") == 2 and data.get("name") != "verify"):
+    if event.get("type") in (3, 5) or (event.get("type") == 2 and data.get("name") != "verify"):
         return jsonify(discord_interaction(event))
     if event.get("type") != 2:
         return jsonify({"type": 4, "data": {"content": "I do not know that one. Try /help.", "flags": 64}})
@@ -3470,6 +3470,27 @@ def admin_discord_command():
     if error:
         return err(error, 502)
     audit(user, "discord_command", " ".join("/" + c["name"] for c in DISCORD_COMMANDS))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/discord/ticket-panel")
+def admin_discord_ticket_panel():
+    """Posts a message with an 'Open a ticket' button, so people start a ticket with one click."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    cfg = discord_settings()
+    channel = str(body().get("channel_id") or cfg.get("tickets_channel") or "")
+    if not SNOWFLAKE.match(channel):
+        return err("Pick a channel to post the button in (or set a Support tickets channel first).", 400)
+    text = str(body().get("text") or "").strip()[:1500] or "Need a hand from the Rotaidem team? Click below to open a private support ticket. Only you and our team will see it."
+    components = [{"type": 1, "components": [{"type": 2, "style": 1, "label": "Open a ticket", "emoji": {"name": "🎫"}, "custom_id": "open_ticket"}]}]
+    _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload={"content": text, "components": components, "allowed_mentions": {"parse": []}})
+    if error:
+        return err(error, 502)
+    audit(user, "discord_ticket_panel", channel)
     return jsonify({"ok": True})
 
 
@@ -3826,6 +3847,12 @@ DISCORD_COMMANDS = [
     {"name": "profile", "type": 1, "description": "Look up a shared HeavyPro feel profile",
      "options": [{"type": 3, "name": "name", "description": "The profile's name", "required": True, "max_length": 60}]},
     {"name": "support", "type": 1, "description": "Send a message to Rotaidem support"},
+    {"name": "ticket", "type": 1, "description": "Open a private support ticket with the team"},
+    {"name": "account", "type": 1, "description": "Your Rotaidem account: orders, licences and settings"},
+    {"name": "store", "type": 1, "description": "Where to buy Rotaidem products"},
+    {"name": "roadmap", "type": 1, "description": "What Rotaidem is working on next"},
+    {"name": "faq", "type": 1, "description": "Answers to common questions, and the install guide"},
+    {"name": "socials", "type": 1, "description": "Rotaidem's website, reviews and social links"},
     {"name": "help", "type": 1, "description": "What the Rotaidem bot can do"},
 ]
 
@@ -3918,6 +3945,33 @@ def discord_cmd_help(event):
     return discord_reply("\n".join(lines), components=discord_link_row(("Help and FAQ", "/support"), ("Contact", "/contact")))
 
 
+def discord_cmd_ticket(event):
+    return discord_cmd_support(event)  # /ticket opens the same private-ticket form as /support
+
+
+def discord_cmd_account(event):
+    return discord_reply("Your Rotaidem account — orders, licence keys and settings:", components=discord_link_row(("My account", "/account")))
+
+
+def discord_cmd_store(event):
+    return discord_reply("Get Rotaidem add-ons for Microsoft Flight Simulator:", components=discord_link_row(("All products", "/addons/"), ("HeavyPro", "/heavypro")))
+
+
+def discord_cmd_roadmap(event):
+    return discord_reply("What we're building next:", components=discord_link_row(("Roadmap", "/roadmap"), ("Latest news", "/newsletter")))
+
+
+def discord_cmd_faq(event):
+    return discord_reply("Answers to common questions:", components=discord_link_row(("Help & FAQ", "/support"), ("Install guide", "/installation")))
+
+
+def discord_cmd_socials(event):
+    labels = {"discord": "Discord", "youtube": "YouTube", "instagram": "Instagram", "x": "X", "facebook": "Facebook", "twitch": "Twitch", "tiktok": "TikTok"}
+    buttons = [{"type": 2, "style": 5, "label": labels.get(k, k), "url": u} for k, u in list((site_config().get("socials") or {}).items())[:5]]
+    rows = ([{"type": 1, "components": buttons}] if buttons else []) + discord_link_row(("Website", "/"))
+    return discord_reply("Find Rotaidem here:", components=rows)
+
+
 def discord_support_submit(event):
     discord_id, name, user = discord_member(event)
     values = {c["custom_id"]: str(c.get("value") or "").strip() for row in (event.get("data") or {}).get("components") or []
@@ -3946,23 +4000,48 @@ def discord_open_ticket(channel, discord_id, name, subject, message):
             app.logger.warning("Ticket thread for %s: %s", name, error)
             return False
         body = f"New support ticket from <@{discord_id}>.\n**Subject:** {str(subject).strip() or '(none)'}\n\n{str(message)[:1800]}"
-        discord_call("POST", f"/channels/{thread['id']}/messages", payload={"content": body[:2000], "allowed_mentions": {"users": [discord_id]}})
+        close = [{"type": 1, "components": [{"type": 2, "style": 4, "label": "Close ticket", "emoji": {"name": "🔒"}, "custom_id": "close_ticket"}]}]
+        discord_call("POST", f"/channels/{thread['id']}/messages", payload={"content": body[:2000], "components": close, "allowed_mentions": {"users": [discord_id]}})
         return True
     except Exception:  # noqa: BLE001 - a member never sees a ticketing problem; the inbox already has the message
         app.logger.exception("Opening ticket thread failed for %s", name)
         return False
 
 
+def discord_close_ticket(event):
+    """A member or staff pressed Close ticket in a thread: post a note, then archive and lock it."""
+    channel = str(event.get("channel_id") or "")
+    _, name, _ = discord_member(event)
+    if not SNOWFLAKE.match(channel):
+        return discord_reply("This button only works inside a ticket.")
+    try:
+        discord_call("POST", f"/channels/{channel}/messages", payload={
+            "content": f"🔒 Ticket closed by **{name}**. Open a new one any time with **/support** or the ticket button.", "allowed_mentions": {"parse": []}})
+        discord_call("PATCH", f"/channels/{channel}", payload={"archived": True, "locked": True})
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Closing ticket failed")
+    return {"type": 6}  # acknowledge the button without posting another message (keeps the thread archived)
+
+
 DISCORD_HANDLERS = {"status": discord_cmd_status, "version": discord_cmd_version, "licence": discord_cmd_licence, "download": discord_cmd_download,
-                    "profile": discord_cmd_profile, "support": discord_cmd_support, "help": discord_cmd_help}
+                    "profile": discord_cmd_profile, "support": discord_cmd_support, "ticket": discord_cmd_ticket, "account": discord_cmd_account,
+                    "store": discord_cmd_store, "roadmap": discord_cmd_roadmap, "faq": discord_cmd_faq, "socials": discord_cmd_socials, "help": discord_cmd_help}
 
 
 def discord_interaction(event):
-    """Every slash command except /verify, and the /support form. Answers within Discord's 3 seconds: no slow calls here."""
+    """Slash commands (except /verify), the /support form, and button clicks. Fast: no slow calls except
+    the ticket buttons, which do one or two Discord calls like /support already does."""
     data = event.get("data") or {}
     try:
         if event.get("type") == 5 and data.get("custom_id") == "support":
             return discord_support_submit(event)
+        if event.get("type") == 3:  # a button was clicked
+            cid = data.get("custom_id")
+            if cid == "open_ticket":
+                return discord_cmd_support(event)   # show the ticket form
+            if cid == "close_ticket":
+                return discord_close_ticket(event)
+            return discord_reply("That button is not active any more.")
         handler = DISCORD_HANDLERS.get(data.get("name"))
         return handler(event) if handler else discord_reply("I do not know that one. Try /help.")
     except Exception:  # noqa: BLE001 - the member gets an answer, the log gets the reason

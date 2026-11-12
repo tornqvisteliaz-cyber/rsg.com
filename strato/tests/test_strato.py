@@ -194,7 +194,7 @@ class FakeDiscord:
     BOT = "Bot bot-token-test"
 
     def __init__(self):
-        self.members, self.commands, self.messages, self.threads = {}, [], [], []  # members: {discord id: set of role ids}; threads: (parent, id, body)
+        self.members, self.commands, self.messages, self.threads, self.archived = {}, [], [], [], []  # threads: (parent, id, body); archived: (thread id, {archived,locked})
         self.posted, self.crossposted = {}, []  # message id -> (channel, message) for Post to Discord
         self.reactions, self.pins = [], []
         self.bot_position = 5  # the bot's role; the buyer role is at 3. Below it, Discord refuses to give the role.
@@ -266,6 +266,9 @@ class FakeDiscord:
                 if parts[:1] == ["channels"] and len(parts) == 5 and parts[4] == "crosspost":
                     outer.crossposted.append(parts[3])
                     return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and len(parts) == 2 and self.command == "PATCH":  # archive/lock a thread
+                    outer.archived.append((parts[1], json.loads(raw)))
+                    return self.reply(200, {"id": parts[1], **json.loads(raw)})
                 if parts[:1] == ["channels"] and len(parts) == 4 and self.command in ("PATCH", "DELETE"):
                     if parts[3] not in outer.posted:
                         return self.reply(404, {"message": "Unknown Message"})
@@ -1773,7 +1776,7 @@ class StratoCGITests:
             self.ok(self.w.cgi("POST", "/api/admin/discord/command", token=t))
             registered = [c["name"] for c in self.discord.commands]
             self.assertIn("verify", registered)  # the buyer-role command is always registered
-            self.assertEqual(set(registered), {"verify", "status", "version", "licence", "download", "profile", "support", "help"})
+            self.assertEqual(set(registered), {"verify", "status", "version", "licence", "download", "profile", "support", "ticket", "account", "store", "roadmap", "faq", "socials", "help"})
             self.assertEqual(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "general", "text": "Hi"}, token=t).status, 400)
             self.ok(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "1300000000000000003", "text": "Verify here"}, token=t))
             channel, message = self.discord.messages[-1]
@@ -1939,6 +1942,25 @@ class StratoCGITests:
             self.assertIn("<@300000000000000078>", thread_msg["content"])
             self.assertIn("HeavyPro won't start", thread_msg["content"])
             self.assertEqual(thread_msg["allowed_mentions"]["users"], ["300000000000000078"])
+            # the ticket has a Close button
+            self.assertEqual(thread_msg["components"][0]["components"][0]["custom_id"], "close_ticket")
+            # pressing Close archives and locks the thread, and acknowledges silently (type 6)
+            close = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "close_ticket"}, "channel_id": tid,
+                                               "member": {"user": {"id": "300000000000000078", "username": "Pilot"}}}))
+            self.assertEqual(close["type"], 6)
+            self.assertEqual(self.discord.archived[-1], (tid, {"archived": True, "locked": True}))
+            self.assertTrue(any("Ticket closed" in m["content"] for ch, m in self.discord.messages if ch == tid))
+            # staff post an "Open a ticket" button; clicking it shows the ticket form (a modal)
+            before = len(self.discord.messages)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets, "text": "Need help?"}, token=t))
+            panel = self.discord.messages[-1][1]
+            self.assertEqual((len(self.discord.messages), panel["components"][0]["components"][0]["custom_id"]), (before + 1, "open_ticket"))
+            opened = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "open_ticket"}, "channel_id": tickets,
+                                                "member": {"user": {"id": "300000000000000079", "username": "Newbie"}}}))
+            self.assertEqual((opened["type"], opened["data"]["custom_id"]), (9, "support"), "a support modal opens")
+            # a customer cannot post the ticket panel
+            buyer, _ = self.customer("ticketnope")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets}, token=buyer).status, 403)
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": ""}, token=t))
 
@@ -1950,7 +1972,7 @@ class StratoCGITests:
             check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
             self.assertTrue(check["ok"], check)
             # saving the settings registered the slash commands, and the check confirms the Public Key + commands
-            self.assertEqual({c["name"] for c in self.discord.commands}, {"verify", "status", "version", "licence", "download", "profile", "support", "help"})
+            self.assertEqual({c["name"] for c in self.discord.commands}, {"verify", "status", "version", "licence", "download", "profile", "support", "ticket", "account", "store", "roadmap", "faq", "socials", "help"})
             texts = " ".join(c["text"] for c in check["checks"])
             self.assertIn("slash commands are registered", texts)
             self.assertIn("Public Key", texts)

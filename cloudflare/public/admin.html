@@ -736,11 +736,17 @@
             <div class="panel-head"><h2>In Discord</h2></div>
             <div class="panel-body">
                 <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the slash commands</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
-                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">Adds /verify, /status, /version, /licence (a member's own keys, only they see it), /download, /profile, /support (a form that lands in Messages) and /help. Press it again after an update to get new commands. Check everyone again gives or takes the role for every linked member.</p>
+                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">Adds /verify, /status, /version, /licence (a member's own keys, only they see it), /download, /profile, /support and /ticket (open a private ticket), /account, /store, /roadmap, /faq, /socials and /help. Press it again after an update to get new commands. Check everyone again gives or takes the role for every linked member.</p>
                 <form id="dc-post-form">
                     <div class="field"><label for="dc-channel">Post a Verify button in a channel</label><input id="dc-channel" inputmode="numeric" placeholder="Channel ID: right-click the channel, Copy Channel ID"></div>
                     <div class="field"><textarea id="dc-post-text" rows="3" maxlength="1800">Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.</textarea></div>
                     <button class="btn btn-ghost btn-sm" type="submit">Post it</button>
+                </form>
+                <form id="dc-ticket-form" style="margin-top:18px">
+                    <div class="field"><label for="dc-ticket-channel">Post an “Open a ticket” button in a channel</label><input id="dc-ticket-channel" inputmode="numeric" placeholder="Channel ID (empty = your Support tickets channel)"></div>
+                    <div class="field"><textarea id="dc-ticket-text" rows="2" maxlength="1500">Need a hand from the Rotaidem team? Click below to open a private support ticket.</textarea></div>
+                    <button class="btn btn-ghost btn-sm" type="submit">Post the ticket button</button>
+                    <p class="hint" style="margin:8px 0 0">People click it to open a private ticket thread — no command to type. Each ticket has a Close button for staff.</p>
                 </form>
             </div>
         </div>
@@ -2797,6 +2803,10 @@ $("dc-sync").onclick = async () => {
 $("dc-post-form").onsubmit = async e => {
     e.preventDefault();
     try { await post("/api/admin/discord/post", { channel_id: val("dc-channel"), text: $("dc-post-text").value }); toast("Posted in Discord"); loadAudit(); } catch (err) { toast(err.message, true); }
+};
+$("dc-ticket-form").onsubmit = async e => {
+    e.preventDefault();
+    try { await post("/api/admin/discord/ticket-panel", { channel_id: val("dc-ticket-channel"), text: $("dc-ticket-text").value }); toast("Ticket button posted"); loadAudit(); } catch (err) { toast(err.message, true); }
 };
 
 // Shop: Stripe set-up, discount codes, prices, sales and revenue per product
