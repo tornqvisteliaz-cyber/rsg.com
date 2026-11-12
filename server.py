@@ -3350,6 +3350,12 @@ def admin_discord_check():
     cfg = discord_settings()
     missing = [n for n, v in (("Application ID", DISCORD_CLIENT_ID), ("Client Secret", DISCORD_CLIENT_SECRET), ("Bot token", DISCORD_BOT_TOKEN)) if not v]
     add(not missing, "Application keys are set" if not missing else "Missing: " + ", ".join(missing) + ". Run python3 rotaidem/strato/setup.py discord over SSH.")
+    # The Public Key is what makes slash commands work: without it every command shows "This interaction failed".
+    pub = DISCORD_PUBLIC_KEY or ""
+    pub_ok = len(pub) == 64 and all(c in "0123456789abcdefABCDEF" for c in pub)
+    add(pub_ok, "The Public Key for slash commands is set" if pub_ok else
+        'The Public Key is missing or malformed, so every slash command shows "This interaction failed". '
+        "Copy it from the Discord app (General Information, Public Key) and run setup.py discord.")
     add(cfg["guild_id"] and cfg["role_id"], "Server ID and buyer role ID are saved" if cfg["guild_id"] and cfg["role_id"] else "Paste the Server ID and the Buyer role ID below and save.")
     if missing or not (cfg["guild_id"] and cfg["role_id"]):
         return jsonify({"checks": checks, "ok": False})
@@ -3381,6 +3387,15 @@ def admin_discord_check():
     add(not buyer.get("managed"), "The buyer role can be given by bots" if not buyer.get("managed") else f"@{buyer['name']} belongs to an integration and cannot be given: make a normal role.")
     add(perms & (1 | DISCORD_ADMINISTRATOR), "The bot may add people to the server (Create Invite)" if perms & (1 | DISCORD_ADMINISTRATOR)
         else "The bot lacks Create Invite, so it cannot add people who are not in the server yet: turn it on for the bot's role.")
+    # Are the slash commands actually registered with Discord? (the usual reason /commands "fail" or do not show up)
+    registered, cmd_error, _ = discord_call("GET", f"/applications/{DISCORD_CLIENT_ID}/guilds/{cfg['guild_id']}/commands", timeout=10)
+    if registered is None:
+        add(False, f"Could not read the registered slash commands: {cmd_error}")
+    else:
+        have, want = {c.get("name") for c in registered}, {c["name"] for c in DISCORD_COMMANDS}
+        add(want <= have, f"All {len(want)} slash commands are registered" if want <= have
+            else ('No slash commands are registered yet: press "Add slash commands".' if not (want & have)
+                  else 'Slash commands are out of date: press "Add slash commands" to update them.'))
     return jsonify({"checks": checks, "ok": all(c["ok"] for c in checks)})
 
 
@@ -3404,7 +3419,14 @@ def admin_save_discord():
     set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products, **channels,
                                      "updates_ping": bool(b.get("updates_ping", old["updates_ping"]))})
     audit(user, "save_discord", f"server {guild or '-'}, role {role or '-'}")
-    return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready()})
+    commands_registered = False
+    if guild and discord_ready():  # keep the slash commands in sync so they never silently go stale
+        try:
+            _, cmd_error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{guild}/commands", payload=DISCORD_COMMANDS)
+            commands_registered = not cmd_error
+        except Exception:  # noqa: BLE001 - saving settings must not fail over command registration
+            app.logger.exception("Auto-registering Discord commands failed")
+    return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready(), "commands_registered": commands_registered})
 
 
 @app.post("/api/admin/discord/sync")

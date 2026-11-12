@@ -197,8 +197,10 @@ class FakeDiscord:
                         return self.reply(404, {"message": "Unknown Member"})
                     (outer.members[parts[3]].add if self.command == "PUT" else outer.members[parts[3]].discard)(parts[5])
                     return self.reply(204)
-                if parts[:1] == ["applications"] and self.command == "PUT":
+                if parts[:1] == ["applications"] and parts[-1:] == ["commands"] and self.command == "PUT":
                     outer.commands = json.loads(raw)
+                    return self.reply(200, outer.commands)
+                if parts[:1] == ["applications"] and parts[-1:] == ["commands"] and self.command == "GET":
                     return self.reply(200, outer.commands)
                 if parts[:1] == ["guilds"] and parts[2:] == ["channels"]:
                     return self.reply(200, [{"id": "1400000000000000001", "type": 4, "name": "Info", "position": 0},
@@ -1866,6 +1868,11 @@ class StratoCGITests:
         try:
             check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
             self.assertTrue(check["ok"], check)
+            # saving the settings registered the slash commands, and the check confirms the Public Key + commands
+            self.assertEqual({c["name"] for c in self.discord.commands}, {"verify", "status", "version", "licence", "download", "profile", "support", "help"})
+            texts = " ".join(c["text"] for c in check["checks"])
+            self.assertIn("slash commands are registered", texts)
+            self.assertIn("Public Key", texts)
             # the bot's role below the buyer role: the check says so, and so does the member's last result
             self.discord.bot_position = 2
             check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
