@@ -220,6 +220,31 @@ link from `setup.py discord` (and Admin → Discord → Invite the bot) asks for
 invited the bot before, open the invite link again or give its role those permissions in Server
 Settings → Roles.
 
+**More tools in Admin → Discord:**
+
+- **Support tickets:** every ticket from `/support` or the ticket button, open and closed. Read it,
+  answer as the team (the bot posts it with your name), close or reopen it. A closed ticket's whole
+  conversation is saved in **Messages** (marked handled), also when it is closed from Discord.
+- **Members & moderation:** find a member by name or ID (you see their website account if linked),
+  then **timeout** (10 minutes to a week), **kick** or **ban**; *Show bans* lists bans with **Unban**.
+  The reason you type shows in Discord's audit log.
+- **Role buttons:** pick roles (e.g. News pings, MSFS 2024) and post buttons; members click to get or
+  remove a role. The buyer role and roles with moderator powers can never be handed out this way.
+- **Your own slash commands:** e.g. `/rules` or `/livery` with your reply and a link button. Saving
+  updates the commands in your server; `/help` lists them too.
+- **Clean up a channel:** delete the last 5 to 100 messages, or only one member's (Discord allows this
+  for messages from the last 14 days).
+- **Channel controls:** slowmode, and **lock / unlock** a channel for @everyone (other permissions of
+  the channel are kept), with an optional note posted in it.
+- **Automation:** check the buyer role for every linked member once a day, and celebrate member
+  milestones (25, 50, 100, 250, 500, 1,000 …) in a channel you choose.
+- **Bot nickname:** what the bot is called in your server.
+
+These need **Timeout Members**, **Kick Members**, **Ban Members**, **Manage Channels** and **Change
+Nickname** as well. The invite link asks for them; a bot invited earlier: press **Invite the bot**
+again and accept (or give its role those permissions). The bot's role must be above the roles it
+gives and the members it moderates.
+
 ## Affiliate program
 
 Reward people who send you buyers. In **Admin -> Affiliates**, add an affiliate with a short **code**

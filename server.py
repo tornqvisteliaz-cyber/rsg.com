@@ -3064,7 +3064,8 @@ SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
 # Add Reactions, Manage Messages (pins), Read Message History, Send Polls, Manage Events
-DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38) | (1 << 34))  # + create private threads, send in threads, manage threads (support tickets)
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38) | (1 << 34)  # + create private threads, send in threads, manage threads (support tickets)
+                              | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 26) | (1 << 40))  # + kick, ban, manage channels (slowmode, lock), change nickname, timeout members
 
 
 def discord_settings():
@@ -3077,7 +3078,7 @@ def discord_ready():
     return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
 
 
-def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20):
+def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20, reason=""):
     """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
     if form is not None:
         data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
@@ -3086,8 +3087,10 @@ def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20)
     else:
         data, kind = (b"" if method in ("PUT", "POST") else None), "application/json"
     auth = f"Bearer {bearer}" if bearer else f"Bot {DISCORD_BOT_TOKEN}"
-    req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method,
-                                 headers={"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"})
+    headers = {"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"}
+    if reason:  # shown in the server's Audit Log in Discord
+        headers["X-Audit-Log-Reason"] = urllib.parse.quote(str(reason)[:400])
+    req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
@@ -3402,7 +3405,7 @@ def admin_discord_check():
     if registered is None:
         add(False, f"Could not read the registered slash commands: {cmd_error}")
     else:
-        have, want = {c.get("name") for c in registered}, {c["name"] for c in DISCORD_COMMANDS}
+        have, want = {c.get("name") for c in registered}, {c["name"] for c in discord_commands()}
         add(want <= have, f"All {len(want)} slash commands are registered" if want <= have
             else ('No slash commands are registered yet: press "Add slash commands".' if not (want & have)
                   else 'Slash commands are out of date: press "Add slash commands" to update them.'))
@@ -3435,7 +3438,7 @@ def admin_save_discord():
     commands_registered = False
     if guild and discord_ready():  # keep the slash commands in sync so they never silently go stale
         try:
-            _, cmd_error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{guild}/commands", payload=DISCORD_COMMANDS)
+            _, cmd_error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{guild}/commands", payload=discord_commands())
             commands_registered = not cmd_error
         except Exception:  # noqa: BLE001 - saving settings must not fail over command registration
             app.logger.exception("Auto-registering Discord commands failed")
@@ -3477,10 +3480,10 @@ def admin_discord_command():
         return err("Only the Owner or an Admin can do this", 403)
     if not discord_ready():
         return err("Discord is not set up yet", 503)
-    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=DISCORD_COMMANDS)
+    _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=discord_commands())
     if error:
         return err(error, 502)
-    audit(user, "discord_command", " ".join("/" + c["name"] for c in DISCORD_COMMANDS))
+    audit(user, "discord_command", " ".join("/" + c["name"] for c in discord_commands()))
     return jsonify({"ok": True})
 
 
@@ -3713,6 +3716,7 @@ def discord_run_due():
             app.logger.exception("Scheduled Discord post %s failed", item["id"])
     discord_announce_news()
     discord_weekly_report()
+    discord_daily()
 
 
 @app.get("/api/admin/discord/channels")
@@ -3726,8 +3730,11 @@ def admin_discord_channels():
     if error:
         return err(error, 502)
     categories = {c["id"]: c.get("name", "") for c in rows or [] if c.get("type") == 4}
+    guild = discord_settings()["guild_id"]
     channels = [{"id": c["id"], "name": c.get("name", ""), "announcement": c.get("type") == 5, "category": categories.get(c.get("parent_id"), ""),
-                 "position": c.get("position", 0)} for c in rows or [] if c.get("type") in (0, 5)]
+                 "position": c.get("position", 0), "slowmode": int(c.get("rate_limit_per_user") or 0),
+                 "locked": any(o.get("id") == guild and int(o.get("deny") or 0) & DISCORD_SEND for o in c.get("permission_overwrites") or [])}
+                for c in rows or [] if c.get("type") in (0, 5)]
     channels.sort(key=lambda c: (c["category"], c["position"]))
     return jsonify({"channels": channels})
 
@@ -3952,7 +3959,7 @@ def discord_cmd_support(event):
 
 
 def discord_cmd_help(event):
-    lines = [f"`/{c['name']}` {c['description']}" for c in DISCORD_COMMANDS]
+    lines = [f"`/{c['name']}` {c['description']}" for c in discord_commands()]
     return discord_reply("\n".join(lines), components=discord_link_row(("Help and FAQ", "/support"), ("Contact", "/contact")))
 
 
@@ -4025,12 +4032,7 @@ def discord_close_ticket(event):
     _, name, _ = discord_member(event)
     if not SNOWFLAKE.match(channel):
         return discord_reply("This button only works inside a ticket.")
-    try:
-        discord_call("POST", f"/channels/{channel}/messages", payload={
-            "content": f"🔒 Ticket closed by **{name}**. Open a new one any time with **/support** or the ticket button.", "allowed_mentions": {"parse": []}})
-        discord_call("PATCH", f"/channels/{channel}", payload={"archived": True, "locked": True})
-    except Exception:  # noqa: BLE001
-        app.logger.exception("Closing ticket failed")
+    discord_ticket_close(channel, (event.get("channel") or {}).get("name") or "", name)
     return {"type": 6}  # acknowledge the button without posting another message (keeps the thread archived)
 
 
@@ -4052,9 +4054,14 @@ def discord_interaction(event):
                 return discord_cmd_support(event)   # show the ticket form
             if cid == "close_ticket":
                 return discord_close_ticket(event)
+            if str(cid or "").startswith("role:"):
+                return discord_role_button(event, str(cid)[5:])
             return discord_reply("That button is not active any more.")
         handler = DISCORD_HANDLERS.get(data.get("name"))
-        return handler(event) if handler else discord_reply("I do not know that one. Try /help.")
+        if handler:
+            return handler(event)
+        custom = next((c for c in discord_custom_commands() if c["name"] == data.get("name")), None)
+        return discord_custom_reply(custom) if custom else discord_reply("I do not know that one. Try /help.")
     except Exception:  # noqa: BLE001 - the member gets an answer, the log gets the reason
         app.logger.exception("Discord command %s failed", data.get("name") or data.get("custom_id"))
         return discord_reply("Something went wrong on our side. Please try again in a minute.")
@@ -4236,6 +4243,542 @@ def admin_discord_giveaway():
             return err("Winners picked but not announced: " + error, 502)
     audit(user, "discord_giveaway", f"{len(winners)} of {len(people)}: " + ", ".join(people[w] for w in winners))
     return jsonify({"ok": True, "entered": len(people), "winners": [{"id": w, "name": people[w]} for w in winners]})
+
+
+# ---------- Discord tools: tickets, role buttons, own commands, moderation, clean-up, channels, automation ----------
+# All through Discord's API, like the rest: nothing has to keep running on STRATO.
+
+DISCORD_SEND = 2048 | (1 << 38)  # Send Messages, Send Messages in Threads: what a locked channel takes away from @everyone
+DISCORD_EPOCH_MS = 1420070400000
+# Roles with any of these are never handed out by a role button: Administrator, Manage Server, Manage Roles, Kick, Ban,
+# Manage Channels, Manage Messages, Timeout members, Manage Webhooks, Manage Nicknames, Manage Threads, Mention @everyone.
+DISCORD_RISKY = 8 | 32 | (1 << 28) | 2 | 4 | 16 | 8192 | (1 << 40) | (1 << 29) | (1 << 27) | (1 << 34) | (1 << 17)
+DISCORD_MILESTONES = (25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000)
+DISCORD_CMD_NAME = re.compile(r"^[a-z0-9_-]{1,32}$")
+
+
+def discord_perm_hint(error):
+    """A Missing Permissions answer: the bot was invited before it needed this. Say how to fix it."""
+    return error + (" The bot needs more permissions for this: press Invite the bot (under Set-up) and accept, or give its role the permission in Server Settings."
+                    if "Missing Permissions" in error or "50013" in error else "")
+
+
+def snowflake_time(sid):
+    try:
+        return datetime.fromtimestamp(((int(sid) >> 22) + DISCORD_EPOCH_MS) / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
+
+
+# 1-2. Support tickets from the admin: list, read, reply, close (with a transcript in the inbox), reopen
+
+def discord_ticket_transcript(thread_id, title, closed_by):
+    """Keep a closed ticket's conversation in the website inbox (marked handled). Never raises."""
+    try:
+        rows, error, _ = discord_call("GET", f"/channels/{thread_id}/messages?limit=100", timeout=8)
+        if error or not rows or not discord_claim(f"transcript.{thread_id}.{rows[0]['id']}"):
+            return False
+        lines = []
+        for m in reversed(rows):
+            who = (m.get("author") or {}).get("global_name") or (m.get("author") or {}).get("username") or "?"
+            text = (m.get("content") or " ".join((e.get("title") or "") for e in m.get("embeds") or [])).strip()
+            if text:
+                lines.append(f"[{snowflake_time(m['id'])[:16]}] {who}: {text}")
+        body = f"[Discord ticket, closed by {closed_by}] {title}\n\n" + "\n".join(lines)
+        db().run("INSERT INTO messages (name, email, message, handled) VALUES (?, ?, ?, 1)", (title or "Discord ticket")[:100], "Discord ticket", body[:15000])
+        return True
+    except Exception:  # noqa: BLE001 - closing a ticket never fails over the copy
+        app.logger.exception("Saving the ticket transcript failed")
+        return False
+
+
+def discord_ticket_close(thread_id, title, by_name):
+    """Close note, archive and lock, and the transcript into the inbox."""
+    try:
+        if not title:
+            info, _, _ = discord_call("GET", f"/channels/{thread_id}", timeout=8)
+            title = (info or {}).get("name") or "Discord ticket"
+        discord_call("POST", f"/channels/{thread_id}/messages", payload={
+            "content": f"🔒 Ticket closed by **{by_name}**. Open a new one any time with **/support** or the ticket button.", "allowed_mentions": {"parse": []}})
+        discord_ticket_transcript(thread_id, title, by_name)
+        _, error, _ = discord_call("PATCH", f"/channels/{thread_id}", payload={"archived": True, "locked": True})
+        return error
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Closing ticket failed")
+        return "Could not close the ticket"
+
+
+def discord_ticket_thread(thread_id):
+    """The thread, only when it is a ticket (a private thread in the tickets channel)."""
+    channel = discord_settings().get("tickets_channel")
+    if not channel or not SNOWFLAKE.match(str(thread_id)):
+        return None
+    info, _, _ = discord_call("GET", f"/channels/{thread_id}", timeout=8)
+    return info if info and info.get("parent_id") == channel and info.get("type") == 12 else None
+
+
+def discord_ticket_row(t, is_open):
+    meta = t.get("thread_metadata") or {}
+    return {"id": t["id"], "name": t.get("name", ""), "open": is_open, "messages": t.get("message_count") or 0,
+            "opened": (meta.get("create_timestamp") or snowflake_time(t["id"]))[:19].replace("T", " "),
+            "closed": "" if is_open else str(meta.get("archive_timestamp") or "")[:19].replace("T", " ")}
+
+
+@app.get("/api/admin/discord/tickets")
+def admin_discord_tickets():
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    cfg = discord_settings()
+    channel = cfg.get("tickets_channel")
+    if not channel:
+        return jsonify({"tickets": [], "channel": ""})
+    active, error, _ = discord_call("GET", f"/guilds/{cfg['guild_id']}/threads/active", timeout=10)
+    if error:
+        return err(discord_perm_hint(error), 502)
+    tickets = [discord_ticket_row(t, True) for t in (active or {}).get("threads") or [] if t.get("parent_id") == channel and t.get("type") == 12]
+    closed, _, _ = discord_call("GET", f"/channels/{channel}/threads/archived/private?limit=25", timeout=10)
+    tickets += [discord_ticket_row(t, False) for t in (closed or {}).get("threads") or []]
+    return jsonify({"tickets": tickets, "channel": channel})
+
+
+@app.get("/api/admin/discord/tickets/<thread_id>")
+def admin_discord_ticket(thread_id):
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready() or not discord_ticket_thread(thread_id):
+        return err("Ticket not found", 404)
+    rows, error, _ = discord_call("GET", f"/channels/{thread_id}/messages?limit=50", timeout=10)
+    if error:
+        return err(error, 502)
+    out = [{"id": m["id"], "at": snowflake_time(m["id"]), "bot": bool((m.get("author") or {}).get("bot")),
+            "who": (m.get("author") or {}).get("global_name") or (m.get("author") or {}).get("username") or "?",
+            "text": m.get("content") or " ".join((e.get("title") or "") + " " + (e.get("description") or "") for e in m.get("embeds") or []).strip()}
+           for m in reversed(rows or [])]
+    return jsonify({"messages": out})
+
+
+@app.post("/api/admin/discord/tickets/<thread_id>/<action>")
+def admin_discord_ticket_action(thread_id, action):
+    """reply (the bot posts the staff member's answer), close or reopen."""
+    user = staff_user()
+    if not user:
+        return err("Admin only", 403)
+    if action not in ("reply", "close", "reopen"):
+        return err("Not found", 404)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    thread = discord_ticket_thread(thread_id)
+    if not thread:
+        return err("Ticket not found", 404)
+    closed = bool((thread.get("thread_metadata") or {}).get("archived"))
+    if action == "reply":
+        text = str(body().get("text") or "").strip()[:1800]
+        if not text:
+            return err("Write your answer", 400)
+        if closed:
+            return err("This ticket is closed. Reopen it first.", 400)
+        _, error, _ = discord_call("POST", f"/channels/{thread_id}/messages", payload={
+            "content": f"**{str(user.get('name') or 'Rotaidem')[:60]}** (Rotaidem team):\n{text}", "allowed_mentions": {"parse": []}})
+    elif action == "close":
+        if closed:
+            return jsonify({"ok": True})
+        error = discord_ticket_close(thread_id, thread.get("name", ""), user.get("name") or "the team")
+    else:
+        _, error, _ = discord_call("PATCH", f"/channels/{thread_id}", payload={"archived": False, "locked": False})
+        if not error:
+            discord_call("POST", f"/channels/{thread_id}/messages", payload={
+                "content": f"🔓 Ticket reopened by **{str(user.get('name') or 'the team')[:60]}**.", "allowed_mentions": {"parse": []}})
+    if error:
+        return err(discord_perm_hint(error), 502)
+    audit(user, "discord_ticket_" + action, thread.get("name", thread_id)[:80])
+    return jsonify({"ok": True})
+
+
+# 3. Role buttons: members click to give themselves (or remove) a role
+
+def discord_role_panel():
+    return get_setting("discord.role_panel", []) or []
+
+
+def discord_role_button(event, role_id):
+    roles = {r["role_id"]: r for r in discord_role_panel()}
+    member = event.get("member") or {}
+    discord_id = str((member.get("user") or {}).get("id") or "")
+    if role_id not in roles or not SNOWFLAKE.match(discord_id):
+        return discord_reply("This role button is not in use any more.")
+    has = role_id in (member.get("roles") or [])
+    _, error, status = discord_call("DELETE" if has else "PUT", f"/guilds/{discord_settings()['guild_id']}/members/{discord_id}/roles/{role_id}",
+                                    reason="Role button")
+    label = roles[role_id].get("label") or "that role"
+    if error:
+        app.logger.warning("Role button %s: %s", role_id, error)
+        return discord_reply("I could not change your roles. The team has to move the bot's role above this one." if status == 403 else
+                             "Something went wrong. Please try again in a minute.")
+    return discord_reply(f"Removed **{label}**." if has else f"You now have **{label}**. Click again to remove it.")
+
+
+@app.get("/api/admin/discord/roles")
+def admin_discord_roles():
+    """The server's roles that a button may hand out (no buyer role, no roles with moderator powers)."""
+    if not staff_user():
+        return err("Admin only", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    cfg = discord_settings()
+    rows, error, _ = discord_call("GET", f"/guilds/{cfg['guild_id']}/roles", timeout=10)
+    if error:
+        return err(error, 502)
+    roles = [{"id": r["id"], "name": r.get("name", ""), "color": "#%06x" % int(r.get("color") or 0) if r.get("color") else "", "position": r.get("position", 0)}
+             for r in rows or [] if discord_role_ok(r, cfg)]
+    roles.sort(key=lambda r: -r["position"])
+    return jsonify({"roles": roles, "panel": discord_role_panel()})
+
+
+def discord_role_ok(r, cfg):
+    return (r.get("id") not in (cfg["guild_id"], cfg["role_id"]) and not r.get("managed")
+            and not int(r.get("permissions") or 0) & DISCORD_RISKY)
+
+
+@app.post("/api/admin/discord/role-panel")
+def admin_discord_role_panel():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b, cfg = body(), discord_settings()
+    channel = str(b.get("channel_id") or "")
+    if not SNOWFLAKE.match(channel):
+        return err("Choose the channel for the role buttons", 400)
+    rows, error, _ = discord_call("GET", f"/guilds/{cfg['guild_id']}/roles", timeout=10)
+    if error:
+        return err(error, 502)
+    allowed = {r["id"]: r for r in rows or [] if discord_role_ok(r, cfg)}
+    panel = []
+    for item in (b.get("roles") or [])[:10]:
+        rid = str((item or {}).get("role_id") or "")
+        if rid not in allowed:
+            return err("Pick roles from the list. The buyer role and roles with moderator powers cannot be given by a button.", 400)
+        if rid in [p["role_id"] for p in panel]:
+            continue
+        label = str(item.get("label") or allowed[rid].get("name") or "Role").strip()[:80]
+        emoji = str(item.get("emoji") or "").strip()
+        panel.append({"role_id": rid, "label": label, "emoji": emoji if DISCORD_EMOJI.match(emoji) else ""})
+    if not panel:
+        return err("Pick at least one role", 400)
+    buttons = [{"type": 2, "style": 2, "label": p["label"], "custom_id": "role:" + p["role_id"], **({"emoji": {"name": p["emoji"]}} if p["emoji"] else {})} for p in panel]
+    text = str(b.get("text") or "").strip()[:1500] or "Pick your roles: click a button to get it, click again to remove it."
+    _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload={
+        "content": text, "allowed_mentions": {"parse": []}, "components": [{"type": 1, "components": buttons[i:i + 5]} for i in range(0, len(buttons), 5)]})
+    if error:
+        return err(discord_perm_hint(error), 502)
+    set_setting("discord.role_panel", panel)
+    audit(user, "discord_role_panel", ", ".join(p["label"] for p in panel)[:200])
+    return jsonify({"ok": True, "panel": panel})
+
+
+# 4. The admin's own slash commands: a name, a reply and an optional link button
+
+def discord_custom_commands():
+    return get_setting("discord.custom_commands", []) or []
+
+
+def discord_commands():
+    return DISCORD_COMMANDS + [{"name": c["name"], "type": 1, "description": c["description"]} for c in discord_custom_commands()]
+
+
+def discord_custom_reply(c):
+    rows = [{"type": 1, "components": [{"type": 2, "style": 5, "label": c["button_label"], "url": discord_absolute(c["button_url"])}]}] if c.get("button_url") else []
+    return discord_reply(c["reply"], components=rows, public=bool(c.get("public")))
+
+
+@app.get("/api/admin/discord/custom-commands")
+def admin_discord_custom_commands():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"commands": discord_custom_commands(), "builtin": [c["name"] for c in DISCORD_COMMANDS]})
+
+
+@app.post("/api/admin/discord/custom-commands")
+def admin_save_discord_custom_commands():
+    """Saves the whole list and updates the commands in the server."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    builtin, out = {c["name"] for c in DISCORD_COMMANDS}, []
+    for c in (body().get("commands") or [])[:15]:
+        name = str((c or {}).get("name") or "").strip().lstrip("/").lower()
+        desc, reply = str(c.get("description") or "").strip()[:100], str(c.get("reply") or "").strip()
+        label, url = str(c.get("button_label") or "").strip()[:80], str(c.get("button_url") or "").strip()
+        if not DISCORD_CMD_NAME.match(name):
+            return err(f"/{name or '?'}: a command name is 1 to 32 small letters, numbers, - or _", 400)
+        if name in builtin or name in [o["name"] for o in out]:
+            return err(f"/{name} is already a command", 400)
+        if not desc or not reply or len(reply) > 2000:
+            return err(f"/{name} needs a short description and a reply (up to 2000 characters)", 400)
+        if url and (not label or not (url.startswith("https://") or (url.startswith("/") and not url.startswith("//")))):
+            return err(f"/{name}: the button needs a label and a link (https:// or a page like /downloads)", 400)
+        out.append({"name": name, "description": desc, "reply": reply, "button_label": label if url else "", "button_url": url, "public": bool(c.get("public"))})
+    set_setting("discord.custom_commands", out)
+    registered = False
+    if discord_ready():
+        _, error, _ = discord_call("PUT", f"/applications/{DISCORD_CLIENT_ID}/guilds/{discord_settings()['guild_id']}/commands", payload=discord_commands())
+        registered = not error
+    audit(user, "discord_custom_commands", " ".join("/" + c["name"] for c in out) or "none")
+    return jsonify({"ok": True, "commands": out, "registered": registered})
+
+
+# 5. Members: look someone up, timeout, kick, ban, unban
+
+def discord_member_row(m, linked):
+    u = m.get("user") or {}
+    acc = linked.get(str(u.get("id")))
+    return {"id": u.get("id"), "username": u.get("username", ""), "name": m.get("nick") or u.get("global_name") or u.get("username", ""),
+            "joined": str(m.get("joined_at") or "")[:10], "bot": bool(u.get("bot")), "roles": len(m.get("roles") or []),
+            "timeout_until": m.get("communication_disabled_until") or "",
+            "account": {"name": acc["name"], "email": acc["email"], "buyer": has_buyer_licence(acc)} if acc else None}
+
+
+@app.get("/api/admin/discord/members")
+def admin_discord_members():
+    if not manager_user():
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    q = str(request.args.get("q") or "").strip()[:100]
+    if not q:
+        return jsonify({"members": []})
+    gid = discord_settings()["guild_id"]
+    if SNOWFLAKE.match(q):
+        one, error, status = discord_call("GET", f"/guilds/{gid}/members/{q}", timeout=10)
+        rows = [one] if one else []
+        if error and status != 404:
+            return err(error, 502)
+    else:
+        rows, error, status = discord_call("GET", f"/guilds/{gid}/members/search?" + urllib.parse.urlencode({"query": q, "limit": 10}), timeout=10)
+        if error:
+            return err(discord_perm_hint(error) + (" If it keeps failing: Discord Developer Portal, your application, Bot, turn on Server Members Intent."
+                                                   if status == 403 else ""), 502)
+    ids = [str((m.get("user") or {}).get("id")) for m in rows or []]
+    linked = {}
+    for uid in ids:
+        acc = db().first("SELECT * FROM users WHERE discord_id = ?", uid) if SNOWFLAKE.match(uid) else None
+        if acc:
+            linked[uid] = acc
+    return jsonify({"members": [discord_member_row(m, linked) for m in rows or []]})
+
+
+@app.get("/api/admin/discord/bans")
+def admin_discord_bans():
+    if not manager_user():
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/bans?limit=50", timeout=10)
+    if error:
+        return err(discord_perm_hint(error), 502)
+    return jsonify({"bans": [{"id": (b.get("user") or {}).get("id"), "name": (b.get("user") or {}).get("global_name") or (b.get("user") or {}).get("username", ""),
+                              "reason": b.get("reason") or ""} for b in rows or []]})
+
+
+@app.post("/api/admin/discord/moderate")
+def admin_discord_moderate():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    member, action = str(b.get("member_id") or ""), str(b.get("action") or "")
+    if not SNOWFLAKE.match(member):
+        return err("Pick a member", 400)
+    reason = f"{user.get('name') or 'Admin'} on rotaidem.com: " + (str(b.get("reason") or "").strip()[:300] or "no reason given")
+    gid = discord_settings()["guild_id"]
+    if action == "timeout":
+        minutes = clamp_int(b.get("minutes"), 60, 1, 40320)  # Discord allows up to 28 days
+        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        _, error, _ = discord_call("PATCH", f"/guilds/{gid}/members/{member}", payload={"communication_disabled_until": until}, reason=reason)
+        what = f"timeout {minutes} min"
+    elif action == "untimeout":
+        _, error, _ = discord_call("PATCH", f"/guilds/{gid}/members/{member}", payload={"communication_disabled_until": None}, reason=reason)
+        what = "timeout removed"
+    elif action == "kick":
+        _, error, _ = discord_call("DELETE", f"/guilds/{gid}/members/{member}", reason=reason)
+        what = "kicked"
+    elif action == "ban":
+        _, error, _ = discord_call("PUT", f"/guilds/{gid}/bans/{member}", payload={"delete_message_seconds": 86400 if b.get("delete_messages") else 0}, reason=reason)
+        what = "banned"
+    elif action == "unban":
+        _, error, _ = discord_call("DELETE", f"/guilds/{gid}/bans/{member}", reason=reason)
+        what = "unbanned"
+    else:
+        return err("Unknown action", 400)
+    if error:
+        return err(discord_perm_hint(error) + (" (You cannot do this to the server owner or someone whose role is above the bot's.)" if "Missing Permissions" in error else ""), 502)
+    audit(user, "discord_moderate", f"{member} {what}: {reason}"[:300])
+    return jsonify({"ok": True})
+
+
+# 6. Clean up a channel: delete the last messages (all, or one member's)
+
+@app.post("/api/admin/discord/purge")
+def admin_discord_purge():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    b = body()
+    channel, member = str(b.get("channel_id") or ""), str(b.get("member_id") or "").strip()
+    count = clamp_int(b.get("count"), 10, 1, 100)
+    if not SNOWFLAKE.match(channel):
+        return err("Choose a channel", 400)
+    if member and not SNOWFLAKE.match(member):
+        return err("The member must be a Discord user ID (or leave it empty for everyone)", 400)
+    rows, error, _ = discord_call("GET", f"/channels/{channel}/messages?limit={100 if member else count}", timeout=10)
+    if error:
+        return err(discord_perm_hint(error), 502)
+    picked = [m for m in rows or [] if not member or str((m.get("author") or {}).get("id")) == member][:count]
+    cutoff = utc_stamp(14 * 86400 - 3600)  # Discord deletes in bulk only messages younger than 14 days
+    ids = [m["id"] for m in picked if snowflake_time(m["id"]) > cutoff]
+    if len(ids) >= 2:
+        _, error, _ = discord_call("POST", f"/channels/{channel}/messages/bulk-delete", payload={"messages": ids}, reason=f"Clean-up by {user.get('name')}")
+    elif ids:
+        _, error, _ = discord_call("DELETE", f"/channels/{channel}/messages/{ids[0]}", reason=f"Clean-up by {user.get('name')}")
+    if error:
+        return err(discord_perm_hint(error), 502)
+    gone = set(ids)
+    set_setting("discord.posts", [p for p in discord_posts() if p["id"] not in gone])
+    audit(user, "discord_purge", f"{len(ids)} message(s) in {channel}" + (f" from {member}" if member else ""))
+    return jsonify({"ok": True, "deleted": len(ids), "too_old": len(picked) - len(ids)})
+
+
+# 7. Channel controls: slowmode, lock and unlock for @everyone
+
+@app.post("/api/admin/discord/channel/<channel>")
+def admin_discord_channel(channel):
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready() or not SNOWFLAKE.match(channel):
+        return err("Choose a channel", 400)
+    b, gid = body(), discord_settings()["guild_id"]
+    info, error, _ = discord_call("GET", f"/channels/{channel}", timeout=10)
+    if error or not info or info.get("guild_id") != gid:
+        return err(error or "That channel is not in your server", 404)
+    done = []
+    if "slowmode" in b:
+        seconds = clamp_int(b.get("slowmode"), 0, 0, 21600)
+        _, error, _ = discord_call("PATCH", f"/channels/{channel}", payload={"rate_limit_per_user": seconds}, reason=f"Slowmode by {user.get('name')}")
+        if error:
+            return err(discord_perm_hint(error), 502)
+        done.append(f"slowmode {seconds}s")
+    if "locked" in b:
+        old = next((o for o in info.get("permission_overwrites") or [] if o.get("id") == gid), {})
+        allow, deny = int(old.get("allow") or 0), int(old.get("deny") or 0)  # keep everything else (e.g. View Channel)
+        deny = deny | DISCORD_SEND if b.get("locked") else deny & ~DISCORD_SEND
+        allow &= ~DISCORD_SEND if b.get("locked") else ~0
+        _, error, _ = discord_call("PUT", f"/channels/{channel}/permissions/{gid}", payload={"type": 0, "allow": str(allow), "deny": str(deny)},
+                                   reason=f"{'Locked' if b.get('locked') else 'Unlocked'} by {user.get('name')}")
+        if error:
+            return err(discord_perm_hint(error), 502)
+        done.append("locked" if b.get("locked") else "unlocked")
+        note = str(b.get("note") or "").strip()[:500]
+        if note:
+            discord_call("POST", f"/channels/{channel}/messages", payload={"content": ("🔒 " if b.get("locked") else "🔓 ") + note, "allowed_mentions": {"parse": []}})
+    audit(user, "discord_channel", f"#{info.get('name', channel)}: " + ", ".join(done))
+    return jsonify({"ok": True})
+
+
+# 8-10. Automation (daily role check, member milestones) and the bot's nickname
+
+DISCORD_AUTOMATION = {"auto_sync": False, "milestones": False, "milestone_channel": "", "nickname": ""}
+
+
+def discord_automation():
+    saved = get_setting("discord.automation", {}) or {}
+    return {**DISCORD_AUTOMATION, **{k: saved[k] for k in DISCORD_AUTOMATION if k in saved}}
+
+
+def discord_member_count():
+    guild, _, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}?with_counts=true", timeout=8)
+    return int((guild or {}).get("approximate_member_count") or 0)
+
+
+def discord_daily():
+    """Once a day: the buyer role checked again for every linked member, 25 per visit. Once an hour: member milestones."""
+    auto = discord_automation()
+    if auto["auto_sync"]:
+        today, state = utc_stamp()[:10], get_setting("discord.autosync", {}) or {}
+        if state.get("day") != today and discord_claim("autosync." + today):
+            state = {"day": today, "after": 0, "done": False}
+            set_setting("discord.autosync", state)
+        if state.get("day") == today and not state.get("done"):
+            batch = db().all("SELECT * FROM users WHERE discord_id IS NOT NULL AND discord_id <> '' AND id > ? ORDER BY id LIMIT 25", int(state.get("after") or 0))
+            for member in batch:
+                try:
+                    discord_sync_user(member)
+                except Exception:  # noqa: BLE001
+                    app.logger.exception("Daily Discord role check failed for %s", member["id"])
+            set_setting("discord.autosync", {"day": today, "after": batch[-1]["id"] if batch else state.get("after", 0), "done": len(batch) < 25})
+    if auto["milestones"] and time.time() - float(get_setting("discord.milestone_checked", 0) or 0) >= 3600:
+        set_setting("discord.milestone_checked", time.time())
+        count = discord_member_count()
+        reached = max([m for m in DISCORD_MILESTONES if m <= count] or [0])
+        if reached > int(get_setting("discord.milestone_last", 0) or 0):
+            set_setting("discord.milestone_last", reached)
+            channel = auto["milestone_channel"] or discord_settings()["welcome_channel"]
+            if channel and discord_claim(f"milestone.{reached}"):
+                try:
+                    discord_send(channel, {"embed": {"title": f"🎉 {reached:,} members!", "color": "#f5c542",
+                                                     "description": f"Our Discord just passed **{reached:,} members**. Thank you all for flying with Rotaidem ✈️"}}, "Automatic")
+                except Exception:  # noqa: BLE001
+                    app.logger.exception("Milestone post failed")
+
+
+@app.get("/api/admin/discord/automation")
+def admin_discord_automation():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({**discord_automation(), "autosync": get_setting("discord.autosync", {}) or {},
+                    "milestone_last": int(get_setting("discord.milestone_last", 0) or 0)})
+
+
+@app.post("/api/admin/discord/automation")
+def admin_save_discord_automation():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    b, old = body(), discord_automation()
+    channel = str(b.get("milestone_channel", old["milestone_channel"]) or "").strip()
+    if channel and not SNOWFLAKE.match(channel):
+        return err("Choose the channel from the list", 400)
+    new = {**old, "auto_sync": bool(b.get("auto_sync", old["auto_sync"])), "milestones": bool(b.get("milestones", old["milestones"])), "milestone_channel": channel}
+    if new["milestones"] and not old["milestones"] and discord_ready():
+        # from now on: milestones already passed are not celebrated
+        count = discord_member_count()
+        set_setting("discord.milestone_last", max([m for m in DISCORD_MILESTONES if m <= count] or [0]))
+    set_setting("discord.automation", new)
+    audit(user, "discord_automation", f"daily check {'on' if new['auto_sync'] else 'off'}, milestones {'on' if new['milestones'] else 'off'}")
+    return jsonify({"ok": True, **new})
+
+
+@app.post("/api/admin/discord/nickname")
+def admin_discord_nickname():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not discord_ready():
+        return err("Discord is not set up yet", 503)
+    nick = " ".join(str(body().get("nickname") or "").split())[:32]
+    _, error, _ = discord_call("PATCH", f"/guilds/{discord_settings()['guild_id']}/members/@me", payload={"nick": nick or None})
+    if error:
+        return err(discord_perm_hint(error), 502)
+    set_setting("discord.automation", {**discord_automation(), "nickname": nick})
+    audit(user, "discord_nickname", nick or "(reset)")
+    return jsonify({"ok": True, "nickname": nick})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------

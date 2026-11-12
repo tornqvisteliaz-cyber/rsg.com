@@ -737,7 +737,7 @@
             <div class="panel-head"><h2>In Discord</h2></div>
             <div class="panel-body">
                 <div class="actions" style="justify-content:flex-start;margin-bottom:6px"><button class="btn btn-ghost btn-sm" type="button" id="dc-command">Add the slash commands</button><button class="btn btn-ghost btn-sm" type="button" id="dc-sync">Check everyone again</button></div>
-                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">Adds /verify, /status, /version, /licence (a member's own keys, only they see it), /download, /profile, /support and /ticket (open a private ticket), /account, /store, /roadmap, /faq, /socials and /help. Press it again after an update to get new commands. Check everyone again gives or takes the role for every linked member.</p>
+                <p class="hint" id="dc-sync-msg" style="margin:0 0 18px">Adds /verify, /status, /version, /licence (a member's own keys, only they see it), /download, /profile, /support and /ticket (open a private ticket), /account, /store, /roadmap, /faq, /socials and /help. Your own commands (Server tools) are added too. Press it again after an update to get new commands. Check everyone again gives or takes the role for every linked member.</p>
                 <form id="dc-post-form">
                     <div class="field"><label for="dc-channel">Post a Verify button in a channel</label><input id="dc-channel" inputmode="numeric" placeholder="Channel ID: right-click the channel, Copy Channel ID"></div>
                     <div class="field"><textarea id="dc-post-text" rows="3" maxlength="1800">Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.</textarea></div>
@@ -768,7 +768,7 @@
                     <h3 style="margin:0 0 10px;font-size:15px">Server event</h3>
                     <div class="field"><label for="dt-ev-name">Name</label><input id="dt-ev-name" maxlength="100" placeholder="e.g. Sunday group flight: EGLL to KJFK"></div>
                     <div class="field"><label for="dt-ev-place">Where</label><input id="dt-ev-place" maxlength="100" placeholder="e.g. VATSIM, or Voice channel: Flight deck"></div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
                         <div class="field"><label for="dt-ev-start">Starts (your time)</label><input id="dt-ev-start" type="datetime-local"></div>
                         <div class="field"><label for="dt-ev-end">Ends</label><input id="dt-ev-end" type="datetime-local"></div>
                     </div>
@@ -787,6 +787,80 @@
                     <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dt-gv-announce" checked> The bot announces the winners under the post</label>
                     <button class="btn btn-sm" type="submit">Pick winners</button>
                     <p class="hint" id="dt-gv-out" style="margin-top:10px"></p>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dk-panel">
+            <div class="panel-head"><h2>Support tickets</h2><span class="muted" style="font-size:13px" id="dk-count"></span><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="dk-reload">Refresh</button></div></div>
+            <p class="muted" id="dk-off" style="padding:0 20px;font-size:14px" hidden>Choose a <strong>Support tickets</strong> channel under Automatic posts first.</p>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Ticket</th><th>Opened</th><th>Messages</th><th>Status</th><th></th></tr></thead><tbody id="dk-list"></tbody></table></div>
+            <div class="panel-body" id="dk-view" hidden>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h3 style="margin:0;font-size:15px" id="dk-title"></h3><button class="btn btn-ghost btn-sm" type="button" id="dk-hide">Close view</button></div>
+                <div id="dk-msgs" style="max-height:360px;overflow:auto;margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:14px"></div>
+                <form id="dk-reply"><div class="field"><label for="dk-text">Answer as the Rotaidem team</label><textarea id="dk-text" rows="3" maxlength="1800" placeholder="The bot posts this in the ticket with your name."></textarea></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Send answer</button><span class="hint" style="margin:0">Closing a ticket saves the whole conversation in Messages.</span></div></form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dm-panel">
+            <div class="panel-head"><h2>Members &amp; moderation</h2><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="dm-bans-btn">Show bans</button></div></div>
+            <div class="panel-body">
+                <form id="dm-search" style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+                    <div class="field" style="margin:0"><label for="dm-q">Find a member</label><input id="dm-q" maxlength="100" placeholder="Name or username (start of it), or a Discord user ID"></div>
+                    <button class="btn btn-sm" type="submit" style="margin-bottom:2px">Search</button>
+                </form>
+                <div class="field" style="margin:12px 0 0"><label for="dm-reason">Reason (shown in Discord's audit log)</label><input id="dm-reason" maxlength="300" placeholder="e.g. Spam in #general"></div>
+            </div>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Website account</th><th>Joined</th><th>Status</th><th></th></tr></thead><tbody id="dm-list"></tbody></table></div>
+            <div class="table-wrap" id="dm-bans-wrap" hidden><table class="table"><thead><tr><th>Banned</th><th>Reason</th><th></th></tr></thead><tbody id="dm-bans"></tbody></table></div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dx-panel">
+            <div class="panel-head"><h2>Server tools</h2></div>
+            <div class="panel-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px">
+                <form id="dx-roles">
+                    <h3 style="margin:0 0 10px;font-size:15px">Role buttons</h3>
+                    <p class="hint" style="margin:0 0 10px">Members click a button to get a role, and click again to remove it. Good for “News pings”, “MSFS 2024”, “Looking for group flights”.</p>
+                    <div class="field"><label for="dx-roles-channel">Channel</label><select id="dx-roles-channel"></select></div>
+                    <div id="dx-roles-list" style="font-size:14px"></div>
+                    <div class="field" style="margin-top:10px"><label for="dx-roles-text">Message</label><textarea id="dx-roles-text" rows="2" maxlength="1500">Pick your roles: click a button to get it, click again to remove it.</textarea></div>
+                    <button class="btn btn-sm" type="submit">Post the role buttons</button>
+                    <p class="hint" style="margin:8px 0 0">The buyer role and roles with moderator powers are left out on purpose. Keep the bot's role above these roles.</p>
+                </form>
+                <form id="dx-cmds">
+                    <h3 style="margin:0 0 10px;font-size:15px">Your own slash commands</h3>
+                    <p class="hint" style="margin:0 0 10px">For example <code>/rules</code>, <code>/livery</code> or <code>/discount</code>: the bot answers with your text and a link button.</p>
+                    <div id="dx-cmd-list"></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="dx-cmd-add">Add a command</button><button class="btn btn-sm" type="submit">Save commands</button></div>
+                </form>
+                <form id="dx-purge">
+                    <h3 style="margin:0 0 10px;font-size:15px">Clean up a channel</h3>
+                    <div class="field"><label for="dx-purge-channel">Channel</label><select id="dx-purge-channel"></select></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label for="dx-purge-n">Delete the last</label><select id="dx-purge-n"><option value="5">5 messages</option><option value="10" selected>10 messages</option><option value="25">25 messages</option><option value="50">50 messages</option><option value="100">100 messages</option></select></div>
+                        <div class="field"><label for="dx-purge-member">Only from (optional)</label><input id="dx-purge-member" inputmode="numeric" placeholder="Discord user ID"></div>
+                    </div>
+                    <button class="btn btn-danger btn-sm" type="submit">Delete messages</button>
+                    <p class="hint" style="margin:8px 0 0">Discord only lets bots delete messages from the last 14 days this way.</p>
+                </form>
+                <form id="dx-chan">
+                    <h3 style="margin:0 0 10px;font-size:15px">Channel controls</h3>
+                    <div class="field"><label for="dx-chan-channel">Channel</label><select id="dx-chan-channel"></select><div class="hint" id="dx-chan-now"></div></div>
+                    <div class="field"><label for="dx-chan-slow">Slowmode</label><select id="dx-chan-slow"><option value="0">Off</option><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option><option value="21600">6 hours</option></select></div>
+                    <div class="field"><label for="dx-chan-note">Note posted when you lock or unlock (optional)</label><input id="dx-chan-note" maxlength="500" placeholder="e.g. Channel paused while we look into the update."></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="dx-chan-slow-btn">Set slowmode</button><button class="btn btn-ghost btn-sm" type="button" id="dx-chan-lock">Lock</button><button class="btn btn-ghost btn-sm" type="button" id="dx-chan-unlock">Unlock</button></div>
+                    <p class="hint" style="margin:8px 0 0">Lock stops everyone without a special role from writing in that channel. Staff roles with their own permission can still write.</p>
+                </form>
+                <form id="dx-auto">
+                    <h3 style="margin:0 0 10px;font-size:15px">Automation</h3>
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 6px"><input type="checkbox" id="dx-auto-sync" style="margin-top:3px"> <span>Check the buyer role every day<br><span class="hint" style="margin:0" id="dx-auto-sync-state">Gives or takes the role for every linked member once a day, so it always matches the licences.</span></span></label>
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:10px 0 6px"><input type="checkbox" id="dx-auto-ms" style="margin-top:3px"> <span>Celebrate member milestones<br><span class="hint" style="margin:0" id="dx-auto-ms-state">🎉 at 25, 50, 100, 250, 500, 1,000 members and up.</span></span></label>
+                    <div class="field"><label for="dx-auto-ms-channel">Milestone channel</label><select id="dx-auto-ms-channel"></select></div>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <form id="dx-nick">
+                    <h3 style="margin:0 0 10px;font-size:15px">Bot nickname</h3>
+                    <div class="field"><label for="dx-nick-name">Name in your server</label><input id="dx-nick-name" maxlength="32" placeholder="e.g. Rotaidem Tower"></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Save nickname</button><button class="btn btn-ghost btn-sm" type="button" id="dx-nick-reset">Reset</button></div>
+                    <p class="hint" style="margin:8px 0 0">Only changes how the bot is named in your server. Its picture is set in the Discord Developer Portal.</p>
                 </form>
             </div>
         </div>
@@ -2547,8 +2621,8 @@ function renderDiscord() {
         `<td class="muted">${esc(String(m.discord_linked_at || "").slice(0, 10))}</td>` +
         `<td><button class="btn btn-ghost btn-sm" type="button" data-dc-dm="${esc(m.id)}" data-dc-name="${esc(m.discord_name || m.name || "")}">Message</button></td></tr>`).join("")
         || empty(6, "Nobody has linked Discord yet. Customers do it under My account.");
-    $("dt-panel").hidden = !dc.ready;
-    if (dc.ready && !state.dtLoaded) { state.dtLoaded = true; loadDtEvents(); }
+    $("dt-panel").hidden = $("dk-panel").hidden = $("dm-panel").hidden = $("dx-panel").hidden = !dc.ready;
+    if (dc.ready && !state.dtLoaded) { state.dtLoaded = true; loadDtEvents(); loadTickets(); loadDxRoles(); loadDxCommands(); loadDxAuto(); }
 }
 // Post to Discord: the bot posts what you write here; what it posted can be edited or deleted
 state.dp = { image: "", buttons: [], editing: null, channels: [] };
@@ -2561,7 +2635,9 @@ async function loadDpChannels() {
         $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
         for (const id of ["da-updates", "da-news", "da-sales", "da-status", "da-welcome", "da-team", "da-tickets"]) $(id).innerHTML = opts("Off");
         $("dt-inv-channel").innerHTML = opts("Choose a channel");
-        renderAuto();
+        for (const id of ["dx-roles-channel", "dx-purge-channel", "dx-chan-channel"]) $(id).innerHTML = opts("Choose a channel");
+        $("dx-auto-ms-channel").innerHTML = opts("The Welcome channel");
+        renderAuto(); renderDxAuto(); dxChanNow();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
             const head = c.category !== cat ? (cat !== null ? "</optgroup>" : "") + `<optgroup label="${esc(c.category || "No category")}">` : "";
             cat = c.category;
@@ -2809,6 +2885,197 @@ $("dc-ticket-form").onsubmit = async e => {
     e.preventDefault();
     try { await post("/api/admin/discord/ticket-panel", { channel_id: val("dc-ticket-channel"), text: $("dc-ticket-text").value }); toast("Ticket button posted"); loadAudit(); } catch (err) { toast(err.message, true); }
 };
+
+// Support tickets: the private threads /support opens, read and answered from here
+const dcTime = s => s ? new Date(String(s).replace(" ", "T") + "Z").toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+async function loadTickets() {
+    let d;
+    try { d = await api("/api/admin/discord/tickets"); }
+    catch (err) { $("dk-list").innerHTML = empty(5, esc(err.message)); return; }
+    state.tickets = d.tickets || [];
+    $("dk-off").hidden = !!d.channel;
+    const open = state.tickets.filter(t => t.open).length;
+    $("dk-count").textContent = d.channel ? `${open} open` : "";
+    $("dk-list").innerHTML = state.tickets.map(t => `<tr><td>${esc(t.name)}</td><td class="muted">${esc(dcTime(t.opened))}</td><td>${esc(t.messages)}</td>` +
+        `<td>${t.open ? '<span class="badge in_development">Open</span>' : '<span class="badge">Closed</span>'}</td>` +
+        `<td><div class="actions"><button class="btn btn-ghost btn-sm" type="button" data-dk-view="${esc(t.id)}">Read</button>` +
+        (t.open ? `<button class="btn btn-ghost btn-sm" type="button" data-dk-act="close" data-dk-id="${esc(t.id)}">Close</button>` : `<button class="btn btn-ghost btn-sm" type="button" data-dk-act="reopen" data-dk-id="${esc(t.id)}">Reopen</button>`) +
+        `</div></td></tr>`).join("") || (d.channel ? empty(5, "No tickets yet. Members open one with /support or the ticket button.") : "");
+}
+async function openTicket(id) {
+    const t = (state.tickets || []).find(x => x.id === id) || {};
+    state.ticket = id;
+    $("dk-view").hidden = false; $("dk-title").textContent = t.name || "Ticket"; $("dk-msgs").innerHTML = '<span class="muted">Loading…</span>';
+    $("dk-reply").hidden = !t.open;
+    try {
+        const d = await api("/api/admin/discord/tickets/" + id);
+        $("dk-msgs").innerHTML = (d.messages || []).map(m => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><strong>${esc(m.who)}</strong>${m.bot ? ' <span class="badge">bot</span>' : ""} <span class="muted" style="font-size:12px">${esc(dcTime(m.at))}</span><div style="white-space:pre-wrap">${esc(m.text)}</div></div>`).join("") || '<span class="muted">No messages.</span>';
+        $("dk-msgs").scrollTop = $("dk-msgs").scrollHeight;
+    } catch (err) { $("dk-msgs").innerHTML = `<span class="muted">${esc(err.message)}</span>`; }
+}
+$("dk-reload").onclick = loadTickets;
+$("dk-hide").onclick = () => { $("dk-view").hidden = true; state.ticket = null; };
+$("dk-list").onclick = async e => {
+    const view = e.target.closest("[data-dk-view]"), act = e.target.closest("[data-dk-act]");
+    if (view) openTicket(view.dataset.dkView);
+    if (act) {
+        const closing = act.dataset.dkAct === "close";
+        if (closing && !(await confirmBox("Close this ticket?", "The member can no longer write in it. The conversation is saved in Messages.", "Close ticket"))) return;
+        try { await post(`/api/admin/discord/tickets/${act.dataset.dkId}/${act.dataset.dkAct}`, {}); toast(closing ? "Ticket closed" : "Ticket reopened"); await loadTickets(); if (state.ticket === act.dataset.dkId) openTicket(state.ticket); loadAudit(); if (closing) loadMessages(); }
+        catch (err) { toast(err.message, true); }
+    }
+};
+$("dk-reply").onsubmit = async e => {
+    e.preventDefault();
+    if (!state.ticket || !$("dk-text").value.trim()) return;
+    try { await post(`/api/admin/discord/tickets/${state.ticket}/reply`, { text: $("dk-text").value }); $("dk-text").value = ""; toast("Answer posted in the ticket"); openTicket(state.ticket); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+
+// Members & moderation: find someone, then timeout, kick or ban (with a reason for Discord's audit log)
+$("dm-search").onsubmit = async e => {
+    e.preventDefault();
+    const q = $("dm-q").value.trim();
+    if (!q) return;
+    try {
+        const d = await api("/api/admin/discord/members?q=" + encodeURIComponent(q));
+        state.dmFound = d.members || [];
+        $("dm-list").innerHTML = state.dmFound.map(m => {
+            const timedOut = m.timeout_until && new Date(m.timeout_until) > new Date();
+            return `<tr><td>${esc(m.name)}${m.bot ? ' <span class="badge">bot</span>' : ""}<div class="muted" style="font-size:13px">@${esc(m.username)} · ${esc(m.id)}</div></td>` +
+                `<td>${m.account ? `${esc(m.account.name || "")}<div class="muted" style="font-size:13px">${esc(m.account.email || "")}${m.account.buyer ? " · has a licence" : ""}</div>` : '<span class="muted">Not linked</span>'}</td>` +
+                `<td class="muted">${esc(m.joined)}</td><td>${timedOut ? `<span class="badge in_development">Timed out until ${esc(new Date(m.timeout_until).toLocaleString([], { dateStyle: "short", timeStyle: "short" }))}</span>` : '<span class="muted">OK</span>'}</td>` +
+                `<td><div class="actions" style="flex-wrap:wrap">` + (timedOut ? `<button class="btn btn-ghost btn-sm" type="button" data-dm-act="untimeout" data-dm-id="${esc(m.id)}">End timeout</button>`
+                    : `<select class="dm-timeout" data-dm-id="${esc(m.id)}" style="width:auto;padding:6px 8px;font-size:13px"><option value="">Timeout…</option><option value="10">10 min</option><option value="60">1 hour</option><option value="1440">1 day</option><option value="10080">1 week</option></select>`) +
+                `<button class="btn btn-ghost btn-sm" type="button" data-dm-act="kick" data-dm-id="${esc(m.id)}">Kick</button><button class="btn btn-danger btn-sm" type="button" data-dm-act="ban" data-dm-id="${esc(m.id)}">Ban</button></div></td></tr>`;
+        }).join("") || empty(5, "Nobody found. Search by the start of their name or username, or paste their user ID.");
+    } catch (err) { toast(err.message, true); }
+};
+async function dmModerate(id, action, extra = {}) {
+    const m = (state.dmFound || []).find(x => x.id === id) || { name: id };
+    const words = { kick: ["Kick " + m.name + "?", "They leave the server but can join again with an invite.", "Kick", true],
+                    ban: ["Ban " + m.name + "?", "They are removed and cannot come back. Their messages from the last day are deleted too.", "Ban", true] }[action];
+    if (words && !(await confirmBox(...words))) return;
+    try {
+        await post("/api/admin/discord/moderate", { member_id: id, action, reason: $("dm-reason").value, delete_messages: action === "ban", ...extra });
+        toast({ timeout: "Timed out", untimeout: "Timeout ended", kick: "Kicked", ban: "Banned", unban: "Unbanned" }[action]);
+        loadAudit();
+        if (action === "unban") loadBans(); else if ($("dm-q").value.trim()) $("dm-search").requestSubmit();
+    } catch (err) { toast(err.message, true); }
+}
+$("dm-list").onclick = e => { const b = e.target.closest("[data-dm-act]"); if (b) dmModerate(b.dataset.dmId, b.dataset.dmAct); };
+$("dm-list").onchange = e => { const s = e.target.closest(".dm-timeout"); if (s && s.value) dmModerate(s.dataset.dmId, "timeout", { minutes: Number(s.value) }); };
+async function loadBans() {
+    try {
+        const d = await api("/api/admin/discord/bans");
+        $("dm-bans-wrap").hidden = false;
+        $("dm-bans").innerHTML = (d.bans || []).map(b => `<tr><td>${esc(b.name)}<div class="muted" style="font-size:13px">${esc(b.id)}</div></td><td class="muted">${esc(b.reason)}</td>` +
+            `<td><button class="btn btn-ghost btn-sm" type="button" data-dm-unban="${esc(b.id)}">Unban</button></td></tr>`).join("") || empty(3, "Nobody is banned.");
+    } catch (err) { toast(err.message, true); }
+}
+$("dm-bans-btn").onclick = loadBans;
+$("dm-bans").onclick = e => { const b = e.target.closest("[data-dm-unban]"); if (b) dmModerate(b.dataset.dmUnban, "unban"); };
+
+// Server tools: role buttons, your own commands, clean-up, channel controls, automation, nickname
+async function loadDxRoles() {
+    try {
+        const d = await api("/api/admin/discord/roles");
+        const chosen = Object.fromEntries((d.panel || []).map(p => [p.role_id, p]));
+        $("dx-roles-list").innerHTML = (d.roles || []).map(r => `<div style="display:grid;grid-template-columns:auto 1fr 64px;gap:8px;align-items:center;margin-bottom:6px">` +
+            `<input type="checkbox" data-dx-role="${esc(r.id)}"${chosen[r.id] ? " checked" : ""} aria-label="Use ${esc(r.name)}">` +
+            `<input data-dx-role-label="${esc(r.id)}" maxlength="80" value="${esc((chosen[r.id] || {}).label || r.name)}" style="padding:6px 10px;${r.color ? `border-left:4px solid ${esc(r.color)}` : ""}" aria-label="Button text">` +
+            `<input data-dx-role-emoji="${esc(r.id)}" maxlength="16" value="${esc((chosen[r.id] || {}).emoji || "")}" placeholder="emoji" style="padding:6px 8px" aria-label="Emoji"></div>`).join("")
+            || '<p class="muted" style="margin:0">No roles can be given by a button yet. Make roles in Discord (Server Settings, Roles) without moderator permissions.</p>';
+    } catch (err) { $("dx-roles-list").innerHTML = `<span class="muted">${esc(err.message)}</span>`; }
+}
+$("dx-roles").onsubmit = async e => {
+    e.preventDefault();
+    const roles = [...document.querySelectorAll("[data-dx-role]:checked")].map(c => ({ role_id: c.dataset.dxRole,
+        label: document.querySelector(`[data-dx-role-label="${c.dataset.dxRole}"]`).value, emoji: document.querySelector(`[data-dx-role-emoji="${c.dataset.dxRole}"]`).value }));
+    try { await post("/api/admin/discord/role-panel", { channel_id: $("dx-roles-channel").value, text: $("dx-roles-text").value, roles }); toast("Role buttons posted"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+};
+function renderDxCommands() {
+    $("dx-cmd-list").innerHTML = (state.dxCmds || []).map((c, i) => `<fieldset class="dp-card" style="margin-bottom:10px"><legend>/${esc(c.name || "new")}</legend>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px"><div class="field" style="margin:0"><label>Name</label><input data-dx-cmd="name" data-i="${i}" maxlength="32" placeholder="rules" value="${esc(c.name)}"></div>
+        <div class="field" style="margin:0"><label>Description</label><input data-dx-cmd="description" data-i="${i}" maxlength="100" placeholder="Our server rules" value="${esc(c.description)}"></div></div>
+        <div class="field" style="margin:8px 0 0"><label>Reply</label><textarea data-dx-cmd="reply" data-i="${i}" rows="3" maxlength="2000">${esc(c.reply)}</textarea></div>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:8px"><div class="field" style="margin:0"><label>Button text</label><input data-dx-cmd="button_label" data-i="${i}" maxlength="80" placeholder="optional" value="${esc(c.button_label)}"></div>
+        <div class="field" style="margin:0"><label>Button link</label><input data-dx-cmd="button_url" data-i="${i}" placeholder="https://… or /heavypro" value="${esc(c.button_url)}"></div></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0"><input type="checkbox" data-dx-cmd="public" data-i="${i}"${c.public ? " checked" : ""}> Everyone in the channel sees the answer</label>
+        <button class="btn btn-ghost btn-sm" type="button" data-dx-cmd-del="${i}">Remove</button></div></fieldset>`).join("") || '<p class="muted" style="margin:0 0 10px;font-size:14px">No commands of your own yet.</p>';
+}
+async function loadDxCommands() {
+    try { state.dxCmds = (await api("/api/admin/discord/custom-commands")).commands || []; } catch (err) { state.dxCmds = []; }
+    renderDxCommands();
+}
+$("dx-cmd-list").oninput = $("dx-cmd-list").onchange = e => {
+    const f = e.target.closest("[data-dx-cmd]");
+    if (f) state.dxCmds[Number(f.dataset.i)][f.dataset.dxCmd] = f.type === "checkbox" ? f.checked : f.value;
+};
+$("dx-cmd-list").onclick = e => { const d = e.target.closest("[data-dx-cmd-del]"); if (d) { state.dxCmds.splice(Number(d.dataset.dxCmdDel), 1); renderDxCommands(); } };
+$("dx-cmd-add").onclick = () => { state.dxCmds = state.dxCmds || []; if (state.dxCmds.length >= 15) return toast("Up to 15 commands", true); state.dxCmds.push({ name: "", description: "", reply: "", button_label: "", button_url: "", public: false }); renderDxCommands(); };
+$("dx-cmds").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const d = await post("/api/admin/discord/custom-commands", { commands: state.dxCmds || [] });
+        state.dxCmds = d.commands; renderDxCommands();
+        toast(d.registered ? "Saved: the commands are in your server" : "Saved. Press Add the slash commands to update Discord."); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+$("dx-purge").onsubmit = async e => {
+    e.preventDefault();
+    const ch = $("dx-purge-channel"), name = ch.selectedOptions[0] ? ch.selectedOptions[0].textContent : "";
+    if (!ch.value) return toast("Choose a channel", true);
+    if (!(await confirmBox("Delete messages?", `The last ${$("dx-purge-n").value} messages${$("dx-purge-member").value.trim() ? " from that member" : ""} in ${name} are deleted for good.`, "Delete", true))) return;
+    try {
+        const d = await post("/api/admin/discord/purge", { channel_id: ch.value, count: Number($("dx-purge-n").value), member_id: $("dx-purge-member").value.trim() });
+        toast(`Deleted ${d.deleted} message${d.deleted === 1 ? "" : "s"}` + (d.too_old ? ` (${d.too_old} older than 14 days left)` : "")); loadAudit(); loadDpHistory();
+    } catch (err) { toast(err.message, true); }
+};
+function dxChanNow() {
+    const c = (state.dp.channels || []).find(x => x.id === $("dx-chan-channel").value);
+    $("dx-chan-now").textContent = c ? `Now: ${c.locked ? "🔒 locked" : "open"}, slowmode ${c.slowmode ? c.slowmode + " s" : "off"}` : "";
+    if (c) $("dx-chan-slow").value = [...$("dx-chan-slow").options].some(o => Number(o.value) === c.slowmode) ? String(c.slowmode) : "0";
+}
+$("dx-chan-channel").onchange = dxChanNow;
+async function dxChannel(change, done) {
+    const id = $("dx-chan-channel").value;
+    if (!id) return toast("Choose a channel", true);
+    try {
+        await post("/api/admin/discord/channel/" + id, change); toast(done);
+        const c = state.dp.channels.find(x => x.id === id);
+        if (c) Object.assign(c, "locked" in change ? { locked: change.locked } : { slowmode: change.slowmode });
+        dxChanNow(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+}
+$("dx-chan-slow-btn").onclick = () => dxChannel({ slowmode: Number($("dx-chan-slow").value) }, "Slowmode set");
+$("dx-chan-lock").onclick = () => dxChannel({ locked: true, note: $("dx-chan-note").value }, "Channel locked");
+$("dx-chan-unlock").onclick = () => dxChannel({ locked: false, note: $("dx-chan-note").value }, "Channel unlocked");
+async function loadDxAuto() {
+    try { state.dxAuto = await api("/api/admin/discord/automation"); } catch (err) { state.dxAuto = {}; }
+    renderDxAuto();
+}
+function renderDxAuto() {
+    const a = state.dxAuto || {};
+    $("dx-auto-sync").checked = !!a.auto_sync; $("dx-auto-ms").checked = !!a.milestones; $("dx-auto-ms-channel").value = a.milestone_channel || ""; $("dx-nick-name").value = a.nickname || "";
+    const s = a.autosync || {};
+    if (a.auto_sync && s.day) $("dx-auto-sync-state").textContent = `Last daily check: ${s.day}${s.done ? " (done)" : " (running)"}.`;
+    if (a.milestones && a.milestone_last) $("dx-auto-ms-state").textContent = `Last milestone: ${Number(a.milestone_last).toLocaleString()} members. Next: the next step up.`;
+}
+$("dx-auto").onsubmit = async e => {
+    e.preventDefault();
+    try {
+        const d = await post("/api/admin/discord/automation", { auto_sync: $("dx-auto-sync").checked, milestones: $("dx-auto-ms").checked, milestone_channel: $("dx-auto-ms-channel").value });
+        state.dxAuto = { ...state.dxAuto, ...d }; toast("Automation saved"); loadDxAuto(); loadAudit();
+    } catch (err) { toast(err.message, true); }
+};
+async function dxNick(nickname) {
+    try { const d = await post("/api/admin/discord/nickname", { nickname }); $("dx-nick-name").value = d.nickname; toast(d.nickname ? "The bot is now called " + d.nickname : "Nickname reset"); loadAudit(); }
+    catch (err) { toast(err.message, true); }
+}
+$("dx-nick").onsubmit = e => { e.preventDefault(); dxNick($("dx-nick-name").value); };
+$("dx-nick-reset").onclick = () => dxNick("");
 
 // Shop: Stripe set-up, discount codes, prices, sales and revenue per product
 function shopMoney(cents, currency) {
