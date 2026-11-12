@@ -1964,6 +1964,20 @@ class StratoCGITests:
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": ""}, token=t))
 
+    def test_discord_presence_config(self):
+        t = self.owner_token
+        # public: what the HeavyPro app needs for "Playing HeavyPro" with two buttons
+        cfg = self.ok(self.w.cgi("GET", "/api/discord/presence"))
+        self.assertEqual((cfg["app_id"], cfg["url"], cfg["name"]), ("112233445566778899", "https://rotaidem.test/heavypro", "HeavyPro"))
+        # the invite link is checked, then served to the app
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "join my server"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "https://evil.example/x"}, token=t).status, 400)
+        try:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "https://discord.gg/rotaidem"}, token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/discord/presence"))["invite"], "https://discord.gg/rotaidem")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "invite_url": ""}, token=t))
+
     def test_discord_set_up_check(self):
         t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
         self.assertFalse(self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))["ok"], "nothing chosen yet")

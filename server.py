@@ -3059,7 +3059,7 @@ def admin_affiliate_payout_run():
 # /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
 
 DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": "", "status_channel": "",
-                   "welcome_channel": "", "team_channel": "", "tickets_channel": ""}
+                   "welcome_channel": "", "team_channel": "", "tickets_channel": "", "invite_url": ""}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
@@ -3426,8 +3426,11 @@ def admin_save_discord():
     if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
         # from now on: news posts that are already up are not announced again
         set_setting("discord.announced_posts", [r["id"] for r in visible_posts()])
+    invite = str(b.get("invite_url", old["invite_url"]) or "").strip()[:200]
+    if invite and not re.match(r"^https://(discord\.gg/|(www\.)?discord\.com/invite/)[A-Za-z0-9-]+$", invite):
+        return err("The invite link must look like https://discord.gg/yourcode", 400)
     set_setting("discord.settings", {"guild_id": guild, "role_id": role, "products": products, **channels,
-                                     "updates_ping": bool(b.get("updates_ping", old["updates_ping"]))})
+                                     "invite_url": invite, "updates_ping": bool(b.get("updates_ping", old["updates_ping"]))})
     audit(user, "save_discord", f"server {guild or '-'}, role {role or '-'}")
     commands_registered = False
     if guild and discord_ready():  # keep the slash commands in sync so they never silently go stale
@@ -3437,6 +3440,14 @@ def admin_save_discord():
         except Exception:  # noqa: BLE001 - saving settings must not fail over command registration
             app.logger.exception("Auto-registering Discord commands failed")
     return jsonify({"ok": True, "settings": discord_settings(), "ready": discord_ready(), "commands_registered": commands_registered})
+
+
+@app.get("/api/discord/presence")
+def discord_presence_config():
+    """Public: what the HeavyPro app needs to show 'Playing HeavyPro' on Discord (Rich Presence) with
+    two buttons. The app id is the Discord application's (public), the invite and link are the buttons."""
+    return jsonify({"app_id": DISCORD_CLIENT_ID, "invite": discord_settings().get("invite_url") or "",
+                    "url": site_url() + "/heavypro", "name": "HeavyPro"})
 
 
 @app.post("/api/admin/discord/sync")
