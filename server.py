@@ -3049,12 +3049,12 @@ def admin_affiliate_payout_run():
 # /verify in Discord reaches /api/discord/interactions (signed by Discord, checked with Ed25519).
 
 DISCORD_DEFAULT = {"guild_id": "", "role_id": "", "products": [], "updates_channel": "", "updates_ping": False, "news_channel": "", "sales_channel": "", "status_channel": "",
-                   "welcome_channel": "", "team_channel": ""}
+                   "welcome_channel": "", "team_channel": "", "tickets_channel": ""}
 SNOWFLAKE = re.compile(r"^\d{15,22}$")
 DISCORD_STATE_MINUTES = 15
 # Manage Roles, Create Invite, View Channels, Send Messages, Embed Links, Mention Everyone,
 # Add Reactions, Manage Messages (pins), Read Message History, Send Polls, Manage Events
-DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33))
+DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38))  # + create private threads, send in threads (support tickets)
 
 
 def discord_settings():
@@ -3410,7 +3410,7 @@ def admin_save_discord():
         return err("Server and role IDs are long numbers: in Discord, turn on Developer Mode, then right-click and Copy ID", 400)
     products = [str(p).strip()[:60] for p in (b.get("products") or []) if str(p).strip()][:20]
     old = discord_settings()
-    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel", "status_channel", "welcome_channel", "team_channel")}
+    channels = {k: str(b.get(k, old[k]) or "").strip() for k in ("updates_channel", "news_channel", "sales_channel", "status_channel", "welcome_channel", "team_channel", "tickets_channel")}
     if any(v and not SNOWFLAKE.match(v) for v in channels.values()):
         return err("Choose the channels from the list", 400)
     if channels["news_channel"] and channels["news_channel"] != old["news_channel"]:
@@ -3919,8 +3919,28 @@ def discord_support_submit(event):
     email = (user or {}).get("email") or f"Discord: {name}"
     text = f"[Discord /support] {values.get('subject', '')}\n\n{values['message']}"[:5000]
     db().run("INSERT INTO messages (name, email, message) VALUES (?, ?, ?)", (user or {}).get("name") or name, email, text)
+    cfg = discord_settings()
+    if cfg.get("tickets_channel") and discord_ready() and SNOWFLAKE.match(discord_id) and discord_open_ticket(cfg["tickets_channel"], discord_id, name, values.get("subject", ""), values["message"]):
+        return discord_reply("Thanks — we opened a private ticket thread for you here. Only you and the Rotaidem team can see it, and you'll be pinged when we reply.")
     discord_team_message(name, values.get("subject") or values["message"], "Discord /support")
     return discord_reply("Thanks, we got your message." + ("" if user else " Link Discord on your Rotaidem account so we can answer by email too."))
+
+
+def discord_open_ticket(channel, discord_id, name, subject, message):
+    """Open a private support thread, add the member and post their message. Staff with Manage Threads
+    see every private thread. Returns True when the thread was created. Never raises."""
+    try:
+        title = ("🎫 " + (str(subject).strip() or str(name).strip() or "Support"))[:90]
+        thread, error, _ = discord_call("POST", f"/channels/{channel}/threads", payload={"name": title, "type": 12, "invitable": False})
+        if error or not thread:
+            app.logger.warning("Ticket thread for %s: %s", name, error)
+            return False
+        body = f"New support ticket from <@{discord_id}>.\n**Subject:** {str(subject).strip() or '(none)'}\n\n{str(message)[:1800]}"
+        discord_call("POST", f"/channels/{thread['id']}/messages", payload={"content": body[:2000], "allowed_mentions": {"users": [discord_id]}})
+        return True
+    except Exception:  # noqa: BLE001 - a member never sees a ticketing problem; the inbox already has the message
+        app.logger.exception("Opening ticket thread failed for %s", name)
+        return False
 
 
 DISCORD_HANDLERS = {"status": discord_cmd_status, "version": discord_cmd_version, "licence": discord_cmd_licence, "download": discord_cmd_download,

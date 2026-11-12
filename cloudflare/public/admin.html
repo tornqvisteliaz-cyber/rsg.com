@@ -710,6 +710,7 @@
                     <div class="field"><label for="da-sales">Sales (for the team)</label><select id="da-sales"></select><div class="hint">🎉 for every paid order: product and amount, no customer details. Use a staff-only channel.</div></div>
                     <div class="field"><label for="da-welcome">Welcome</label><select id="da-welcome"></select><div class="hint">👋 when someone links Discord to their Rotaidem account for the first time.</div></div>
                     <div class="field"><label for="da-team">Team feed (staff only)</label><select id="da-team"></select><div class="hint">📨 new messages (contact form and /support), 🧑‍✈️ new accounts, and a weekly report every Monday morning (UTC). Use a staff-only channel.</div></div>
+                    <div class="field"><label for="da-tickets">Support tickets</label><select id="da-tickets"></select><div class="hint">🎫 /support opens a private thread here between the member and staff. Staff with “Manage Threads” see every ticket. Off = /support just goes to the inbox.</div></div>
                     <div class="field"><label for="da-status">Status alerts</label><select id="da-status"></select><div class="hint">🔴 when a part of the site goes down and 🟢 when it is back (see Status). Checked while someone has /status or the admin open.</div></div>
                 </div>
                 <button class="btn" type="submit">Save</button>
@@ -2551,7 +2552,7 @@ async function loadDpChannels() {
         let cat = null;
         const opts = sel => `<option value="">${sel}</option>` + state.dp.channels.map(c => `<option value="${esc(c.id)}">${c.announcement ? "📢 " : "# "}${esc(c.name)}</option>`).join("");
         $("dp-insert").innerHTML = '<option value="">Insert a # channel</option>' + state.dp.channels.map(c => `<option value="${esc(c.name)}">#${esc(c.name)}</option>`).join("");
-        for (const id of ["da-updates", "da-news", "da-sales", "da-status", "da-welcome", "da-team"]) $(id).innerHTML = opts("Off");
+        for (const id of ["da-updates", "da-news", "da-sales", "da-status", "da-welcome", "da-team", "da-tickets"]) $(id).innerHTML = opts("Off");
         $("dt-inv-channel").innerHTML = opts("Choose a channel");
         renderAuto();
         $("dp-channel").innerHTML = '<option value="">Choose a channel</option>' + state.dp.channels.map(c => {
@@ -2564,7 +2565,7 @@ async function loadDpChannels() {
 }
 function renderAuto() {
     const cfg = (state.discord || {}).settings || {};
-    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-status").value = cfg.status_channel || ""; $("da-welcome").value = cfg.welcome_channel || ""; $("da-team").value = cfg.team_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
+    $("da-updates").value = cfg.updates_channel || ""; $("da-news").value = cfg.news_channel || ""; $("da-sales").value = cfg.sales_channel || ""; $("da-status").value = cfg.status_channel || ""; $("da-welcome").value = cfg.welcome_channel || ""; $("da-team").value = cfg.team_channel || ""; $("da-tickets").value = cfg.tickets_channel || ""; $("da-ping").checked = !!cfg.updates_ping;
 }
 async function loadDpHistory() {
     let d = {};
@@ -2670,7 +2671,7 @@ $("da-form").onsubmit = async e => {
     const cfg = (state.discord || {}).settings || {};
     try {
         const d = await post("/api/admin/discord", { guild_id: cfg.guild_id, role_id: cfg.role_id, products: cfg.products || [],
-            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, status_channel: $("da-status").value, welcome_channel: $("da-welcome").value, team_channel: $("da-team").value, updates_ping: $("da-ping").checked });
+            updates_channel: $("da-updates").value, news_channel: $("da-news").value, sales_channel: $("da-sales").value, status_channel: $("da-status").value, welcome_channel: $("da-welcome").value, team_channel: $("da-team").value, tickets_channel: $("da-tickets").value, updates_ping: $("da-ping").checked });
         state.discord.settings = d.settings; renderAuto(); toast("Automatic posts saved"); loadAudit();
     } catch (err) { toast(err.message, true); }
 };

@@ -146,7 +146,7 @@ class FakeDiscord:
     BOT = "Bot bot-token-test"
 
     def __init__(self):
-        self.members, self.commands, self.messages = {}, [], []  # members: {discord id: set of role ids}
+        self.members, self.commands, self.messages, self.threads = {}, [], [], []  # members: {discord id: set of role ids}; threads: (parent, id, body)
         self.posted, self.crossposted = {}, []  # message id -> (channel, message) for Post to Discord
         self.reactions, self.pins = [], []
         self.bot_position = 5  # the bot's role; the buyer role is at 3. Below it, Discord refuses to give the role.
@@ -226,6 +226,10 @@ class FakeDiscord:
                         return self.reply(204)
                     outer.posted[parts[3]] = (parts[1], json.loads(raw))
                     return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and parts[-1:] == ["threads"] and self.command == "POST":
+                    tid = str(1600000000000000000 + len(outer.threads))
+                    outer.threads.append((parts[1], tid, json.loads(raw)))  # (parent channel, thread id, body)
+                    return self.reply(201, {"id": tid, **json.loads(raw)})
                 if parts[:1] == ["channels"] and self.command == "POST":
                     outer.messages.append((parts[1], json.loads(raw)))
                     mid = str(1500000000000000000 + len(outer.messages))
@@ -1860,6 +1864,34 @@ class StratoCGITests:
             self.assertNotIn(email, msg["content"])
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "updates_channel": "", "news_channel": "", "sales_channel": ""}, token=t))
+
+    def test_discord_support_tickets(self):
+        t, guild, role, tickets = self.owner_token, "1100000000000000001", "1200000000000000002", "1400000000000000002"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            def submit(uid):
+                return {"type": 5, "data": {"custom_id": "support", "components": [
+                    {"type": 1, "components": [{"type": 4, "custom_id": "subject", "value": "Install help"}]},
+                    {"type": 1, "components": [{"type": 4, "custom_id": "message", "value": "HeavyPro won't start"}]}]},
+                    "member": {"user": {"id": uid, "username": "Pilot"}}}
+            # no tickets channel yet: the message goes to the inbox, no thread is opened
+            ans = self.ok(self.discord_call(submit("300000000000000077")))
+            self.assertIn("got your message", ans["data"]["content"])
+            self.assertEqual(self.discord.threads, [])
+            self.assertTrue(any("HeavyPro won't start" in m["message"] for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"]))
+            # choose a tickets channel: /support now opens a private thread and pings the member
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "tickets_channel": tickets}, token=t))
+            ans = self.ok(self.discord_call(submit("300000000000000078")))
+            self.assertIn("private ticket thread", ans["data"]["content"])
+            self.assertEqual(len(self.discord.threads), 1)
+            parent, tid, tbody = self.discord.threads[-1]
+            self.assertEqual((parent, tbody["type"]), (tickets, 12), "a private thread in the tickets channel")
+            thread_msg = next(m for ch, m in self.discord.messages if ch == tid)
+            self.assertIn("<@300000000000000078>", thread_msg["content"])
+            self.assertIn("HeavyPro won't start", thread_msg["content"])
+            self.assertEqual(thread_msg["allowed_mentions"]["users"], ["300000000000000078"])
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": ""}, token=t))
 
     def test_discord_set_up_check(self):
         t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
