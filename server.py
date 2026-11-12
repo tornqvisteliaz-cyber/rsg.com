@@ -46,6 +46,10 @@ MAIL_FROM = os.environ.get("MAIL_FROM", "").strip() or "Rotaidem <no-reply@rotai
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_API_URL = os.environ.get("STRIPE_API_URL", "https://api.stripe.com").rstrip("/")  # override only for tests
+# PayPal Payouts (Admin -> Affiliates): pays affiliates their commissions by PayPal email. From setup.py paypal.
+PAYPAL_CLIENT_ID = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+PAYPAL_SECRET = os.environ.get("PAYPAL_SECRET", "").strip()
+PAYPAL_API_URL = os.environ.get("PAYPAL_API_URL", "https://api-m.paypal.com").rstrip("/")  # sandbox: https://api-m.sandbox.paypal.com; override only for tests
 # Discord (Admin -> Discord): the application and its bot, from setup.py discord
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "").strip()
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "").strip()
@@ -2737,7 +2741,7 @@ def affiliate_orders(affiliate_id, with_buyer=False):
 def affiliate_public(aff, with_buyer=False):
     return {"id": aff["id"], "code": aff["code"], "name": aff["name"] or "", "email": aff["email"] or "", "percent": aff["percent"],
             "status": aff["status"], "note": aff["note"] or "", "payout": aff.get("payout") or "", "clicks": int(aff.get("clicks") or 0),
-            "connected": bool(aff.get("stripe_account")), "payouts_ready": bool(aff.get("payouts_ready")),
+            "payouts_ready": bool(affiliate_paypal_email(aff)),  # has a valid PayPal email, so auto-payouts can reach them
             "created_at": aff["created_at"], "link": site_url() + "/?ref=" + urllib.parse.quote(aff["code"]),
             "orders_list": affiliate_orders(aff["id"], with_buyer), **affiliate_totals(aff["id"])}
 
@@ -2751,9 +2755,8 @@ def account_affiliate():
     aff = affiliate_for_user(user)
     if not aff:
         return jsonify({"affiliate": None, "percent": AFFILIATE_DEFAULT_PERCENT})
-    if aff.get("stripe_account"):
-        stripe_connect_ready(aff)   # refresh the cached flag for the dashboard
-        affiliate_autopay(aff)      # and pay anything still pending, directly, now they are set up
+    if affiliate_paypal_email(aff):
+        affiliate_autopay(aff)      # pay anything still pending now they have a PayPal email saved
         aff = affiliate_for_user(user) or aff
     data = affiliate_public(aff)
     data.pop("note", None)  # the admin's own note stays private
@@ -2792,7 +2795,7 @@ def admin_affiliates():
         item = affiliate_public(aff)
         item.pop("orders_list")
         out.append(item)
-    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings(), "stripe_ready": bool(STRIPE_SECRET_KEY),
+    return jsonify({"affiliates": out, "default_percent": AFFILIATE_DEFAULT_PERCENT, "payouts": affiliate_payout_settings(), "paypal_ready": paypal_ready(),
                     "pending_total": round(float((db().first("SELECT SUM(amount) AS t FROM affiliate_commissions WHERE status = 'pending'") or {}).get("t") or 0), 2)})
 
 
@@ -2890,37 +2893,70 @@ def affiliate_payout_settings():
             "last": get_setting("affiliate.payout_last", "") or "", "every_days": AFFILIATE_PAYOUT_DAYS}
 
 
-def stripe_connect_account(aff):
-    """The affiliate's connected account id, creating an Express account the first time. Returns (id, error)."""
-    if aff.get("stripe_account"):
-        return aff["stripe_account"], ""
-    account, error = stripe_call("POST", "/v1/accounts", {
-        "type": "express", "email": aff.get("email") or "", "business_type": "individual",
-        "capabilities[transfers][requested]": "true", "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]})
-    if error:
-        return "", error
-    db().run("UPDATE affiliates SET stripe_account = ?, payouts_ready = 0 WHERE id = ?", account["id"], aff["id"])
-    return account["id"], ""
+def paypal_ready():
+    """True when PayPal Payouts is configured (config.env), so the site can pay affiliates."""
+    return bool(PAYPAL_CLIENT_ID and PAYPAL_SECRET)
 
 
-def stripe_connect_ready(aff):
-    """Ask Stripe whether this affiliate can receive payouts, and cache a yes. Returns bool."""
-    if not aff.get("stripe_account"):
-        return False
-    if aff.get("payouts_ready"):
-        return True
-    account, error = stripe_call("GET", "/v1/accounts/" + urllib.parse.quote(aff["stripe_account"]))
-    ready = (not error) and bool(account and account.get("payouts_enabled"))
-    if ready:
-        db().run("UPDATE affiliates SET payouts_ready = 1 WHERE id = ?", aff["id"])
-    return ready
+def affiliate_paypal_email(aff):
+    """The affiliate's PayPal email (where their money is sent), or '' when they have not given a valid one."""
+    email = str(aff.get("payout") or "").strip()
+    return email if EMAIL_RE.match(email) else ""
+
+
+def paypal_token():
+    """A short-lived OAuth2 access token for PayPal (client-credentials). Returns (token, error)."""
+    auth = base64.b64encode(f"{PAYPAL_CLIENT_ID}:{PAYPAL_SECRET}".encode()).decode()
+    req = urllib.request.Request(f"{PAYPAL_API_URL}/v1/oauth2/token", data=b"grant_type=client_credentials",
+                                 headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode()).get("access_token") or "", ""
+    except urllib.error.HTTPError as exc:
+        app.logger.error("PayPal token -> %s", exc.code)
+        return "", f"PayPal did not accept the keys ({exc.code}). Run setup.py paypal again."
+    except (OSError, ValueError) as exc:
+        app.logger.error("PayPal token: %s", exc)
+        return "", "Could not reach PayPal. Try again in a minute."
+
+
+def paypal_payout(email, amount, currency, note, batch_id):
+    """Send one payout to a PayPal email. Returns (payout batch id, error). sender_batch_id makes it
+    idempotent: the same id never pays twice."""
+    token, error = paypal_token()
+    if error or not token:
+        return None, error or "No PayPal token"
+    payload = {"sender_batch_header": {"sender_batch_id": batch_id, "email_subject": "Your Rotaidem affiliate payout",
+                                       "email_message": "Thank you for sending buyers our way."},
+               "items": [{"recipient_type": "EMAIL", "amount": {"value": f"{amount:.2f}", "currency": currency.upper()},
+                          "receiver": email, "note": str(note)[:200], "sender_item_id": batch_id}]}
+    req = urllib.request.Request(f"{PAYPAL_API_URL}/v1/payments/payouts", data=json.dumps(payload).encode(),
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            out = json.loads(resp.read().decode())
+            return (out.get("batch_header") or {}).get("payout_batch_id") or batch_id, ""
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(raw).get("message") or raw[:200]
+        except (ValueError, AttributeError):
+            message = raw[:200]
+        app.logger.error("PayPal payout -> %s: %s", exc.code, message)
+        return None, f"PayPal said ({exc.code}): {message}"
+    except (OSError, ValueError) as exc:
+        app.logger.error("PayPal payout: %s", exc)
+        return None, "Could not reach PayPal. Try again in a minute."
 
 
 def affiliate_pay_one(aff, minimum):
-    """Transfer an affiliate's pending commissions (grouped by currency) if a group clears the minimum.
-    Returns a list of {amount, currency, transfer}. The idempotency key covers the exact set, so a
-    retry after a crash cannot pay twice."""
+    """PayPal an affiliate's pending commissions (grouped by currency) when a group clears the minimum.
+    Returns a list of {amount, currency, transfer}. sender_batch_id covers the exact set, so a retry
+    after a crash cannot pay twice."""
     paid = []
+    email = affiliate_paypal_email(aff)
+    if not email:
+        return paid
     for g in db().all("SELECT currency, SUM(amount) AS total FROM affiliate_commissions "
                       "WHERE affiliate_id = ? AND status = 'pending' GROUP BY currency", aff["id"]):
         total = round(float(g["total"] or 0), 2)
@@ -2931,44 +2967,41 @@ def affiliate_pay_one(aff, minimum):
                                          aff["id"], g["currency"])]
         if not ids:
             continue
-        key = f"aff-{aff['id']}-{currency}-{max(ids)}-{len(ids)}"
-        transfer, error = stripe_call("POST", "/v1/transfers", {
-            "amount": int(round(total * 100)), "currency": currency, "destination": aff["stripe_account"],
-            "metadata[affiliate_id]": aff["id"], "metadata[code]": aff["code"]}, idempotency_key=key)
-        if error or not transfer:
+        batch_id = f"aff-{aff['id']}-{currency}-{max(ids)}-{len(ids)}"
+        batch, error = paypal_payout(email, total, currency, f"Rotaidem affiliate {aff['code']}", batch_id)
+        if error or not batch:
             app.logger.error("Affiliate payout %s (%s %s): %s", aff["code"], total, currency, error)
             continue
         marks = ",".join("?" for _ in ids)
-        db().run(f"UPDATE affiliate_commissions SET status = 'paid', transfer_id = ? WHERE id IN ({marks})", transfer["id"], *ids)
-        paid.append({"amount": total, "currency": currency.upper(), "transfer": transfer["id"]})
+        db().run(f"UPDATE affiliate_commissions SET status = 'paid', transfer_id = ? WHERE id IN ({marks})", batch, *ids)
+        paid.append({"amount": total, "currency": currency.upper(), "transfer": batch})
     return paid
 
 
 def affiliate_payout_run():
-    """Pay every active, ready affiliate whose pending total clears the minimum. Returns a summary."""
+    """Pay every active affiliate who has a PayPal email and whose pending total clears the minimum."""
     minimum = affiliate_payout_settings()["min"]
     out = []
-    for aff in db().all("SELECT * FROM affiliates WHERE status = 'active' AND stripe_account IS NOT NULL AND stripe_account != ''"):
-        if not stripe_connect_ready(aff):
-            continue
-        out += [{"code": aff["code"], **row} for row in affiliate_pay_one(aff, minimum)]
+    if paypal_ready():
+        for aff in db().all("SELECT * FROM affiliates WHERE status = 'active' AND payout IS NOT NULL AND payout <> ''"):
+            if affiliate_paypal_email(aff):
+                out += [{"code": aff["code"], **row} for row in affiliate_pay_one(aff, minimum)]
     set_setting("affiliate.payout_last", utc_stamp())
     set_setting("affiliate.payout_last_ts", time.time())
     if out:
         lines = ", ".join(f"{p['amount']:.2f} {p['currency']} to {p['code']}" for p in out)
-        discord_auto("sales", {"text": f"💸 Affiliate payouts sent: {lines}."})
+        discord_auto("sales", {"text": f"💸 Affiliate payouts sent by PayPal: {lines}."})
     return {"paid": out, "min": minimum}
 
 
 def affiliate_autopay(aff):
-    """Pay a connected, ready affiliate their pending commissions right now, straight to their account.
-    Used the moment a referred sale is paid (and when they finish onboarding) so money is auto and direct.
-    Ignores the minimum — that only guards the weekly catch-up. Never raises: on failure the commission
-    stays pending and the weekly run settles it."""
-    if not STRIPE_SECRET_KEY or not aff or not get_setting("affiliate.payouts_on", False):
+    """PayPal an affiliate their pending commissions right now, the moment a referred sale is paid (and
+    when they save their PayPal email), so money is auto and direct. Ignores the minimum — that only
+    guards the weekly catch-up. Never raises: on failure the commission stays pending for the next run."""
+    if not paypal_ready() or not aff or not get_setting("affiliate.payouts_on", False):
         return []
     try:
-        if not stripe_connect_ready(aff):
+        if not affiliate_paypal_email(aff):
             return []
         return affiliate_pay_one(aff, 0)
     except Exception:  # noqa: BLE001 - a buyer's success page never fails over a payout
@@ -2978,7 +3011,7 @@ def affiliate_autopay(aff):
 
 def affiliate_payouts_due():
     """Run the weekly catch-up at the first request after it is due (STRATO has no cron)."""
-    if not STRIPE_SECRET_KEY or not get_setting("affiliate.payouts_on", False):
+    if not paypal_ready() or not get_setting("affiliate.payouts_on", False):
         return
     now = time.time()
     if now - float(get_setting("affiliate.payout_checked", 0) or 0) < 3600:   # look at most once an hour
@@ -2990,29 +3023,6 @@ def affiliate_payouts_due():
         affiliate_payout_run()
     except Exception:  # noqa: BLE001 - visitors never see a payout problem
         app.logger.exception("Automatic affiliate payouts failed")
-
-
-@app.post("/api/account/affiliate/connect")
-def account_affiliate_connect():
-    """Start or resume Stripe onboarding so the affiliate can be paid automatically. Returns a link."""
-    user = current_user()
-    if not user:
-        return err("Unauthorized", 401)
-    if not STRIPE_SECRET_KEY:
-        return err("Payments are not set up yet", 503)
-    aff = affiliate_for_user(user)
-    if not aff or aff["status"] != "active":
-        return err("Your affiliate code is not active yet", 403)
-    account, error = stripe_connect_account(aff)
-    if error:
-        return err(error, 502)
-    base = re.sub(r"^http://", "https://", site_url())  # Stripe refuses non-https return URLs in live mode
-    link, error = stripe_call("POST", "/v1/account_links", {
-        "account": account, "type": "account_onboarding",
-        "refresh_url": base + "/account?connect=refresh", "return_url": base + "/account?connect=done"})
-    if error:
-        return err(error, 502)
-    return jsonify({"ok": True, "url": link["url"]})
 
 
 @app.post("/api/admin/affiliates/settings")
@@ -3030,14 +3040,14 @@ def admin_affiliate_settings():
 
 @app.post("/api/admin/affiliates/payout-run")
 def admin_affiliate_payout_run():
-    """Send every due automatic payout now, instead of waiting for the weekly run."""
+    """Send every due PayPal payout now, instead of waiting for the weekly run."""
     user = manager_user()
     if not user:
         return err("Only the Owner or an Admin can change affiliates", 403)
-    if not STRIPE_SECRET_KEY:
-        return err("Payments are not set up yet", 503)
+    if not paypal_ready():
+        return err("PayPal is not set up yet. Run setup.py paypal over SSH.", 503)
     result = affiliate_payout_run()
-    audit(user, "affiliate_payout_run", f"{len(result['paid'])} transfer(s)")
+    audit(user, "affiliate_payout_run", f"{len(result['paid'])} payout(s)")
     return jsonify({"ok": True, **result})
 
 

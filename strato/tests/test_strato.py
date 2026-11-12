@@ -140,6 +140,54 @@ class FakeStripe:
         self.server.shutdown()
 
 
+class FakePayPal:
+    """Stands in for api-m.paypal.com: an OAuth token and the Payouts endpoint. sender_batch_id is
+    idempotent (a repeat returns the same batch and makes no second payout)."""
+
+    def __init__(self):
+        self.payouts, self.batches = [], {}  # payouts: list of paid items; batches: sender_batch_id -> payout_batch_id
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data):
+                raw = json.dumps(data).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path == "/v1/oauth2/token":
+                    if not self.headers.get("Authorization", "").startswith("Basic "):
+                        return self.reply(401, {"error": "invalid_client"})
+                    return self.reply(200, {"access_token": "test-token", "token_type": "Bearer", "expires_in": 32400})
+                if self.path == "/v1/payments/payouts":
+                    if self.headers.get("Authorization", "") != "Bearer test-token":
+                        return self.reply(401, {"message": "Authentication failed"})
+                    body = json.loads(raw)
+                    sbid = body["sender_batch_header"]["sender_batch_id"]
+                    if sbid in outer.batches:  # idempotent: same sender_batch_id never pays twice
+                        return self.reply(200, {"batch_header": {"payout_batch_id": outer.batches[sbid], "batch_status": "PENDING"}})
+                    bid = "PB-" + str(len(outer.batches) + 1)
+                    outer.batches[sbid] = bid
+                    for it in body["items"]:
+                        outer.payouts.append({"batch": bid, "receiver": it["receiver"], "amount": it["amount"]["value"], "currency": it["amount"]["currency"]})
+                    return self.reply(200, {"batch_header": {"payout_batch_id": bid, "batch_status": "PENDING", "sender_batch_header": body["sender_batch_header"]}})
+                return self.reply(404, {"message": "not found"})
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self):
+        self.server.shutdown()
+
+
 class FakeDiscord:
     """Stands in for discord.com/api: OAuth2 code exchange, the user, server members and their roles, commands, messages.
     An OAuth2 code "code-<discord id>" belongs to that Discord user."""
@@ -349,7 +397,7 @@ class Webspace:
     """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
     rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
-    def __init__(self, db_values, resend_url, stripe_url="", discord_url=""):
+    def __init__(self, db_values, resend_url, stripe_url="", discord_url="", paypal_url=""):
         self.root = tempfile.mkdtemp(prefix="strato-")
         self.app = os.path.join(self.root, "rotaidem")
         os.mkdir(self.app)
@@ -367,6 +415,8 @@ class Webspace:
         if discord_url:
             self.values.update(DISCORD_CLIENT_ID="112233445566778899", DISCORD_CLIENT_SECRET="client-secret-test", DISCORD_BOT_TOKEN="bot-token-test",
                                DISCORD_PUBLIC_KEY=ed25519_keys(DISCORD_SEED)[2].hex(), DISCORD_API_URL=discord_url)
+        if paypal_url:
+            self.values.update(PAYPAL_CLIENT_ID="paypal-id-test", PAYPAL_SECRET="paypal-secret-test", PAYPAL_API_URL=paypal_url)
         if "MYSQL_HOST" not in self.values:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
@@ -428,7 +478,8 @@ class StratoCGITests:
         cls.resend = FakeResend()
         cls.stripe = FakeStripe()
         cls.discord = FakeDiscord()
-        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url)
+        cls.paypal = FakePayPal()
+        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url, cls.paypal.url)
 
     @classmethod
     def tearDownClass(cls):
@@ -436,6 +487,7 @@ class StratoCGITests:
         cls.resend.stop()
         cls.stripe.stop()
         cls.discord.stop()
+        cls.paypal.stop()
 
     @classmethod
     def login(cls, who, password):
@@ -1552,7 +1604,7 @@ class StratoCGITests:
         self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "x"}, token=buyer).status, 404, "buyer is not an affiliate")
         self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=buyer).status, 404, "no self-signup endpoint")
 
-    def test_affiliate_payouts_over_stripe_connect(self):
+    def test_affiliate_payouts_by_paypal(self):
         t = self.owner_token
         self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Pay App", "id": "pay-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
         partner, partner_email = self.customer("partner")
@@ -1562,37 +1614,34 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer))
         sid = list(self.stripe.sessions)[-1]; self.stripe.pay(sid)
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer, query="session_id=" + sid))
-        # the affiliate starts Stripe onboarding; we get a link and an Express account is created
-        connect = self.ok(self.w.cgi("POST", "/api/account/affiliate/connect", {}, token=partner))
-        self.assertIn("connect.stripe.test/setup/acct_test_", connect["url"])
-        self.assertEqual(len(self.stripe.accounts), 1)
-        acct = list(self.stripe.accounts)[0]
+        # only this affiliate's payouts (other tests share the fake PayPal and the database)
+        mine = lambda: [p for p in self.paypal.payouts if p["receiver"] == "partner@paypal.test"]
+        paid_me = lambda run: [p for p in run["paid"] if p["code"] == "partner"]
         # turn automatic payouts on with a 10.00 minimum
         self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "10"}, token=t))
-        # before onboarding finishes, Stripe cannot pay: a run sends nothing
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
-        self.assertEqual(self.stripe.transfers, [])
-        # the affiliate finishes onboarding (Stripe enables payouts); now a run pays the commission
-        self.stripe.accounts[acct]["payouts_enabled"] = True
-        run = self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))
-        self.assertEqual(run["paid"], [{"code": "partner", "amount": 20.0, "currency": "USD", "transfer": "tr_test_1"}])
-        self.assertEqual(len(self.stripe.transfers), 1)
-        self.assertEqual((self.stripe.transfers[0]["amount"], self.stripe.transfers[0]["destination"]), (2000, acct))
-        self.assertEqual(len(self.stripe.idempotency), 1, "the transfer carried an idempotency key")
+        # no PayPal email yet: partner is not paid
+        self.assertEqual(paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))), [])
+        self.assertEqual(mine(), [])
+        # the affiliate adds their PayPal email; now a run pays the commission there
+        self.ok(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "partner@paypal.test"}, token=partner))
+        got = paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t)))
+        self.assertEqual(len(got), 1)
+        self.assertEqual((got[0]["amount"], got[0]["currency"]), (20.0, "USD"))
+        self.assertTrue(got[0]["transfer"].startswith("PB-"), got[0]["transfer"])
+        self.assertEqual([(p["amount"], p["currency"]) for p in mine()], [("20.00", "USD")])
         # the commission is now paid, and the affiliate sees it on My account
         me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
         self.assertEqual((me["pending"]["amount"], me["paid"]["amount"], me["payouts_ready"]), (0, 20.0, True))
         self.assertEqual(me["orders_list"][0]["status"], "paid")
-        # a second run pays nothing and never double-transfers
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
-        self.assertEqual(len(self.stripe.transfers), 1)
-        # with payouts on and the affiliate set up, a NEW referred sale pays instantly and directly:
-        # straight through the moment the sale is paid, no run and no minimum wait
+        # a second run pays nothing more and never double-pays (sender_batch_id is idempotent)
+        self.assertEqual(paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))), [])
+        self.assertEqual(len(mine()), 1)
+        # with payouts on and a PayPal email saved, a NEW referred sale pays instantly, straight to PayPal
         payer2, _ = self.customer("payer2")
         self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer2))
         sid2 = list(self.stripe.sessions)[-1]; self.stripe.pay(sid2)
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer2, query="session_id=" + sid2))
-        self.assertEqual(len(self.stripe.transfers), 2, "the second commission was paid instantly on the sale")
+        self.assertEqual(len(mine()), 2, "the second commission was paid instantly on the sale")
         me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
         self.assertEqual((me["pending"]["amount"], me["paid"]["amount"]), (0, 40.0))
         self.assertTrue(all(o["status"] == "paid" for o in me["orders_list"]))

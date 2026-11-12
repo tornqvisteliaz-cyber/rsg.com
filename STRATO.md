@@ -241,21 +241,23 @@ visitor arrives with that link and buys (within 30 days), the affiliate earns th
   about affiliates there.
 - This is separate from the Endorsely script; use either or both.
 
-**Automatic payouts (Stripe Connect).** Instead of paying each affiliate by hand, let the site do it:
+**Automatic payouts (PayPal).** Instead of paying each affiliate by hand, let the site do it:
 
-- The affiliate presses **Set up automatic payouts** on their My account page and completes Stripe's
-  onboarding (their name, bank or debit card — you never see it). This uses Stripe Connect, which your
-  account already supports; it adds no new service or monthly cost.
+- One-time set-up: get a **PayPal Payouts** API app (PayPal Developer dashboard → My Apps & Credentials,
+  a Live app with the Payouts feature), then over SSH run `python3 rotaidem/strato/setup.py paypal` and
+  paste its **Client ID** and **Secret**. They are stored in `config.env`, never in Git.
+- The affiliate just enters their **PayPal email** on their My account page — no onboarding, no bank
+  details to you.
 - In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on. From then
-  on, each commission is sent **straight to a connected affiliate the moment their referred sale is
-  paid** — automatic and direct, no button to press and no waiting.
-- The **catch-up minimum** only covers affiliates who connect Stripe *after* they have already earned:
+  on, each commission is sent **straight to the affiliate's PayPal the moment their referred sale is
+  paid** — automatic and direct, no button to press.
+- The **catch-up minimum** only covers affiliates who add their PayPal *after* they have already earned:
   the site sweeps up what they are owed above that minimum (weekly, or with **Run payouts now**). Anyone
-  who was already connected is paid instantly, minimum or not.
-- You always receive the full sale first, so your Stripe balance covers the commission. Transfers carry
-  an idempotency key, so a retry can never pay twice. A buyer's success page never fails over a payout —
-  if a transfer cannot be made it stays pending and the next sweep settles it.
-- Affiliates who do not connect Stripe are still paid by hand with **Mark paid** — nothing changes.
+  who already had a PayPal email is paid instantly, minimum or not.
+- You always receive the full sale first, so your balance covers the commission. Each payout carries a
+  `sender_batch_id`, so a retry can never pay twice. A buyer's success page never fails over a payout —
+  if PayPal cannot be reached the commission stays pending and the next run settles it.
+- Affiliates who do not give a PayPal email are still paid by hand with **Mark paid** — nothing changes.
 - STRATO has no always-on cron, so the weekly catch-up happens on the first visit after it is due (the
   same way scheduled Discord posts work).
 

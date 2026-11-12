@@ -904,8 +904,8 @@
         <form class="panel" id="af-pay-form" style="margin-bottom:24px">
             <div class="panel-head"><h2>Automatic payouts</h2><span class="muted" id="af-pay-last" style="font-size:13px"></span></div>
             <div class="panel-body">
-                <p class="muted" style="margin-top:0;font-size:14px">Affiliates connect a Stripe account from their <strong>My account</strong> page. When this is on, each commission is sent straight to a connected affiliate <strong>the moment their referred sale is paid</strong>. The minimum below only guards a weekly catch-up for affiliates who connect after they have already earned. Anyone without Stripe is still paid by hand with <strong>Mark paid</strong>.</p>
-                <div id="af-pay-nostripe" class="muted" style="font-size:14px;display:none">Connect Stripe first (Admin → RotaHub → payments) to pay affiliates automatically.</div>
+                <p class="muted" style="margin-top:0;font-size:14px">Affiliates add their <strong>PayPal email</strong> on their <strong>My account</strong> page. When this is on, each commission is sent to their PayPal <strong>the moment their referred sale is paid</strong>. The minimum below only guards a weekly catch-up for affiliates who add their PayPal after they have already earned. Anyone without a PayPal email is still paid by hand with <strong>Mark paid</strong>.</p>
+                <div id="af-pay-nostripe" class="muted" style="font-size:14px;display:none">Add your PayPal Payouts keys first (run <code>python3 rotaidem/strato/setup.py paypal</code> over SSH) to pay affiliates automatically.</div>
                 <div class="form-grid" style="grid-template-columns:auto 1fr auto;align-items:end;gap:16px">
                     <label class="full" style="font-weight:400;display:flex;gap:8px;align-items:center;margin:0;width:auto"><input type="checkbox" id="af-pay-on"> Pay affiliates automatically</label>
                     <div class="field" style="max-width:220px"><label for="af-pay-min">Catch-up minimum ($)</label><input id="af-pay-min" type="number" min="0" step="1"></div>
@@ -1875,8 +1875,8 @@ async function loadAffiliates() {
     $("af-pay-on").checked = !!pay.on;
     if (document.activeElement !== $("af-pay-min")) $("af-pay-min").value = pay.min;
     $("af-pay-last").textContent = pay.last ? "Last run " + date(pay.last) : "Not run yet";
-    $("af-pay-nostripe").style.display = d.stripe_ready ? "none" : "";
-    for (const el of ["af-pay-on", "af-pay-min", "af-pay-save", "af-pay-run"]) $(el).disabled = !d.stripe_ready;
+    $("af-pay-nostripe").style.display = d.paypal_ready ? "none" : "";
+    for (const el of ["af-pay-on", "af-pay-min", "af-pay-save", "af-pay-run"]) $(el).disabled = !d.paypal_ready;
     const badge = s => s === "active" ? '<span class="badge published">Active</span>' : s === "pending" ? '<span class="badge warn">Pending</span>' : '<span class="badge">Paused</span>';
     $("af-list").innerHTML = affiliates.length ? affiliates.map(a => `<tr>
         <td><code>${esc(a.code)}</code></td>
@@ -1884,7 +1884,7 @@ async function loadAffiliates() {
         <td>${a.percent}%</td><td class="muted">${a.clicks || 0}</td><td>${a.orders}</td>
         <td>${a.pending.amount ? `<strong>${money(a.pending.amount)}</strong>` : "—"}</td>
         <td class="muted">${a.paid.amount ? money(a.paid.amount) : "—"}</td>
-        <td>${badge(a.status)}${a.connected ? (a.payouts_ready ? ' <span class="badge published" title="Paid automatically via Stripe">Stripe</span>' : ' <span class="badge warn" title="Finishing Stripe setup">Stripe…</span>') : ""}</td>
+        <td>${badge(a.status)}${a.payouts_ready ? ' <span class="badge published" title="Paid automatically to their PayPal">PayPal</span>' : ""}</td>
         <td class="actions" style="white-space:nowrap">
             ${a.status === "pending" ? `<button class="btn btn-sm" data-af-approve="${a.id}">Approve</button>` : ""}
             ${a.orders ? `<button class="btn btn-ghost btn-sm" data-af-view="${a.id}">Orders</button>` : ""}
@@ -1958,7 +1958,7 @@ $("af-pay-form").onsubmit = async e => {
 };
 $("af-pay-run").onclick = async () => {
     const msg = $("af-pay-msg");
-    if (!await confirmBox("Run payouts now?", "Send every affiliate who is set up and above the minimum their pending commissions over Stripe.", "Send payouts")) return;
+    if (!await confirmBox("Run payouts now?", "Send every affiliate who has a PayPal email and is above the minimum their pending commissions.", "Send payouts")) return;
     msg.className = "msg"; msg.textContent = "Sending…";
     try {
         const d = await post("/api/admin/affiliates/payout-run", {});
