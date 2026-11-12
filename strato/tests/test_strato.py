@@ -1716,7 +1716,9 @@ class StratoCGITests:
             self.assertGreaterEqual(counts.get("given", 0), 1)
             self.assertEqual(self.discord.members["300000000000000002"], set())
             self.ok(self.w.cgi("POST", "/api/admin/discord/command", token=t))
-            self.assertEqual([c["name"] for c in self.discord.commands], ["verify"])
+            registered = [c["name"] for c in self.discord.commands]
+            self.assertIn("verify", registered)  # the buyer-role command is always registered
+            self.assertEqual(set(registered), {"verify", "status", "version", "licence", "download", "profile", "support", "help"})
             self.assertEqual(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "general", "text": "Hi"}, token=t).status, 400)
             self.ok(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "1300000000000000003", "text": "Verify here"}, token=t))
             channel, message = self.discord.messages[-1]
@@ -1787,7 +1789,10 @@ class StratoCGITests:
             del self.discord.posted[plain["id"]]  # deleted in Discord by hand: forgotten here too
             self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000002/{plain['id']}", token=t))
             self.assertEqual(mine(), [])
-            self.assertIn("562950222081089", self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"], "the bot may post and embed")
+            invite = self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"]
+            perms = int(invite.split("permissions=")[1].split("&")[0])
+            for bit, name in ((11, "send messages"), (14, "embed links"), (28, "manage roles")):
+                self.assertTrue(perms >> bit & 1, f"the bot invite must grant {name}")
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
 
