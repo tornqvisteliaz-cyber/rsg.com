@@ -561,6 +561,11 @@ class Webspace:
 
     def cgi(self, method, path, body=None, token=None, headers=None, script="rotaidem.py", query="", flags=(), remote_addr="203.0.113.5"):
         script_path = os.path.join(self.public, "cgi-bin", script)
+        # what the site's forms send after the boxes are ticked (a test sets them itself to check a refusal)
+        if method == "POST" and path == "/api/signup" and isinstance(body, dict):
+            body = {"terms": True, "age_ok": True, **body}
+        if method == "POST" and path.startswith("/api/checkout/") and path != "/api/checkout/status" and (body is None or isinstance(body, dict)):
+            body = {"withdrawal_consent": True, **(body or {})}
         env = {"PATH": "/usr/bin:/bin", "GATEWAY_INTERFACE": "CGI/1.1", "REQUEST_METHOD": method,
                "SCRIPT_NAME": "/cgi-bin/" + script, "SCRIPT_FILENAME": script_path, "PATH_INFO": path,
                "QUERY_STRING": query, "SERVER_NAME": "rotaidem.test", "SERVER_PORT": "443", "HTTPS": "on",
@@ -1194,7 +1199,8 @@ class StratoCGITests:
         r = self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": config}, token=t))
         self.assertEqual(r["config"], {"contact_email": "hello@rotaidem.com", "footer_text": "Made in Sweden",
                                        "socials": {"discord": "https://discord.gg/rotaidem"},
-                                       "maintenance": {"enabled": True, "message": "Back at 18:00"}})
+                                       "maintenance": {"enabled": True, "message": "Back at 18:00"},
+                                       "business": {"name": "", "org_number": "", "vat_number": "", "address": "", "country": ""}})
         self.assertEqual(self.ok(self.w.cgi("GET", "/api/site"))["config"]["maintenance"]["enabled"], True)
         js = self.ok(self.w.cgi("GET", "/site-settings.js"))
         self.assertIn("discord.gg/rotaidem", js if isinstance(js, str) else js.decode())
@@ -2654,6 +2660,123 @@ class StratoCGITests:
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"link_role": "", "welcome_text": "", "welcome_dm": "", "buyer_dm": ""}, token=t))
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": "", "welcome_channel": ""}, token=t))
+
+    def test_legal_consents_and_your_data(self):
+        t = self.owner_token
+        # sign-up: the terms and the age line must be ticked; acceptance is recorded
+        base = {"name": "Consent Carl", "email": "carl@example.com", "password": "carl-pass-1"}
+        self.assertEqual(self.w.cgi("POST", "/api/signup", {**base, "terms": False}).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/signup", {**base, "age_ok": False}).status, 400)
+        buyer, email = self.customer("legalbuyer")
+        mine = self.ok(self.w.cgi("GET", "/api/account/export", token=buyer))
+        self.assertEqual(mine["account"]["email"], email)
+        self.assertTrue(mine["account"]["terms_accepted_at"])
+        # checkout: the digital-content waiver must be ticked; it goes to Stripe, the order, and the licence email
+        self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Legal App", "id": "legal-app", "status": "published", "pay_amount": "50", "pay_currency": "sek"}, token=t))
+        r = self.w.cgi("POST", "/api/checkout/legal-app", {"withdrawal_consent": False}, token=buyer)
+        self.assertEqual((r.status, r.json().get("consent_needed")), (400, True))
+        sid = self.ok(self.w.cgi("POST", "/api/checkout/legal-app", token=buyer))["url"].rsplit("/", 1)[-1]
+        self.assertIn("withdrawal right ends on activation", self.stripe.created[-1]["metadata[consent]"])
+        self.stripe.pay(sid)
+        self.resend.requests.clear()
+        key = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["license_key"]
+        self.assertIn("right of withdrawal ends once you activate", self.resend.requests[-1]["body"][0]["html"])
+        mine = self.ok(self.w.cgi("GET", "/api/account/export", token=buyer))
+        self.assertIn("withdrawal right ends", mine["orders"][-1]["consent"])
+        self.assertIn(key, [l["license_key"] for l in mine["licences"]])
+        self.assertEqual(self.w.cgi("GET", "/api/account/export").status, 401)
+
+        # one-click unsubscribe from the List-Unsubscribe header mail apps show
+        self.resend.requests.clear()
+        self.ok(self.w.cgi("POST", "/api/admin/broadcast", {"subject": "News", "message": "Hello", "test_email": "reader@example.com"}, token=t))
+        headers = self.resend.requests[-1]["body"][0]["headers"]
+        self.assertEqual(headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click")
+        link = headers["List-Unsubscribe"].strip("<>")
+        query = urllib.parse.urlparse(link).query
+        self.assertEqual(self.w.cgi("POST", "/api/unsubscribe/one-click", query=query.replace("token=", "token=x")).status, 400)
+        self.ok(self.w.cgi("POST", "/api/unsubscribe/one-click", query=query))
+        subs = {s["email"]: s for s in self.ok(self.w.cgi("GET", "/api/admin/subscribers", token=t))["subscribers"]}
+        self.assertEqual(subs["reader@example.com"]["unsubscribed"], 1)
+
+        # business details: saved in the admin, served to the footer and legal pages
+        cfg = self.ok(self.w.cgi("GET", "/api/site"))["config"]
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": {**cfg, "business": {"name": "Rotaidem Test AB", "org_number": "559000-0000", "address": "Testgatan 1, 111 11 Stockholm", "x": "y"}}}, token=t))
+        biz = self.ok(self.w.cgi("GET", "/api/site"))["config"]["business"]
+        self.assertEqual((biz["name"], biz["org_number"], biz["vat_number"]), ("Rotaidem Test AB", "559000-0000", ""))
+        self.assertNotIn("x", biz)
+        self.ok(self.w.cgi("POST", "/api/admin/settings", {"config": cfg}, token=t))  # other tests expect the defaults
+
+        # delete my account: password needed, team accounts are refused, then nothing points to them
+        self.assertEqual(self.w.cgi("POST", "/api/account/delete", {"password": "wrong"}, token=buyer).status, 403)
+        self.assertEqual(self.w.cgi("POST", "/api/account/delete", {"password": OWNER[2]}, token=t).status, 400, "the Owner cannot delete themselves here")
+        self.ok(self.w.cgi("POST", "/api/account/delete", {"password": "customer-pass-1"}, token=buyer))
+        self.assertEqual(self.w.cgi("GET", "/api/me", token=buyer).status, 401, "logged out everywhere")
+        self.assertEqual(self.w.cgi("POST", "/api/login", {"email": email, "password": "customer-pass-1"}).status, 401)
+        users = self.ok(self.w.cgi("GET", "/api/admin/customers", token=t))
+        self.assertNotIn(email, json.dumps(users))
+        lic = next(l for l in self.ok(self.w.cgi("GET", "/api/admin/licenses", token=t))["licenses"] if l["license_key"] == key)
+        self.assertEqual((lic["status"], lic["email"].endswith("@deleted.invalid")), ("active", True), "the key keeps working, without their email")
+        orders = [o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o.get("payment_ref") == sid]
+        self.assertEqual(len(orders), 1, "the order stays for the books")
+
+    def test_status_page_checks_once_a_minute(self):
+        first = self.ok(self.w.cgi("GET", "/api/status"))
+        states = {c["id"]: c["state"] for c in first["checks"]}
+        self.assertEqual((states["website"], states["database"]), ("ok", "ok"))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], first["checked_at"], "within a minute: the saved answer")
+        staff = self.ok(self.w.cgi("GET", "/api/admin/status", query="refresh=1", token=self.owner_token))
+        self.assertIn("detail", staff["checks"][0])
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):  # old checks, but someone else is running them right now: no second run
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("UPDATE meta SET value = json_set(value, '$.at', 0) WHERE key = 'status.last'")
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('status.running', ?)", (json.dumps(time.time()),))
+            conn.commit()
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], "1970-01-01T00:00:00Z")
+            conn.execute("UPDATE meta SET value = '0' WHERE key = 'status.running'")
+            conn.commit()
+            conn.close()
+            self.assertNotEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], "1970-01-01T00:00:00Z", "then the next visitor runs them")
+
+    def test_privacy_cleanup_and_public_pages(self):
+        public = self.w.public
+        for page in ("privacy", "terms", "refunds", "cookies"):
+            with open(os.path.join(public, page + ".html"), encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("Last updated", text, page)
+            self.assertIn("auth.js", text, page)
+        with open(os.path.join(public, "privacy.html"), encoding="utf-8") as fh:
+            privacy = fh.read()
+        for word in ("Stripe", "Resend", "STRATO", "Endorsely", "IMY", "7 years", "30 days"):
+            self.assertIn(word, privacy)
+        # no third party loads by itself: Endorsely only after consent, fonts from the site itself
+        for root, _dirs, files in os.walk(public):
+            for name in files:
+                if name.endswith((".html", ".css")):
+                    with open(os.path.join(root, name), encoding="utf-8") as fh:
+                        content = fh.read()
+                    self.assertNotIn("fonts.googleapis.com", content, name)
+                    self.assertNotIn('src="https://assets.endorsely.com', content, name)
+        self.assertTrue(os.path.exists(os.path.join(public, "fonts", "ibm-plex-sans-latin-400-normal.woff2")))
+        # old personal data is removed once a day (SQLite: move the clock back to check)
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("INSERT INTO downloads (product_id, ip_address, created_at) VALUES ('heavypro', '198.51.100.7', '2020-01-01 00:00:00')")
+            conn.execute("INSERT INTO messages (name, email, message, handled, created_at) VALUES ('Old', 'old@example.com', 'old handled message', 1, '2020-01-01 00:00:00')")
+            conn.execute("INSERT INTO messages (name, email, message, handled, created_at) VALUES ('Open', 'open@example.com', 'old open message', 0, '2020-01-01 00:00:00')")
+            conn.execute("UPDATE meta SET value = '0' WHERE key = 'privacy.cleaned_at'")
+            conn.commit()
+            conn.close()
+            self.ok(self.w.cgi("GET", "/api/site"))
+            conn = sqlite3.connect(db_file)
+            self.assertIsNone(conn.execute("SELECT ip_address FROM downloads WHERE created_at = '2020-01-01 00:00:00'").fetchone()[0])
+            texts = [r[0] for r in conn.execute("SELECT message FROM messages")]
+            conn.close()
+            self.assertNotIn("old handled message", texts)
+            self.assertIn("old open message", texts, "unanswered messages are kept")
 
     def test_discord_presence_config(self):
         t = self.owner_token

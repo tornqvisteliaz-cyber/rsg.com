@@ -8,7 +8,6 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <script src="/site-settings.js"></script>
-    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
 </head>
 <body data-footer="off">
 <main class="auth">
@@ -20,7 +19,8 @@
             <div class="field"><label for="name">Name</label><input id="name" autocomplete="name" required></div>
             <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
             <div class="field"><label for="password">Password</label><input id="password" type="password" minlength="6" autocomplete="new-password" required><span class="muted" style="font-size:13px">At least 6 characters</span></div>
-            <label style="font-weight:400;display:flex;gap:8px;align-items:center;margin:4px 0 20px"><input id="terms" type="checkbox"> I agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a></label>
+            <label style="font-weight:400;display:flex;gap:8px;align-items:flex-start;margin:4px 0 10px"><input id="terms" type="checkbox" style="width:auto;margin-top:5px"> <span>I agree to the <a href="/terms">terms</a> and have read the <a href="/privacy">privacy policy</a></span></label>
+            <label style="font-weight:400;display:flex;gap:8px;align-items:flex-start;margin:0 0 20px"><input id="age" type="checkbox" style="width:auto;margin-top:5px"> <span>I am 13 or older. If I am under 18, a parent or guardian agrees to my account and purchases.</span></label>
             <button class="btn btn-block">Create account</button>
             <p id="error" class="msg"></p>
             <p class="alt-link">Already have an account? <a href="/login">Log in</a></p>
@@ -34,7 +34,8 @@ $("form").onsubmit = async e => {
     e.preventDefault();
     const msg = $("error");
     if (!$("terms").checked) { msg.className = "msg error"; msg.textContent = "Please accept the terms first."; return; }
-    const res = await fetch("/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("name").value, email: $("email").value, password: $("password").value }) }).catch(() => null);
+    if (!$("age").checked) { msg.className = "msg error"; msg.textContent = "Please confirm your age."; return; }
+    const res = await fetch("/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("name").value, email: $("email").value, password: $("password").value, terms: true, age_ok: true }) }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
     if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "Sign-up is not available right now."; return; }
     if (data.verify) { // the account opens once the email address is confirmed

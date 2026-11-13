@@ -215,6 +215,7 @@ async function signup(request, env) {
   const password = String(body.password || "");
   if (!name || !email || password.length < 6) return json({ error: "Name, email and a 6 character password are required" }, 400);
   if (!EMAIL_RE.test(email)) return json({ error: "Enter a valid email address" }, 400);
+  if (!body.terms || !body.age_ok) return json({ error: "Please accept the terms and privacy policy, and confirm your age" }, 400);
   if (await isBlocked(request, env, email)) return json({ error: "Sign-ups from this address are not possible. Contact us if you think this is a mistake." }, 403);
   if (!resendKey(env)) {
     // Without email there is no way to confirm an address: the account works at once, as before.
@@ -1043,6 +1044,8 @@ async function checkout(request, env, pid) {
   if (product.tagline) fields["line_items[0][price_data][product_data][description]"] = String(product.tagline).slice(0, 300);
   if ((await shopSettings(env)).promo_codes) fields.allow_promotion_codes = "true"; // codes made in the Stripe dashboard
   const reqBody = await request.json().catch(() => ({}));
+  if (!reqBody.withdrawal_consent) return json({ error: "Please tick the box: you get your licence key right away, so the 14-day right of withdrawal ends once you activate it.", consent_needed: true }, 400);
+  fields["metadata[consent]"] = `${new Date().toISOString().slice(0, 19).replace("T", " ")} UTC: immediate delivery, withdrawal right ends on activation (2026-11-13)`;
   const referral = String(reqBody.referral || "").trim(); // window.endorsely_referral from the buyer's browser
   if (/^[A-Za-z0-9_-]{1,100}$/.test(referral)) fields["metadata[endorsely_referral]"] = referral; // Endorsely (affiliates) credits the sale from this
   if (await affiliateByCode(env, reqBody.ref)) fields["metadata[affiliate_code]"] = String(reqBody.ref).trim(); // our own affiliate program

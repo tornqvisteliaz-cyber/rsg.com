@@ -1,0 +1,12 @@
+Images and fonts on rotaidem.com: where they come from
+
+img/hero.jpg, img/clouds.jpg, img/night.jpg, img/approach.jpg
+  Original artwork made for Rotaidem (drawn by a script with numpy and Pillow on 2026-10-20).
+  No stock photos and no third-party images. Owned by Rotaidem.
+
+fonts/
+  B612 (c) 2012 The B612 Project Authors, and IBM Plex Sans (c) 2018 IBM Corp.
+  Both under the SIL Open Font License 1.1: see fonts/OFL-B612.txt and fonts/OFL-IBM-Plex-Sans.txt.
+
+Pictures uploaded later in Admin -> Look & media are the uploader's responsibility:
+only upload images you made yourself or have a licence for, and keep a note of the source.

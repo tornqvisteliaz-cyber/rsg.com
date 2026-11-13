@@ -1,4 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Fonts are served from this site (SIL Open Font License, see /fonts/OFL-*.txt): no visitor data goes to a font service. */
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-400-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-ext-400-normal.woff2) format('woff2'); unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-500-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-ext-500-normal.woff2) format('woff2'); unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-600-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-ext-600-normal.woff2) format('woff2'); unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 700; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-700-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 700; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-ext-700-normal.woff2) format('woff2'); unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'B612'; font-style: normal; font-weight: 400; font-display: swap; src: url(/fonts/b612-latin-400-normal.woff2) format('woff2'); }
+@font-face { font-family: 'B612'; font-style: normal; font-weight: 700; font-display: swap; src: url(/fonts/b612-latin-700-normal.woff2) format('woff2'); }
 
 /* Flight deck: the site's own steel-on-black palette, headings in B612 (the typeface drawn for
    Airbus cockpit displays), text in IBM Plex Sans. Type scale 1.25: 16 20 25 31 39 49 61 76. */
@@ -388,3 +398,41 @@ input[type=checkbox] { width: auto; accent-color: var(--accent); }
   .subscribe .btn { width: 100%; }
   .auth-side { padding: 32px 16px; }
 }
+
+/* Cookie banner: the two choices are equally easy (no pre-ticked boxes, no hidden reject). */
+.consent { position: fixed; left: 0; right: 0; bottom: 0; z-index: 90; background: var(--navy); border-top: 1px solid var(--navy-line); padding: 18px 0; box-shadow: 0 -10px 30px rgba(0,0,0,.35); }
+.consent .wrap { display: flex; gap: 20px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.consent p { margin: 6px 0 0; font-size: 14px; max-width: 760px; color: var(--text); }
+.consent a { text-decoration: underline; text-underline-offset: 3px; }
+.consent-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.consent-opt { display: inline-flex; gap: 8px; align-items: center; margin: 10px 18px 0 0; font-size: 14px; font-weight: 400; }
+.consent-opt input { width: auto; }
+/* "Skip to content": hidden until a keyboard user tabs to it */
+.skip-link { position: absolute; left: 12px; top: -60px; z-index: 100; background: var(--accent); color: var(--navy); padding: 10px 16px; font-weight: 600; text-decoration: none; }
+.skip-link:focus { top: 12px; }
+[tabindex="-1"]:focus { outline: none; }
+.footer-legal { display: inline-flex; flex-wrap: wrap; gap: 0 4px; }
+.linklike { all: unset; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; margin-left: 16px; }
+.linklike:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.footer-business { font-size: 13px; color: #98a3b0; margin: 28px 0 0; }
+.quotes-note { font-size: 13px; color: #a9b2bd; margin: 24px 0 0; }
+::placeholder { color: var(--muted); opacity: 1; }
+.legal h2 { margin-top: 1.6em; }
+.legal table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 0 0 1.2em; }
+.legal th, .legal td { text-align: left; border-bottom: 1px solid var(--line); padding: 8px 10px 8px 0; vertical-align: top; }
+.legal .updated { color: var(--muted); font-size: 14px; }
+.legal .box { border: 1px solid var(--line); padding: 16px 18px; margin: 0 0 1.2em; }
+.form-note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+.form-note a { text-decoration: underline; text-underline-offset: 3px; }
+.buy-confirm { position: fixed; inset: 0; z-index: 95; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.buy-card { background: var(--surface); border: 1px solid var(--line); max-width: 480px; width: 100%; padding: 26px; }
+.buy-card h2 { font-size: 24px; margin: 0 0 12px; }
+.buy-total { margin: 0 0 16px; }
+.buy-total span { font-size: 14px; color: var(--muted); }
+.buy-check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; margin: 0 0 12px; }
+.buy-check input { width: auto; margin-top: 5px; }
+.buy-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+.subscribe .form-note { width: 100%; margin-top: 8px; }
+.subscribe .msg:empty { display: none; }
+.footer-legal { align-items: baseline; }
+.footer-legal .linklike { font-size: inherit; line-height: inherit; }

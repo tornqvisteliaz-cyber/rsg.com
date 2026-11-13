@@ -161,7 +161,7 @@ def close_db(_exc):
 
 # Bump when the tables below change. Lets each request skip the CREATE/ALTER statements, which
 # matters on CGI hosting where every request starts a fresh process.
-SCHEMA_VERSION = "2026-11-12-discord-items"
+SCHEMA_VERSION = "2026-11-13-consents"
 
 
 def ensure_schema():
@@ -237,6 +237,9 @@ def ensure_schema():
                           ("users", f"discord_id {word}"), ("users", "discord_name TEXT"), ("users", f"discord_linked_at {word}"),
                           # what happened the last time the role was given or taken (Admin -> Discord -> Linked members)
                           ("users", "discord_result TEXT"),
+                          # consents: when the terms (and the age line) were accepted, and at checkout the waiver of the
+                          # 14-day withdrawal right for digital content (EU consumer law asks to keep this)
+                          ("users", f"terms_accepted_at {word}"), ("users", f"terms_version {word}"), ("orders", "consent TEXT"),
                           # the affiliate code that referred the order (Admin -> Affiliates)
                           ("orders", f"affiliate_code {ident}"),
                           # affiliate accounts: where to send their money, and how often their link was opened
@@ -459,6 +462,8 @@ def signup():
         return err("Name, email and a 6 character password are required", 400)
     if not EMAIL_RE.match(email):
         return err("Enter a valid email address", 400)
+    if not b.get("terms") or not b.get("age_ok"):
+        return err("Please accept the terms and privacy policy, and confirm your age", 400)
     if is_blocked(email):
         return err("Sign-ups from this address are not possible. Contact us if you think this is a mistake.", 403)
     if db().first("SELECT id FROM users WHERE LOWER(email) = ?", email):
@@ -466,13 +471,13 @@ def signup():
     if not RESEND_API_KEY:
         # Without email there is no way to confirm an address: the account works at once, as before.
         app.logger.warning("Sign-up without email confirmation: RESEND_API_KEY is not set")
-        db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 1)",
-                 name, email, hash_password(password))
+        db().run("INSERT INTO users (name, email, password_hash, role, email_verified, terms_accepted_at, terms_version) VALUES (?, ?, ?, 'Customer', 1, ?, ?)",
+                 name, email, hash_password(password), utc_stamp(), TERMS_VERSION)
         new_user = db().first("SELECT id FROM users WHERE LOWER(email) = ?", email)
         discord_auto("team", {"text": f"🧑‍✈️ New account: **{name[:80]}**"})
         return jsonify({"token": new_session(new_user["id"]), "name": name, "email": email, "role": "Customer", "is_admin": False})
-    db().run("INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, 'Customer', 0)",
-             name, email, hash_password(password))
+    db().run("INSERT INTO users (name, email, password_hash, role, email_verified, terms_accepted_at, terms_version) VALUES (?, ?, ?, 'Customer', 0, ?, ?)",
+             name, email, hash_password(password), utc_stamp(), TERMS_VERSION)
     user = db().first("SELECT * FROM users WHERE LOWER(email) = ?", email)
     error = send_verify_email(user)
     if error:
@@ -1336,6 +1341,32 @@ def unsubscribe_token(email):
     return hmac.new(SECRET_KEY.encode(), email.lower().encode(), hashlib.sha256).hexdigest()[:32]
 
 
+def unsubscribe_headers(email):
+    """List-Unsubscribe headers: Gmail, Outlook and Apple Mail show an Unsubscribe button that works in one click."""
+    url = f"{site_url()}/api/unsubscribe/one-click?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
+    return {"List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+
+
+def unsubscribe_link(email):
+    return f"{site_url()}/unsubscribe?email={urllib.parse.quote(email)}&token={unsubscribe_token(email)}"
+
+
+@app.post("/api/unsubscribe/one-click")
+def unsubscribe_one_click():
+    email = str(request.args.get("email", "")).strip().lower()
+    if not email or not hmac.compare_digest(unsubscribe_token(email), str(request.args.get("token", ""))):
+        return err("This unsubscribe link is not valid", 400)
+    mark_unsubscribed(email)
+    return jsonify({"ok": True})
+
+
+def mark_unsubscribed(email):
+    if db().first("SELECT id FROM subscribers WHERE email = ?", email):
+        db().run("UPDATE subscribers SET unsubscribed = 1 WHERE email = ?", email)
+    else:
+        db().run("INSERT INTO subscribers (email, source, unsubscribed) VALUES (?, 'unsubscribe', 1)", email)
+
+
 @app.post("/api/unsubscribe")
 def unsubscribe():
     b = body()
@@ -1790,7 +1821,7 @@ def clamp_int(value, default, low, high):
         return default
 
 
-def license_email_html(keys, product_name, max_activations):
+def license_email_html(keys, product_name, max_activations, bought=False):
     base = site_url()
     rows = "".join(f'<tr><td style="padding:14px 18px;background:#f4f4f5;border:1px solid #e4e4e7;font:bold 20px/1.2 Consolas,Menlo,monospace;letter-spacing:2px;color:#111315;text-align:center">{escape(k)}</td></tr><tr><td style="height:8px"></td></tr>' for k in keys)
     plural = len(keys) > 1
@@ -1810,11 +1841,22 @@ def license_email_html(keys, product_name, max_activations):
 <li>Each key works on {max_activations} computer{"s" if max_activations != 1 else ""}. To move to a new PC, deactivate it in {escape(product_name)} first.</li>
 </ol></td></tr>
 <tr><td style="padding:4px 28px 28px"><a href="{escape(base)}/account" style="display:inline-block;background:#111315;color:#ffffff;text-decoration:none;padding:13px 24px;font-weight:bold">View my keys</a></td></tr>
-<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Keep this email somewhere safe. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
+{bought_note(bought)}<tr><td style="padding:20px 28px;border-top:1px solid #e4e4e7;font-size:12px;color:#6d6f75">Keep this email somewhere safe. Questions? Email <a href="mailto:Eliaz@rotaidem.com" style="color:#6d6f75">Eliaz@rotaidem.com</a>.</td></tr>
 </table></td></tr></table></body></html>"""
 
 
-def email_license_keys(email, keys, product_id):
+def bought_note(bought):
+    """The confirmation EU law asks for after selling digital content: what was agreed at checkout."""
+    if not bought:
+        return ""
+    base = site_url()
+    return (f'<tr><td style="padding:0 28px 20px;font-size:13px;line-height:1.55;color:#6d6f75">At checkout you asked to get your licence right away and agreed that '
+            f'your 14-day right of withdrawal ends once you activate it. Before you activate, you can still cancel for a full refund. '
+            f'If the product does not work as described, you always keep your rights: see our <a href="{escape(base)}/refunds" style="color:#6d6f75">refund policy</a> '
+            f'and <a href="{escape(base)}/terms" style="color:#6d6f75">terms</a>.</td></tr>')
+
+
+def email_license_keys(email, keys, product_id, bought=False):
     """Email licence keys to a customer. Returns an error message, or '' when sent."""
     if not keys or not email:
         return ""
@@ -1825,7 +1867,7 @@ def email_license_keys(email, keys, product_id):
     lic = db().first("SELECT max_activations FROM licenses WHERE license_key = ?", keys[0])
     subject = f"Your {name} licence key" + ("s" if len(keys) > 1 else "")
     sent, error = send_batch([{"from": MAIL_FROM, "to": [email], "subject": subject,
-                               "html": license_email_html(keys, name, lic["max_activations"] if lic else 2)}])
+                               "html": license_email_html(keys, name, lic["max_activations"] if lic else 2, bought)}])
     return "" if sent else error
 
 
@@ -2459,7 +2501,7 @@ def stripe_mode():
     return "" if not STRIPE_SECRET_KEY else ("test" if "_test_" in STRIPE_SECRET_KEY else "live")
 
 
-def stripe_call(method, path, fields=None, idempotency_key=""):
+def stripe_call(method, path, fields=None, idempotency_key="", timeout=30):
     """Stripe's API with the secret key from config.env. Returns (answer, error text).
     Pass idempotency_key on money-moving POSTs so a retry cannot pay twice."""
     data = urllib.parse.urlencode(fields or {}).encode() if method == "POST" else None
@@ -2469,7 +2511,7 @@ def stripe_call(method, path, fields=None, idempotency_key=""):
         headers["Idempotency-Key"] = idempotency_key
     req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode()), ""
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode(errors="replace")
@@ -2519,8 +2561,9 @@ def fulfil_checkout(session):
     amount = (session.get("amount_total") or 0) / 100
     currency = str(session.get("currency") or "").lower()
     affiliate_code = str(meta.get("affiliate_code") or "")
-    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?)",
-             user_id or None, product_id, amount, sid, currency, affiliate_code)
+    consent = str(meta.get("consent") or "")[:300]
+    db().run("INSERT INTO orders (customer_id, product_id, status, payment_status, amount, payment_ref, currency, affiliate_code, consent) VALUES (?, ?, 'Completed', 'Paid', ?, ?, ?, ?, ?)",
+             user_id or None, product_id, amount, sid, currency, affiliate_code, consent)
     order = db().first("SELECT id FROM orders WHERE payment_ref = ?", sid)
     referred_by = credit_affiliate(order["id"], amount, currency, affiliate_code, user_id, email) if order else None
     if referred_by:
@@ -2532,7 +2575,7 @@ def fulfil_checkout(session):
             key = candidate
     db().run("UPDATE stripe_payments SET order_id = ?, license_key = ? WHERE session_id = ?", order["id"] if order else None, key, sid)
     discord_sync_owners([(user_id or None, email)])
-    error = email_license_keys(email, [key], product_id)
+    error = email_license_keys(email, [key], product_id, bought=True)
     if error:
         app.logger.error("Licence e-mail after payment %s failed: %s", sid, error)
     if user:
@@ -2558,6 +2601,9 @@ def checkout(pid):
     owned = db().all("SELECT product_id FROM licenses WHERE status = 'active' AND (customer_id = ? OR LOWER(email) = ?)", user["id"], (user["email"] or "").lower())
     if any(same_product(pid, r["product_id"]) for r in owned):
         return jsonify({"error": f"You already have a licence for {product['name']}. It is under My account.", "owned": True}), 409
+    if not body().get("withdrawal_consent"):
+        return jsonify({"error": "Please tick the box: you get your licence key right away, so the 14-day right of withdrawal ends once you activate it.",
+                        "consent_needed": True}), 400
     base = site_url()
     fields = {"mode": "payment", "line_items[0][quantity]": "1",
               "line_items[0][price_data][currency]": product.get("pay_currency") or "sek",
@@ -2565,6 +2611,7 @@ def checkout(pid):
               "line_items[0][price_data][product_data][name]": product["name"] or pid,
               "customer_email": user["email"], "client_reference_id": str(user["id"]),
               "metadata[product_id]": pid, "metadata[user_id]": str(user["id"]),
+              "metadata[consent]": f"{utc_stamp()} UTC: immediate delivery, withdrawal right ends on activation ({TERMS_VERSION})",
               "payment_intent_data[metadata][product_id]": pid, "payment_intent_data[metadata][user_id]": str(user["id"]),
               "success_url": f"{base}/checkout-done?session_id={{CHECKOUT_SESSION_ID}}",
               "cancel_url": f"{base}/addons/view?id={urllib.parse.quote(pid)}&cancelled=1"}
@@ -3085,7 +3132,7 @@ def discord_ready():
     return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
 
 
-def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20, reason=""):
+def discord_call(method, path, payload=None, form=None, bearer=None, timeout=10, reason="", wait_on_limit=True):
     """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
     if form is not None:
         data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
@@ -3104,12 +3151,12 @@ def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20,
                 raw = resp.read()
                 return (json.loads(raw) if raw else {}), "", resp.status
         except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt == 1:  # rate limited: Discord says how long to wait
+            if exc.code == 429 and attempt == 1 and wait_on_limit:  # rate limited: Discord says how long to wait
                 try:
                     wait = float(json.loads(exc.read().decode(errors="replace")).get("retry_after") or 1)
                 except (ValueError, AttributeError):
                     wait = 1.0
-                if wait <= 5:
+                if wait <= 2:  # longer waits would hold up the website: give up and say so
                     time.sleep(wait)
                     continue
             return discord_http_error(method, path, exc)
@@ -6633,8 +6680,9 @@ def admin_discord_unlinked_email():
         if discord_claim("invite." + p["email"]):
             batch.append(p)
             text = discord_render(template, link=site_url() + "/account#discord", invite=discord_settings().get("invite_url") or "", name=p["name"] or "there")
+            text += f"\n\nDon't want emails like this? Unsubscribe: {unsubscribe_link(p['email'])}"
             messages.append({"from": MAIL_FROM, "to": [p["email"]], "subject": subject, "html": reply_email_html(p["name"], text, "The Rotaidem team"),
-                             "reply_to": site_config()["contact_email"]})
+                             "reply_to": site_config()["contact_email"], "headers": unsubscribe_headers(p["email"])})
     if not messages:
         return jsonify({"ok": True, "sent": 0, "left": 0})
     sent, error = send_batch(messages)
@@ -6644,6 +6692,106 @@ def admin_discord_unlinked_email():
         return err(error or "Sending failed", 502)
     audit(user, "discord_invite_emails", f"{len(messages)} sent")
     return jsonify({"ok": True, "sent": len(messages), "left": sum(1 for p in discord_unlinked_holders() if not p["invited"])})
+
+
+# ---------- your data: download it, delete your account, and old data cleaned up automatically ----------
+
+def account_export(user):
+    """Everything the website keeps about one account (GDPR: the right of access and to take your data with you)."""
+    uid, email = user["id"], (user.get("email") or "").lower()
+    pick = lambda row, keys: {k: row.get(k) for k in keys}  # noqa: E731
+    lic_rows = db().all("SELECT * FROM licenses WHERE customer_id = ? OR LOWER(email) = ?", uid, email)
+    licences = []
+    for lic in lic_rows:
+        acts = db().all("SELECT machine_name, first_seen, last_seen FROM license_activations WHERE license_id = ?", lic["id"])
+        licences.append({**pick(lic, ("license_key", "product_id", "status", "max_activations", "created_at")), "computers": acts})
+    discord_rows = db().all("SELECT kind, status, data, created_at FROM discord_items WHERE member = ?", user.get("discord_id") or "-") if user.get("discord_id") else []
+    aff = db().first("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?", uid, email)
+    return {
+        "exported_at": utc_stamp() + " UTC", "about": "All personal data rotaidem.com keeps about this account.",
+        "account": pick(user, ("name", "email", "role", "created_at", "email_verified", "terms_accepted_at", "terms_version")),
+        "discord": pick(user, ("discord_id", "discord_name", "discord_linked_at")) if user.get("discord_id") else None,
+        "orders": db().all("SELECT o.product_id, o.amount, o.currency, o.payment_status, o.created_at, o.consent FROM orders o WHERE o.customer_id = ? ORDER BY o.id", uid),
+        "licences": licences,
+        "logged_in_devices": db().all("SELECT ip_address, user_agent, created_at, last_seen FROM sessions WHERE user_id = ?", uid),
+        "downloads": db().all("SELECT product_id, created_at FROM downloads WHERE user_id = ?", uid),
+        "messages_to_us": db().all("SELECT name, message, reply, created_at FROM messages WHERE LOWER(email) = ?", email),
+        "newsletter": db().first("SELECT source, unsubscribed, created_at FROM subscribers WHERE LOWER(email) = ?", email),
+        "affiliate": pick(aff, ("code", "percent", "status", "payout", "created_at")) if aff else None,
+        "discord_bot": [{"kind": r["kind"], "status": r["status"], "created_at": r["created_at"], "data": json.loads(r["data"] or "{}")} for r in discord_rows],
+    }
+
+
+@app.get("/api/account/export")
+def account_export_route():
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    audit(user, "data_export", user.get("email") or "")
+    resp = jsonify(account_export(user))
+    resp.headers["Content-Disposition"] = 'attachment; filename="rotaidem-my-data.json"'
+    return resp
+
+
+@app.post("/api/account/delete")
+def account_delete():
+    """Delete your account. Orders stay (Swedish bookkeeping law: 7 years) but no longer point to you by name or email."""
+    user = current_user()
+    if not user:
+        return err("Log in first", 401)
+    if user["role"] in STAFF:
+        return err("Team accounts cannot be deleted here. Ask the Owner to remove you under Admin → Users first.", 400)
+    if not verify_password(str(body().get("password") or ""), user["password_hash"]):
+        return err("The password is not right", 403)
+    uid, email = user["id"], (user.get("email") or "").lower()
+    gone = f"deleted-{uid}@deleted.invalid"
+    if user.get("discord_id"):
+        try:
+            if discord_ready():
+                cfg = discord_settings()
+                discord_call("DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+                discord_link_role(user["discord_id"], False)
+        except Exception:  # noqa: BLE001 - deleting the account must not fail over Discord
+            app.logger.exception("Removing Discord roles on account deletion failed")
+        db().run("DELETE FROM discord_items WHERE member = ?", user["discord_id"])
+    for lic in db().all("SELECT id FROM licenses WHERE customer_id = ? OR LOWER(email) = ?", uid, email):
+        db().run("UPDATE license_activations SET machine_name = '' WHERE license_id = ?", lic["id"])
+    db().run("UPDATE licenses SET email = ? WHERE customer_id = ? OR LOWER(email) = ?", gone, uid, email)  # keys keep working in the app
+    db().run("UPDATE stripe_payments SET email = ? WHERE user_id = ? OR LOWER(email) = ?", gone, uid, email)
+    db().run("UPDATE downloads SET user_id = NULL, ip_address = NULL WHERE user_id = ?", uid)
+    db().run("DELETE FROM sessions WHERE user_id = ?", uid)
+    db().run("DELETE FROM subscribers WHERE LOWER(email) = ?", email)
+    db().run("DELETE FROM messages WHERE LOWER(email) = ?", email)
+    db().run("UPDATE affiliates SET email = ?, name = 'Deleted user', payout = NULL, status = 'inactive' WHERE user_id = ? OR LOWER(email) = ?", gone, uid, email)
+    db().run("UPDATE users SET name = 'Deleted user', email = ?, password_hash = ?, token = NULL, discord_id = NULL, discord_name = NULL, "
+             "discord_linked_at = NULL, discord_result = NULL, admin_note = NULL, email_verified = 0 WHERE id = ?", gone, hash_password(secrets.token_hex(24)), uid)
+    db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'account_deleted', ?, '', ?)", uid, f"user {uid}", utc_stamp())
+    return jsonify({"ok": True})
+
+
+RETENTION = {"downloads_ip_days": 30, "audit_ip_days": 180, "login_failures_days": 2, "sent_reminders_days": 30, "giveaway_entries_days": 90,
+             "handled_messages_days": 730}
+
+
+def privacy_cleanup():
+    """Once a day: personal data we no longer need is removed (what the privacy policy promises)."""
+    now = time.time()
+    if now - float(get_setting("privacy.cleaned_at", 0) or 0) < 86400:
+        return
+    set_setting("privacy.cleaned_at", now)
+    r = RETENTION
+    try:
+        db().run("UPDATE downloads SET ip_address = NULL WHERE ip_address IS NOT NULL AND created_at < ?", utc_stamp(r["downloads_ip_days"] * 86400))
+        db().run("UPDATE audit_logs SET ip_address = '' WHERE ip_address <> '' AND created_at < ?", utc_stamp(r["audit_ip_days"] * 86400))
+        db().run("DELETE FROM license_failures WHERE created_at < ?", utc_stamp(r["login_failures_days"] * 86400))
+        db().run("DELETE FROM sessions WHERE last_seen < ?", utc_stamp(SESSION_DAYS * 86400))
+        db().run("DELETE FROM messages WHERE handled = 1 AND created_at < ?", utc_stamp(r["handled_messages_days"] * 86400))
+        db().run("DELETE FROM discord_items WHERE kind = 'reminder' AND status = 'sent' AND created_at < ?", utc_stamp(r["sent_reminders_days"] * 86400))
+        old = [g["id"] for g in db().all("SELECT id FROM discord_items WHERE kind = 'giveaway' AND status = 'ended' AND created_at < ?", utc_stamp(r["giveaway_entries_days"] * 86400))]
+        for gw_id in old:
+            db().run("DELETE FROM discord_items WHERE kind = 'gw_entry' AND ref = ?", gw_id)
+    except Exception:  # noqa: BLE001 - visitors never see a clean-up problem
+        app.logger.exception("Privacy clean-up failed")
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
@@ -6996,7 +7144,11 @@ def set_setting(key, value):
 SOCIALS = ("discord", "youtube", "instagram", "x", "facebook", "twitch", "tiktok")
 CONFIG_DEFAULT = {"contact_email": "Eliaz@rotaidem.com",
                   "footer_text": "An independent studio making software for Microsoft Flight Simulator 2024.",
-                  "socials": {}, "maintenance": {"enabled": False, "message": ""}}
+                  "socials": {}, "maintenance": {"enabled": False, "message": ""},
+                  # who sells: shown in the footer and on the legal pages (EU law asks for these on a web shop)
+                  "business": {"name": "", "org_number": "", "vat_number": "", "address": "", "country": ""}}
+BUSINESS_FIELDS = {"name": 120, "org_number": 40, "vat_number": 40, "address": 300, "country": 60}
+TERMS_VERSION = "2026-11-13"
 
 
 def site_config():
@@ -7005,6 +7157,8 @@ def site_config():
     config["socials"] = {k: v for k, v in (config.get("socials") or {}).items() if k in SOCIALS and v}
     m = config.get("maintenance") or {}
     config["maintenance"] = {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "")}
+    biz = config.get("business") if isinstance(config.get("business"), dict) else {}
+    config["business"] = {k: str(biz.get(k) or "") for k in BUSINESS_FIELDS}
     return config
 
 
@@ -7021,10 +7175,12 @@ def clean_config(c):
                 raise ValueError(f"The {name} link must start with https://")
             socials[name] = url
     m = c.get("maintenance") or {}
+    biz = c.get("business") if isinstance(c.get("business"), dict) else {}
     return {"contact_email": email or CONFIG_DEFAULT["contact_email"],
             "footer_text": str(c.get("footer_text") or "").strip()[:300] or CONFIG_DEFAULT["footer_text"],
             "socials": socials,
-            "maintenance": {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "").strip()[:500]}}
+            "maintenance": {"enabled": bool(m.get("enabled")), "message": str(m.get("message") or "").strip()[:500]},
+            "business": {k: " ".join(str(biz.get(k) or "").split())[:most] for k, most in BUSINESS_FIELDS.items()}}
 
 
 ROADMAP_STAGES = ("Done", "In progress", "Next", "Later")
@@ -8050,7 +8206,8 @@ def admin_broadcast():
     sent, failed, last_error = 0, 0, ""
     for i in range(0, len(recipients), 100):
         chunk = recipients[i:i + 100]
-        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images, layout, subject, button)} for r in chunk]
+        messages = [{"from": MAIL_FROM, "to": [r], "subject": subject, "html": product_email_html(product, message, r, images, layout, subject, button),
+                     "headers": unsubscribe_headers(r)} for r in chunk]
         ok, error = send_batch(messages)
         sent += ok
         if error:
@@ -8170,7 +8327,7 @@ def status_downloads():
 def status_checkout():
     if not STRIPE_SECRET_KEY:
         raise StatusOff()
-    _, error = stripe_call("GET", "/v1/balance")
+    _, error = stripe_call("GET", "/v1/balance", timeout=6)
     if error:
         raise RuntimeError(error)
 
@@ -8183,7 +8340,7 @@ def status_email():
 def status_discord():
     if not DISCORD_BOT_TOKEN:
         raise StatusOff()
-    _, error, _ = discord_call("GET", "/users/@me", timeout=8)
+    _, error, _ = discord_call("GET", "/users/@me", timeout=6, wait_on_limit=False)
     if error:
         raise RuntimeError(error)
 
@@ -8224,6 +8381,24 @@ def status_alert(before, checks):
             "buttons": [{"label": "Live status", "url": "/status"}]})
 
 
+def claim_every(key, seconds):
+    """True for one caller at most every `seconds` (one row in meta, swapped atomically: two requests at the same moment cannot both win)."""
+    now = time.time()
+    row = db().first("SELECT value FROM meta WHERE key = ?", key)
+    if not row:
+        try:
+            db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, json.dumps(now))
+            return True
+        except Exception:  # noqa: BLE001 - another request inserted it a moment ago
+            return False
+    try:
+        if now - float(json.loads(row["value"])) < seconds:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return db().run("UPDATE meta SET value = ? WHERE key = ? AND value = ?", json.dumps(now), key, row["value"]).rowcount == 1
+
+
 def status_run(force=False):
     """The latest checks (run again when older than a minute) and the uptime history."""
     now = time.time()
@@ -8232,6 +8407,10 @@ def status_run(force=False):
     except Exception:  # noqa: BLE001 - database down: check anyway, nothing to compare with
         last, history = None, []
     if last and not force and now - float(last.get("at") or 0) < STATUS_FRESH_SECONDS:
+        return last, history
+    # One visitor a minute runs the checks (some ask Stripe and Discord); the others get the last answer
+    # straight away, so a crowd on /status never piles up slow requests on the shared website process.
+    if last and not force and not claim_every("status.running", STATUS_FRESH_SECONDS):
         return last, history
     checks = []
     for cid, name, fn in STATUS_CHECKS:
@@ -8343,6 +8522,7 @@ def due_discord_posts():
         except Exception:  # noqa: BLE001 - visitors never see a Discord problem
             app.logger.exception("Due Discord posts failed")
         affiliate_payouts_due()
+        privacy_cleanup()
 
 
 init_schema()

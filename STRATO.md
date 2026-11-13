@@ -371,3 +371,33 @@ the file). It checks:
 - read-only `diagnose`, `backup` and import;
 - login and roles, orders, licences, shared profiles, uploads, e-mail (fake Resend);
 - `/health`, and that visitors see no error details.
+
+## Legal pages, consent and your customers' data
+
+The site has a **privacy policy** (`/privacy`), **terms** (`/terms`), a **refund policy** (`/refunds`)
+and a **cookie policy** (`/cookies`), linked in every footer. Their text can be changed under
+Admin → Site → Page texts. Read them once: they describe what the site really does, but they are
+not legal advice, and choices such as Swedish law and the refund rules are yours to confirm.
+
+**Fill in Admin → Site → Business details** (company name, organisation number, VAT number if any,
+address). EU law asks a web shop to show who sells; they appear in the footer and on the legal pages.
+
+What the site does for you:
+
+- **Cookie banner**: asked once, *Accept* and *Only necessary* are equally easy. Endorsely (affiliate
+  tracking) and the 30-day partner-link memory only load after *Accept*. *Cookie settings* in the
+  footer changes the choice. Fonts are served from the site itself (no Google).
+- **Sign-up** asks to accept the terms and to confirm the person is 13 or older (with a parent's
+  permission under 18); the acceptance is saved.
+- **Checkout** shows the total price and asks the buyer to tick that they want the key right away and
+  that the 14-day withdrawal right ends on activation (EU digital-content rule). The consent is saved
+  with the order, sent to Stripe, and confirmed in the licence email.
+- **My account → Your data**: *Download my data* (everything we keep, as a file) and *Delete my
+  account* (orders stay 7 years for bookkeeping, without name or email; licence keys keep working).
+- **Old data is removed by itself**: IP addresses of downloads after 30 days and in the admin log
+  after 180 days, handled messages after 2 years, expired logins after 60 days.
+- **Unsubscribe**: every newsletter has a link, and mail apps show a one-click *Unsubscribe* button.
+- **Reviews**: under *What pilots say* the site says quotes are real, shared with permission and not
+  paid for. Only add real quotes.
+- Accessibility: a *Skip to content* link, keyboard-friendly menus and dialogs, and text alternatives
+  for pictures (checked with axe-core on 18 pages: no problems found).
