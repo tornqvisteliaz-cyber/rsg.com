@@ -275,6 +275,29 @@ Set-up):**
 Timed things (reminders, giveaways, repeating posts, stat channels, auto-close) run at the first
 visit to the website after they are due, like scheduled posts.
 
+**📖 Guide (Admin → Discord → Guide):** every feature with *what it does*, *how to set it up* step by
+step and *what members see*, searchable, with a *Take me there* button. Part 4 added:
+
+- **AutoMod** (Discord's own filters, run by Discord all the time): blocked words (with an optional
+  timeout), invite links to other servers, mention spam, Discord's spam filter, and ready-made word
+  lists. Blocked messages are reported in the mod log.
+- **Lockdown**: lock every public channel at once, and open exactly those again.
+- **Server safety settings** (who can talk, picture scanning, default notifications) and a **server
+  snapshot** file with all roles, channels and permissions.
+- **Rules gate**: an *I accept the rules* button that gives a role.
+- **Welcome post and welcome DM** with your own text, a **role for everyone who links**, and a
+  **thank-you DM** to buyers after a purchase.
+- **Invite licence holders** who have not linked Discord, by email (once each, 50 per press).
+- **`/orders`**, **`/faq`** answers from the website FAQ, and a *Send me the full keys by DM*
+  button on `/licence`.
+- Tickets: **one open ticket each**, a **⭐ rating** DM and the **conversation by email** after
+  closing, and **saved answers** inside ticket replies.
+- **Post as another name and picture** (through a channel webhook), **message templates**, and a
+  **discussion thread** under each news post.
+
+The bot also needs **Manage Webhooks** and **Create Public Threads** now: press **Invite the bot**
+again and accept.
+
 These need **Timeout Members**, **Kick Members**, **Ban Members**, **Manage Channels**, **Manage
 Server** (to list invites), **View Audit Log**, **Manage Expressions** (emojis) and **Change
 Nickname** as well. The invite link asks for them; a bot invited earlier: press **Invite the bot**

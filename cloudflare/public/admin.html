@@ -332,6 +332,17 @@
         .dc-nav button.active { background: var(--accent, #aab6c2); color: #0b0d10; border-color: transparent; opacity: 1; font-weight: 600; }
         .dc-nav .n { font-size: 12px; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: rgba(229,72,77,.9); color: #fff; }
         .dsec-off { display: none !important; }
+        .dg-guide details { border: 1px solid var(--line, #2a2f36); border-radius: 10px; margin: 0 0 8px; }
+        .dg-guide summary { cursor: pointer; padding: 12px 14px; display: flex; gap: 10px; align-items: baseline; list-style: none; }
+        .dg-guide summary::-webkit-details-marker { display: none; }
+        .dg-guide summary b { white-space: nowrap; }
+        .dg-guide summary span { opacity: .75; font-size: 14px; }
+        .dg-guide .body { padding: 0 14px 14px 40px; font-size: 14px; line-height: 1.55; }
+        .dg-guide ol { margin: 6px 0 10px; padding-left: 20px; }
+        .dg-guide .tag { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line, #2a2f36); margin-left: auto; white-space: nowrap; opacity: .7; }
+        .dg-guide h3 { margin: 22px 0 10px; font-size: 15px; }
+        .dg-card { border: 1px solid var(--line, #2a2f36); border-radius: 10px; padding: 14px; }
+        .dg-card h3 { margin: 0 0 6px; }
         .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
         .dc-grid h3 { margin: 0 0 10px; font-size: 15px; }
         .dc-mini { font-size: 14px; }
@@ -672,6 +683,7 @@
     <section class="pane" id="pane-discord" data-title="Discord">
         <p class="notice" id="dc-off" hidden>Discord linking runs on the STRATO website. This copy of the site cannot do it.</p>
         <nav class="dc-nav" id="dc-nav" aria-label="Discord sections">
+            <button type="button" data-dsec="guide">📖 Guide</button>
             <button type="button" data-dsec="post">📣 Post</button>
             <button type="button" data-dsec="support">🎫 Support<span class="n" id="dc-n-support" hidden></span></button>
             <button type="button" data-dsec="mod">🛡️ Moderation<span class="n" id="dc-n-mod" hidden></span></button>
@@ -680,6 +692,14 @@
             <button type="button" data-dsec="insights">📊 Insights</button>
             <button type="button" data-dsec="setup">⚙️ Set-up</button>
         </nav>
+        <div class="panel" style="margin-bottom:24px" id="dgd-panel">
+            <div class="panel-head"><h2>📖 Guide: everything the Discord bot can do</h2><input id="dgd-q" placeholder="Search, e.g. ticket, ban, giveaway…" style="width:auto;min-width:240px;padding:8px 12px"></div>
+            <div class="panel-body">
+                <p style="margin-top:0">Every feature is listed below with <strong>what it does</strong>, <strong>how to set it up</strong> and <strong>what members see in Discord</strong>. Click one to open it, then <em>Take me there</em>.
+                Nothing has to keep running on STRATO: Discord calls the website when someone uses the bot, and timed things (reminders, giveaways, repeating posts) happen at the first website visit after they are due.</p>
+                <div class="dg-guide" id="dgd-list"></div>
+            </div>
+        </div>
         <div class="panel" style="margin-bottom:24px" id="dp-panel">
             <div class="panel-head"><h2 id="dp-head">Post to Discord</h2><span class="muted" id="dc-stats" style="font-size:13px;margin-left:auto;margin-right:12px"></span><select id="dp-start" style="width:auto;padding:8px 12px" aria-label="Start from"></select></div>
             <div class="panel-body dp-grid">
@@ -688,7 +708,8 @@
                         <div class="field" style="margin:0"><label for="dp-channel">Channel</label><select id="dp-channel"><option value="">Loading channels…</option></select></div>
                         <button class="btn btn-ghost btn-sm" type="button" id="dp-reload" style="margin-bottom:2px">Refresh</button>
                     </div>
-                    <div class="field" style="margin-top:14px"><label for="dp-ping">Ping</label><select id="dp-ping"><option value="none">Nobody</option><option value="buyers">Verified buyers (the buyer role)</option><option value="here">@here (members online)</option><option value="everyone">@everyone</option></select></div>
+                    <div class="field" style="margin-top:14px"><label for="dp-persona">Post as</label><select id="dp-persona"><option value="">The Rotaidem bot</option></select><div class="hint">Add names and pictures under <em>Post as &amp; templates</em> below.</div></div>
+                    <div class="field"><label for="dp-ping">Ping</label><select id="dp-ping"><option value="none">Nobody</option><option value="buyers">Verified buyers (the buyer role)</option><option value="here">@here (members online)</option><option value="everyone">@everyone</option></select></div>
                     <div class="field"><label for="dp-text">Message</label><textarea id="dp-text" rows="4" maxlength="1900" placeholder="What do you want to say? Type #channel-name to link a channel."></textarea>
                         <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><select id="dp-insert" style="width:auto;padding:6px 10px;font-size:13px" aria-label="Insert a channel link"><option value="">Insert a # channel</option></select><span class="hint" style="margin:0">#names of your channels become links in Discord, in the message and in the card text.</span></div></div>
                     <fieldset class="dp-card"><legend>Card (optional)</legend>
@@ -716,7 +737,7 @@
                         <input id="dp-at" type="datetime-local" style="width:auto"></div>
                         <div class="hint">A post for later goes out at the first visit to the website after that time (with visitors, within a minute or two).</div></div>
                     <label id="dp-publish-row" style="display:none;gap:8px;align-items:center;font-weight:400;margin:0 0 16px"><input type="checkbox" id="dp-publish" checked> Publish to servers that follow this announcement channel</label>
-                    <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" id="dp-send">Post</button><button class="btn btn-ghost" type="button" id="dp-cancel" hidden>Cancel editing</button><button class="btn btn-ghost" type="button" id="dp-clear">Clear</button></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" id="dp-send">Post</button><button class="btn btn-ghost" type="button" id="dp-cancel" hidden>Cancel editing</button><button class="btn btn-ghost" type="button" id="dp-clear">Clear</button><button class="btn btn-ghost" type="button" id="dp-save-tpl">Save as template</button></div>
                 </form>
                 <div><div class="muted" style="font-size:13px;margin-bottom:8px">Preview</div><div class="dp-preview" id="dp-preview"></div></div>
             </div>
@@ -821,7 +842,7 @@
             <div class="panel-body" id="dk-view" hidden>
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h3 style="margin:0;font-size:15px" id="dk-title"></h3><button class="btn btn-ghost btn-sm" type="button" id="dk-hide">Close view</button></div>
                 <div id="dk-msgs" style="max-height:360px;overflow:auto;margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:14px"></div>
-                <form id="dk-reply"><div class="field"><label for="dk-text">Answer as the Rotaidem team</label><textarea id="dk-text" rows="3" maxlength="1800" placeholder="The bot posts this in the ticket with your name."></textarea></div>
+                <form id="dk-reply"><div class="field"><label for="dk-text">Answer as the Rotaidem team</label><select id="dk-tag" style="margin-bottom:6px;padding:6px 10px;font-size:13px"><option value="">Insert a saved answer…</option></select><textarea id="dk-text" rows="3" maxlength="1800" placeholder="The bot posts this in the ticket with your name."></textarea></div>
                     <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Send answer</button><span class="hint" style="margin:0">Closing a ticket saves the whole conversation in Messages.</span></div></form>
             </div>
         </div>
@@ -913,6 +934,9 @@
                     <h3>Support settings</h3>
                     <div class="field"><label for="ds-cats">Ticket topics (one per line)</label><textarea id="ds-cats" rows="4" placeholder="Technical help&#10;Licence &amp; activation&#10;Billing"></textarea><div class="hint">The ticket panel becomes a menu with these topics. Empty: a plain “Open a ticket” button. Post the panel again after changing them (Set-up → In Discord).</div></div>
                     <div class="field"><label for="ds-autoclose">Close tickets with no reply after</label><select id="ds-autoclose"><option value="0">Never</option><option value="2">2 days</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option></select></div>
+                    <div class="field"><label for="ds-limit">Open tickets per member</label><select id="ds-limit"><option value="1">1 at a time</option><option value="2">2 at a time</option><option value="3">3 at a time</option><option value="0">No limit</option></select></div>
+                    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 8px"><input type="checkbox" id="ds-rate"> Ask for a ⭐ rating (DM) when a ticket closes</label>
+                    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 14px"><input type="checkbox" id="ds-mail"> Email the conversation to the member (if their Discord is linked)</label>
                     <div class="field"><label for="ds-sugg">Suggestions channel</label><select id="ds-sugg" data-dc-ch="Off (no /suggest)"></select><div class="hint">/suggest posts ideas here with 👍 👎 for voting.</div></div>
                     <button class="btn btn-sm" type="submit">Save</button>
                 </form>
@@ -1047,6 +1071,95 @@
                 <div><h3>Waiting for you</h3><div class="dc-mini" id="di-totals"></div></div>
                 <div><h3>Most used commands &amp; buttons</h3><div class="dc-bars" id="di-usage"></div></div>
                 <div><h3>Bot use, last 30 days</h3><div class="dc-bars" id="di-days"></div></div>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dpx-panel">
+            <div class="panel-head"><h2>Post as &amp; templates</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="dpx-personas">
+                    <h3>Post as another name and picture</h3>
+                    <p class="hint" style="margin:0 0 10px">E.g. <em>HeavyPro Updates</em> with the HeavyPro logo. Pick it under <em>Post as</em> when posting. Discord shows it with a small BOT tag.</p>
+                    <div id="dpx-rows"></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="dpx-add">Add a name</button><button class="btn btn-sm" type="submit">Save</button></div>
+                </form>
+                <div>
+                    <h3>Message templates</h3>
+                    <p class="hint" style="margin:0 0 10px">Write a post once, press <em>Save as template</em>, and pick it later under <em>Start from…</em> at the top of <em>Post to Discord</em>.</p>
+                    <div class="dc-mini" id="dpx-tpls"></div>
+                </div>
+                <form id="dpx-news">
+                    <h3>News discussions</h3>
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 12px"><input type="checkbox" id="dpx-threads" style="margin-top:3px"> <span>Open a discussion thread under every news post<br><span class="hint" style="margin:0">So members can talk about it right there. Needs the News posts channel (Automatic posts).</span></span></label>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dam-panel">
+            <div class="panel-head"><h2>AutoMod: Discord's own filters</h2><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="dam-reload">Refresh</button></div></div>
+            <div class="panel-body">
+                <p class="muted" style="margin-top:0;font-size:14px">These run inside Discord, all the time, instantly: a blocked message never appears. Set them here once. <span id="dam-modlog"></span></p>
+                <div class="dc-grid" id="dam-cards"></div>
+                <div class="dc-mini" id="dam-other" style="margin-top:16px"></div>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dsf-panel">
+            <div class="panel-head"><h2>Safety</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="dsf-lock" class="dg-card">
+                    <h3>🚨 Lockdown</h3>
+                    <p class="hint" style="margin:0 0 10px">For a raid or a bad moment: stops members writing in <strong>every</strong> public channel at once. <em>End lockdown</em> opens exactly those channels again.</p>
+                    <p id="dsf-lock-state" style="margin:0 0 10px;font-size:14px"></p>
+                    <div class="field"><label for="dsf-lock-ch">Post a note in (optional)</label><select id="dsf-lock-ch" data-dc-ch="Nowhere"></select></div>
+                    <div class="field"><label for="dsf-lock-note">Note</label><input id="dsf-lock-note" maxlength="500" placeholder="We are dealing with spam. Back soon!"></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-danger btn-sm" type="button" id="dsf-lock-on">Lock everything</button><button class="btn btn-sm" type="button" id="dsf-lock-off">End lockdown</button></div>
+                </form>
+                <form id="dsf-safety" class="dg-card">
+                    <h3>🛡️ Server safety settings</h3>
+                    <div class="field"><label for="dsf-verify">Who can talk</label><select id="dsf-verify"><option value="0">Anyone</option><option value="1">Verified email</option><option value="2">Discord account older than 5 minutes</option><option value="3">Member of the server for 10 minutes</option><option value="4">Verified phone number</option></select><div class="hint">Higher stops spam accounts. During a raid, pick “Member for 10 minutes” or “phone”.</div></div>
+                    <div class="field"><label for="dsf-filter">Scan pictures for adult content</label><select id="dsf-filter"><option value="0">Off</option><option value="1">From members without a role</option><option value="2">From everyone</option></select></div>
+                    <div class="field"><label for="dsf-notif">Default notifications</label><select id="dsf-notif"><option value="0">All messages</option><option value="1">Only @mentions (recommended)</option></select></div>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <div class="dg-card">
+                    <h3>💾 Server snapshot</h3>
+                    <p class="hint" style="margin:0 0 10px">Downloads a file with all roles, channels and their permissions: a record to put things back by hand if something gets deleted or messed up. It changes nothing.</p>
+                    <button class="btn btn-sm" type="button" id="dsf-snap">Download snapshot</button>
+                </div>
+            </div>
+        </div>
+        <div class="panel" style="margin-bottom:24px" id="dmw-panel">
+            <div class="panel-head"><h2>Welcome &amp; members</h2></div>
+            <div class="panel-body dc-grid">
+                <form id="dmw-rules">
+                    <h3>📜 Rules gate</h3>
+                    <p class="hint" style="margin:0 0 10px">Posts your rules with an <em>I accept the rules</em> button. Pressing it gives a role, e.g. <em>Member</em>. Hide your other channels from @everyone and show them to that role, so new people read the rules first.</p>
+                    <div class="field"><label for="dmw-r-ch">Channel</label><select id="dmw-r-ch" data-dc-ch="Choose a channel"></select></div>
+                    <div class="field"><label for="dmw-r-role">Role they get</label><select id="dmw-r-role" data-dc-role="Choose a role" data-safe="1"></select></div>
+                    <div class="field"><label for="dmw-r-text">Rules</label><textarea id="dmw-r-text" rows="5" maxlength="4000">1. Be kind and helpful.
+2. No piracy, cracks or key sharing.
+3. No spam or advertising.
+4. Keep support questions in tickets (/support).</textarea></div>
+                    <button class="btn btn-sm" type="submit">Post the rules</button>
+                </form>
+                <form id="dmw-welcome">
+                    <h3>👋 Welcome &amp; thank-you messages</h3>
+                    <div class="field"><label for="dmw-w-text">Welcome post (in the Welcome channel)</label><textarea id="dmw-w-text" rows="2" maxlength="1500" placeholder="👋 Welcome {member}!{buyer}"></textarea><div class="hint">Sent when someone links their Rotaidem account. {member} = a mention, {buyer} = the buyer-role note. Empty = the standard text.</div></div>
+                    <div class="field"><label for="dmw-w-dm">Welcome DM (optional)</label><textarea id="dmw-w-dm" rows="2" maxlength="1500" placeholder="Hi {name}! Thanks for joining. Start in #getting-started."></textarea><div class="hint">A private message to them at the same moment. {name} = their name.</div></div>
+                    <div class="field"><label for="dmw-buyer">Thank-you DM after a purchase (optional)</label><textarea id="dmw-buyer" rows="2" maxlength="1500" placeholder="Thanks for buying {product}, {name}! Your key is in your email and under My account."></textarea><div class="hint">Only to buyers who linked Discord. {name}, {product}.</div></div>
+                    <div class="field"><label for="dmw-link-role">Role for everyone who links their account</label><select id="dmw-link-role" data-dc-role="None" data-safe="1"></select><div class="hint">E.g. <em>Linked</em>: also for people without a licence (the buyer role is only for licence holders).</div></div>
+                    <button class="btn btn-sm" type="submit">Save</button>
+                </form>
+                <form id="dmw-invite">
+                    <h3>📧 Invite licence holders to the Discord</h3>
+                    <p class="hint" style="margin:0 0 10px">People with a licence who have not linked Discord yet. Each person gets this email only once; people who unsubscribed from emails are left out.</p>
+                    <p id="dmw-inv-count" style="margin:0 0 10px;font-size:14px"></p>
+                    <div class="field"><label for="dmw-inv-subj">Subject</label><input id="dmw-inv-subj" maxlength="120" value="Join the Rotaidem Discord"></div>
+                    <div class="field"><label for="dmw-inv-text">Email text</label><textarea id="dmw-inv-text" rows="4" maxlength="3000">You have a Rotaidem licence, so you can join the buyer-only channels in our Discord: early news, help from other pilots and from us.
+
+Open My account and press Link Discord: {link}</textarea><div class="hint">{link} = the Link Discord page, {name} = their name, {invite} = your invite link.</div></div>
+                    <div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">Send to the next 50</button><button class="btn btn-ghost btn-sm" type="button" id="dmw-inv-list">Show who</button></div>
+                    <div class="dc-mini" id="dmw-inv-people" style="margin-top:10px;max-height:240px;overflow:auto"></div>
+                </form>
             </div>
         </div>
         <div class="panel" id="dc-linked-panel">
@@ -2853,6 +2966,7 @@ function dpStartOptions() {
     const posts = (state.posts || []).filter(p => p.status !== "draft").slice(0, 5), prods = (state.products || []).filter(p => p.version);
     $("dp-start").innerHTML = '<option value="">Start from…</option>' + (prods.length ? `<optgroup label="Product update">${prods.map(p => `<option value="p:${esc(p.id)}">${esc(p.name)} ${esc(p.version)}</option>`).join("")}</optgroup>` : "") +
         (posts.length ? `<optgroup label="News post">${posts.map(p => `<option value="n:${p.id}">${esc(p.title)}</option>`).join("")}</optgroup>` : "") +
+        ((state.templates || []).length ? `<optgroup label="Your templates">${state.templates.map((t, i) => `<option value="t:${i}">📝 ${esc(t.name)}</option>`).join("")}</optgroup>` : "") +
         '<optgroup label="Other"><option value="v:">Verify for the buyer channels</option></optgroup>';
 }
 function dpDraft() {
@@ -2861,7 +2975,7 @@ function dpDraft() {
     return { channel_id: $("dp-channel").value, channel_name: ch.name || "", ping: $("dp-ping").value, text: $("dp-text").value,
         embed: { title: val("dp-title"), description: $("dp-desc").value, url: val("dp-url"), image: state.dp.image, color: $("dp-color").value },
         buttons: state.dp.buttons.filter(b => b.label.trim() || b.url.trim()), publish: ch.announcement ? $("dp-publish").checked : false,
-        reactions: val("dp-react"), pin: $("dp-pin").checked, at: later ? new Date($("dp-at").value).toISOString() : "",
+        reactions: val("dp-react"), pin: $("dp-pin").checked, at: later ? new Date($("dp-at").value).toISOString() : "", persona: $("dp-persona").value,
         poll: $("dp-poll-on").checked ? { question: val("dp-poll-q"), answers: $("dp-poll-a").value.split("\n").map(a => a.trim()).filter(Boolean), hours: Number($("dp-poll-h").value), multiple: $("dp-poll-m").checked } : null };
 }
 // #channel-name -> a channel pill in the preview, as Discord shows it
@@ -2873,6 +2987,9 @@ function dpFill(d) {
     const e = d.embed || {};
     $("dp-ping").value = d.ping || "none"; $("dp-text").value = d.text || ""; $("dp-title").value = e.title || ""; $("dp-desc").value = e.description || "";
     $("dp-url").value = e.url || ""; $("dp-color").value = e.color || "#aab6c2"; state.dp.image = e.image || ""; state.dp.buttons = (d.buttons || []).map(b => ({ ...b }));
+    $("dp-persona").value = d.persona || ""; $("dp-react").value = d.reactions || "";
+    $("dp-poll-on").checked = !!(d.poll && d.poll.question);
+    if (d.poll && d.poll.question) { $("dp-poll-q").value = d.poll.question; $("dp-poll-a").value = (d.poll.answers || []).join("\n"); }
     renderDpButtons(); dpPreview();
 }
 function renderDpButtons() {
@@ -2890,7 +3007,7 @@ function dpPreview() {
     const poll = d.poll && d.poll.question ? `<div class="poll"><div class="q">${esc(d.poll.question)}</div>${d.poll.answers.map(a => `<div class="a">${esc(a)}</div>`).join("")}` +
         `<div class="pf">${d.poll.multiple ? "Select one or more answers" : "Select one answer"} · open ${esc($("dp-poll-h").selectedOptions[0].textContent)}</div></div>` : "";
     const reacts = d.reactions.split(/\s+/).filter(Boolean).slice(0, 5);
-    $("dp-preview").innerHTML = `<div class="who"><div class="ava"></div><div style="min-width:0;flex:1"><div class="name">Rotaidem<small>APP</small>${d.pin ? ' <span style="color:#80848e;font-size:12px">📌 pinned</span>' : ""}</div>` +
+    $("dp-preview").innerHTML = `<div class="who"><div class="ava"></div><div style="min-width:0;flex:1"><div class="name">${esc((((state.extra || {}).personas || [])[d.persona] || {}).name || "Rotaidem")}<small>${d.persona ? "BOT" : "APP"}</small>${d.pin ? ' <span style="color:#80848e;font-size:12px">📌 pinned</span>' : ""}</div>` +
         `<div class="msg-text">${text || (embed || poll ? "" : '<span style="color:#80848e">Your message shows here.</span>')}</div>${embed}${poll}${btns}` +
         `${reacts.length ? `<div class="reacts">${reacts.map(r => `<span>${esc(r)} 1</span>`).join("")}</div>` : ""}</div></div>`;
     $("dp-poll").hidden = !$("dp-poll-on").checked;
@@ -2955,6 +3072,9 @@ $("dp-start").onchange = () => {
     } else if (kind === "n") {
         const n = (state.posts || []).find(x => String(x.id) === id) || {};
         dpFill({ ping: "none", embed: { title: n.title, description: String(n.content || "").slice(0, 600), url: "/newsletter", image: n.image_url || "" }, buttons: [{ label: "Read on rotaidem.com", url: "/newsletter" }] });
+    } else if (kind === "t") {
+        const t = (state.templates || [])[Number(id)];
+        if (t) dpFill(t.draft);
     } else if (kind === "v") {
         dpFill({ text: "Bought HeavyPro? Press the button, log in with your Rotaidem account and link Discord: you get the Verified buyer role and the buyer channels.", buttons: [{ label: "Verify on rotaidem.com", url: "/account#discord" }] });
     }
@@ -3284,7 +3404,7 @@ $("dc-nav").onclick = e => { const b = e.target.closest("[data-dsec]"); if (b) s
 function dcStartSection() {
     let saved = "";
     try { saved = localStorage.getItem("rsg_dsec") || ""; } catch (err) {}
-    showDsec(state.dsec || saved || "post");
+    showDsec(state.dsec || saved || "guide");
     if ((state.discord || {}).ready && !state.extraLoaded) { state.extraLoaded = true; loadExtra(); loadInsights(true); loadAllRoles(); }
 }
 const dcOpts = (first, list) => `<option value="">${esc(first)}</option>` + list.map(c => `<option value="${esc(c.id)}">${esc(c.label || ("# " + c.name))}</option>`).join("");
@@ -3301,6 +3421,7 @@ function fillRoleSelects() {
         sel.innerHTML = dcOpts(sel.dataset.dcRole, list.map(r => ({ id: r.id, label: "@" + r.name }))); sel.value = v;
     });
     renderDpr();
+    if (state.extra) renderWelcome();
 }
 const dcDo = async (fn, ok) => { try { const r = await fn(); if (ok) toast(typeof ok === "function" ? ok(r) : ok); loadAudit(); return r || {}; } catch (err) { toast(err.message, true); return null; } };
 const dcAgo = s => s ? new Date(String(s).replace(" ", "T") + (String(s).includes("Z") ? "" : "Z")).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
@@ -3308,7 +3429,7 @@ const dcAgo = s => s ? new Date(String(s).replace(" ", "T") + (String(s).include
 // settings for part 3 (support, moderation, stats, product roles)
 async function loadExtra() {
     try { state.extra = await api("/api/admin/discord/extra"); } catch (err) { state.extra = {}; }
-    state.dstRows = null; renderExtra(); renderDst(); renderDpr();
+    state.dstRows = null; state.personas = null; renderExtra(); renderDst(); renderDpr(); renderWelcome();
 }
 function renderExtra() {
     const x = state.extra || {};
@@ -3321,7 +3442,6 @@ async function saveExtra(change, msg) {
     if (r) state.extra = { ...state.extra, ...r };
     return r;
 }
-$("ds-settings").onsubmit = e => { e.preventDefault(); saveExtra({ ticket_categories: $("ds-cats").value.split("\n"), ticket_autoclose_days: Number($("ds-autoclose").value), suggestions_channel: $("ds-sugg").value }, "Support settings saved"); };
 $("dw-settings").onsubmit = e => { e.preventDefault(); saveExtra({ modlog_channel: $("dw-modlog").value, warn_limit: Number($("dw-limit").value), warn_timeout_minutes: Number($("dw-mins").value), staff_commands: $("dw-staff").checked }, "Moderation settings saved"); };
 
 // repeating posts
@@ -3474,7 +3594,7 @@ $("dg-list").onclick = async e => {
 // saved answers (/tag)
 async function loadTags() {
     try { state.tags = (await api("/api/admin/discord/tags")).tags || []; } catch (err) { state.tags = []; }
-    renderTags();
+    renderTags(); fillTagSelect();
 }
 function renderTags() {
     const f = $("dtag-filter").value.trim().toLowerCase(), list = (state.tags || []).filter(t => !f || t.ref.includes(f) || (t.text || "").toLowerCase().includes(f));
@@ -3588,7 +3708,9 @@ async function loadInsights(badgesOnly) {
     const t = d.totals || {};
     dcBadge("support", (t.reports_open || 0) + (t.applications_waiting || 0)); dcBadge("mod", 0);
     if (badgesOnly) return;
-    $("di-totals").innerHTML = Object.entries(STAT_LABELS).map(([k, label]) => `<div class="row"><span>${label}</span><strong>${esc(t[k] || 0)}</strong></div>`).join("");
+    const rs = d.ratings || [], avg = rs.length ? rs.reduce((x, y) => x + y, 0) / rs.length : 0;
+    $("di-totals").innerHTML = Object.entries(STAT_LABELS).map(([k, label]) => `<div class="row"><span>${label}</span><strong>${esc(t[k] || 0)}</strong></div>`).join("") +
+        `<div class="row"><span>Ticket rating</span><strong>${rs.length ? "⭐ " + avg.toFixed(1) + ` <span class="muted" style="font-weight:400">(${rs.length})</span>` : "none yet"}</strong></div>`;
     const bars = (el, entries) => { const max = Math.max(1, ...entries.map(e => e[1])); $(el).innerHTML = entries.map(([k, v]) => `<div><span>${esc(k)}</span><i style="width:${Math.max(2, v / max * 100)}%"></i><span class="muted">${esc(v)}</span></div>`).join("") || '<span class="muted">Nothing yet.</span>'; };
     const NAMES = { gw: "🎉 Giveaway entries", role: "Role buttons", form: "Form buttons", open_ticket: "Ticket button", ticket_cat: "Ticket menu", claim_ticket: "Claim ticket",
         close_ticket: "Close ticket", suggest: "Suggestions sent", support: "Support forms sent" };
@@ -3596,6 +3718,263 @@ async function loadInsights(badgesOnly) {
     bars("di-days", Object.entries(d.days || {}).sort().slice(-14).map(([k, v]) => [new Date(k + "T12:00:00Z").toLocaleDateString([], { month: "short", day: "numeric" }), v]));
 }
 $("di-reload").onclick = () => loadInsights();
+
+// ---- part 4: AutoMod, safety, welcome & members, personas & templates, and the Guide ----
+Object.assign(DSEC, { "dgd-panel": "guide", "dpx-panel": "post", "dam-panel": "mod", "dsf-panel": "mod", "dmw-panel": "community" });
+Object.assign(DSEC_LOAD, {
+    guide: () => renderGuide(),
+    post: () => { loadDr(); loadTemplates(); },
+    mod: () => { loadWarnings(); loadAutomod(); loadSafety(); },
+    community: () => { loadGiveaways(); loadTags(); loadUnlinked(); },
+    support: () => { loadDs(); loadForms(); if (!state.tags) loadTags(); },
+});
+
+// AutoMod
+const AM = {
+    words: { icon: "🚫", title: "Blocked words", what: "Messages with these words or phrases are blocked. One per line; * is a wildcard (*scam* also catches “scammer”).", words: true, allow: true, timeout: true },
+    invites: { icon: "🔗", title: "Invite links to other servers", what: "Blocks discord.gg and discord.com/invite links, so nobody advertises their server. Put your own invite code under “Allowed” to keep it working.", allow: true },
+    mentions: { icon: "📢", title: "Mention spam", what: "Blocks a message that pings too many people at once (a common raid trick), and turns on Discord's raid protection.", limit: true, timeout: true },
+    spam: { icon: "🤖", title: "Spam", what: "Discord's own spam detection: blocks messages that look like typical spam." },
+    presets: { icon: "🧼", title: "Ready-made word lists", what: "Discord's lists of swear words, sexual words and slurs. Tick the ones you want.", presets: true, allow: true },
+};
+async function loadAutomod() {
+    try { state.automod = await api("/api/admin/discord/automod"); } catch (err) { $("dam-cards").innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
+    const rules = state.automod.rules || [];
+    $("dam-modlog").textContent = state.automod.modlog ? "Blocked messages are also reported in your mod log channel." : "Tip: choose a mod log channel (Warnings, mod log & audit log) to see what was blocked.";
+    $("dam-cards").innerHTML = Object.entries(AM).map(([kind, a]) => {
+        const r = rules.find(x => x.kind === kind) || null;
+        const badge = r ? (r.enabled ? '<span class="badge published">On</span>' : '<span class="badge">Off</span>') : '<span class="badge">Not set up</span>';
+        return `<form class="dg-card" data-am="${kind}"><h3>${a.icon} ${a.title} ${badge}</h3><p class="hint" style="margin:0 0 10px">${a.what}</p>` +
+            (a.words ? `<div class="field"><label>Words and phrases</label><textarea data-am-f="words" rows="4" placeholder="free nitro&#10;*crack*&#10;steam gift">${esc((r ? r.words : []).join("\n"))}</textarea></div>` : "") +
+            (a.presets ? `<div class="field">${[[1, "Swear words"], [2, "Sexual words"], [3, "Slurs"]].map(([n, l]) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" data-am-p="${n}"${!r || (r.presets || []).includes(n) ? " checked" : ""}> ${l}</label>`).join("")}</div>` : "") +
+            (a.limit ? `<div class="field"><label>Block when a message pings more than</label><select data-am-f="limit">${[3, 5, 8, 10, 15, 20].map(n => `<option value="${n}"${(r ? r.limit : 5) === n ? " selected" : ""}>${n} people or roles</option>`).join("")}</select></div>` : "") +
+            (a.allow ? `<div class="field"><label>Allowed anyway (optional)</label><input data-am-f="allow" value="${esc((r ? r.allow : []).join(", "))}" placeholder="${kind === "invites" ? "your invite code, e.g. 3XCy5abEBU" : "words that are fine, comma between"}"></div>` : "") +
+            (a.timeout ? `<div class="field"><label>Also time them out</label><select data-am-f="timeout">${[[0, "No"], [1, "1 minute"], [10, "10 minutes"], [60, "1 hour"], [1440, "1 day"]].map(([v, l]) => `<option value="${v}"${(r ? r.timeout : 0) === v ? " selected" : ""}>${l}</option>`).join("")}</select></div>` : "") +
+            `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 12px"><input type="checkbox" data-am-f="enabled"${!r || r.enabled ? " checked" : ""}> On</label>` +
+            `<div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" type="submit">${r ? "Save" : "Turn on"}</button>${r ? `<button class="btn btn-ghost btn-sm" type="button" data-am-del="${esc(r.id)}">Remove</button>` : ""}</div></form>`;
+    }).join("");
+    const others = rules.filter(r => !r.ours);
+    $("dam-other").innerHTML = others.length ? "<strong>Other AutoMod rules in your server</strong> (made in Discord)" + others.map(r => `<div class="row"><span>${esc(r.name)} ${r.enabled ? "· on" : "· off"}</span></div>`).join("") : "";
+}
+$("dam-reload").onclick = loadAutomod;
+$("dam-cards").onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target.closest("[data-am]"), get = n => f.querySelector(`[data-am-f="${n}"]`);
+    const body = { kind: f.dataset.am, enabled: get("enabled").checked, alert: true,
+        words: get("words") ? get("words").value.split("\n") : [], allow: get("allow") ? get("allow").value.split(",").map(x => x.trim()).filter(Boolean) : [],
+        limit: get("limit") ? Number(get("limit").value) : undefined, timeout: get("timeout") ? Number(get("timeout").value) : 0,
+        presets: [...f.querySelectorAll("[data-am-p]:checked")].map(c => Number(c.dataset.amP)) };
+    if (await dcDo(() => post("/api/admin/discord/automod", body), `${AM[body.kind].title}: ${body.enabled ? "on" : "off"}`)) loadAutomod();
+};
+$("dam-cards").onclick = async e => {
+    const d = e.target.closest("[data-am-del]");
+    if (d && await confirmBox("Remove this filter?", "Discord stops blocking these messages.", "Remove", true)) { await dcDo(() => api("/api/admin/discord/automod/" + d.dataset.amDel, { method: "DELETE" }), "Filter removed"); loadAutomod(); }
+};
+
+// Safety: lockdown, server settings, snapshot
+async function loadSafety() {
+    try {
+        const [lock, safe] = await Promise.all([api("/api/admin/discord/lockdown"), api("/api/admin/discord/safety")]);
+        $("dsf-lock-state").innerHTML = lock.on ? `<strong style="color:#e5484d">Lockdown is ON</strong> since ${esc(dcAgo(lock.at))} (${esc(lock.by || "")}), ${esc((lock.channels || []).length)} channel(s) locked.` : "No lockdown now.";
+        $("dsf-verify").value = String(safe.verification_level ?? 0); $("dsf-filter").value = String(safe.explicit_content_filter ?? 0); $("dsf-notif").value = String(safe.default_message_notifications ?? 1);
+    } catch (err) { $("dsf-lock-state").textContent = err.message; }
+}
+async function dsfLock(on) {
+    if (on && !(await confirmBox("Lock every public channel?", "Members cannot write anywhere until you press End lockdown. Staff with their own permissions still can.", "Lock everything", true))) return;
+    if (await dcDo(() => post("/api/admin/discord/lockdown", { on, note: $("dsf-lock-note").value, channel_id: $("dsf-lock-ch").value }), d => (on ? "Locked " : "Opened ") + d.channels + " channel(s)" + (d.failed ? `, ${d.failed} failed` : ""))) loadSafety();
+}
+$("dsf-lock-on").onclick = () => dsfLock(true);
+$("dsf-lock-off").onclick = () => dsfLock(false);
+$("dsf-safety").onsubmit = e => { e.preventDefault(); dcDo(() => post("/api/admin/discord/safety", { verification_level: Number($("dsf-verify").value), explicit_content_filter: Number($("dsf-filter").value), default_message_notifications: Number($("dsf-notif").value) }), "Safety settings saved"); };
+$("dsf-snap").onclick = async () => {
+    const d = await dcDo(() => api("/api/admin/discord/snapshot"));
+    if (!d) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: "application/json" }));
+    a.download = `discord-snapshot-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(a.href);
+    toast(`Downloaded: ${d.roles.length} roles, ${d.channels.length} channels`);
+};
+
+// Welcome & members
+function renderWelcome() {
+    const x = state.extra || {};
+    $("dmw-w-text").value = x.welcome_text || ""; $("dmw-w-dm").value = x.welcome_dm || ""; $("dmw-buyer").value = x.buyer_dm || ""; $("dmw-link-role").value = x.link_role || "";
+    $("ds-limit").value = String(x.ticket_limit ?? 1); $("ds-rate").checked = x.ticket_rating !== false; $("ds-mail").checked = x.ticket_email !== false; $("dpx-threads").checked = !!x.news_threads;
+    renderPersonas();
+}
+$("dmw-welcome").onsubmit = e => { e.preventDefault(); saveExtra({ welcome_text: $("dmw-w-text").value, welcome_dm: $("dmw-w-dm").value, buyer_dm: $("dmw-buyer").value, link_role: $("dmw-link-role").value }, "Welcome messages saved"); };
+$("dmw-rules").onsubmit = e => { e.preventDefault(); dcDo(() => post("/api/admin/discord/rules-gate", { channel_id: $("dmw-r-ch").value, role_id: $("dmw-r-role").value, rules: $("dmw-r-text").value }), "Rules posted with the accept button"); };
+async function loadUnlinked(show) {
+    try {
+        const d = await api("/api/admin/discord/unlinked");
+        $("dmw-inv-count").innerHTML = `<strong>${esc(d.total)}</strong> licence holder(s) have not linked Discord; <strong>${esc(d.waiting)}</strong> not emailed yet.`;
+        if (show) $("dmw-inv-people").innerHTML = (d.people || []).map(p => `<div class="row"><span>${esc(p.email)}<br><span class="muted">${esc(p.products.join(", "))}</span></span><span class="muted">${p.invited ? "emailed" : ""}</span></div>`).join("") || '<span class="muted">Nobody.</span>';
+    } catch (err) { $("dmw-inv-count").textContent = err.message; }
+}
+$("dmw-inv-list").onclick = () => loadUnlinked(true);
+$("dmw-invite").onsubmit = async e => {
+    e.preventDefault();
+    if (!(await confirmBox("Send the invite email?", "Up to 50 licence holders who were not emailed before get it now.", "Send"))) return;
+    if (await dcDo(() => post("/api/admin/discord/unlinked/email", { subject: $("dmw-inv-subj").value, text: $("dmw-inv-text").value }), d => d.sent ? `Sent to ${d.sent}. ${d.left} left.` : "Nobody left to email")) loadUnlinked(true);
+};
+
+// Support settings: limit, rating, email copy (saved with the other support settings)
+$("ds-settings").onsubmit = e => {
+    e.preventDefault();
+    saveExtra({ ticket_categories: $("ds-cats").value.split("\n"), ticket_autoclose_days: Number($("ds-autoclose").value), suggestions_channel: $("ds-sugg").value,
+        ticket_limit: Number($("ds-limit").value), ticket_rating: $("ds-rate").checked, ticket_email: $("ds-mail").checked }, "Support settings saved");
+};
+// saved answers in ticket replies
+function fillTagSelect() { $("dk-tag").innerHTML = '<option value="">Insert a saved answer…</option>' + (state.tags || []).map(t => `<option value="${esc(t.id)}">${esc(t.ref)}</option>`).join(""); }
+$("dk-tag").onchange = () => {
+    const t = (state.tags || []).find(x => x.id === $("dk-tag").value);
+    if (t) { const box = $("dk-text"); box.value = (box.value ? box.value.trimEnd() + "\n\n" : "") + t.text + (t.button_url ? "\n" + (t.button_url.startsWith("/") ? location.origin + t.button_url : t.button_url) : ""); box.focus(); }
+    $("dk-tag").value = "";
+};
+
+// Personas and templates
+function renderPersonas() {
+    const rows = state.personas || (state.personas = ((state.extra || {}).personas || []).map(p => ({ ...p })));
+    $("dpx-rows").innerHTML = rows.map((p, i) => `<div style="display:grid;grid-template-columns:44px 1fr auto auto;gap:8px;align-items:center;margin-bottom:8px">` +
+        `<img src="${esc(p.avatar ? safeImage(p.avatar) : "/img/clouds.jpg")}" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover">` +
+        `<input data-pp="name" data-i="${i}" maxlength="80" value="${esc(p.name)}" placeholder="HeavyPro Updates" style="padding:7px 10px">` +
+        `<button class="btn btn-ghost btn-sm" type="button" data-pp-pic="${i}">Picture</button><button class="btn btn-ghost btn-sm" type="button" data-pp-del="${i}">✕</button></div>`).join("")
+        || '<p class="muted" style="margin:0 0 10px;font-size:14px">No extra names yet: posts come from the Rotaidem bot.</p>';
+    $("dp-persona").innerHTML = '<option value="">The Rotaidem bot</option>' + ((state.extra || {}).personas || []).map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join("");
+}
+$("dpx-rows").oninput = e => { const f = e.target.closest("[data-pp]"); if (f) state.personas[Number(f.dataset.i)].name = f.value; };
+$("dpx-rows").onclick = async e => {
+    const pic = e.target.closest("[data-pp-pic]"), del = e.target.closest("[data-pp-del]");
+    if (pic) { const u = await pickImage(); if (u) { state.personas[Number(pic.dataset.ppPic)].avatar = u; renderPersonas(); } }
+    if (del) { state.personas.splice(Number(del.dataset.ppDel), 1); renderPersonas(); }
+};
+$("dpx-add").onclick = () => { state.personas = state.personas || []; if (state.personas.length >= 5) return toast("Up to 5", true); state.personas.push({ name: "", avatar: "" }); renderPersonas(); };
+$("dpx-personas").onsubmit = async e => {
+    e.preventDefault();
+    const r = await dcDo(() => post("/api/admin/discord/personas", { personas: state.personas || [] }), "Names saved");
+    if (r) { state.extra.personas = r.personas; state.personas = null; renderPersonas(); }
+};
+$("dpx-news").onsubmit = e => { e.preventDefault(); saveExtra({ news_threads: $("dpx-threads").checked }, "Saved"); };
+async function loadTemplates() {
+    try { state.templates = (await api("/api/admin/discord/templates")).templates || []; } catch (err) { state.templates = []; }
+    $("dpx-tpls").innerHTML = state.templates.map(t => `<div class="row"><span>📝 ${esc(t.name)}</span><button class="btn btn-ghost btn-sm" type="button" data-tpl-del="${esc(t.name)}">Delete</button></div>`).join("") || '<span class="muted">No templates yet.</span>';
+    dpStartOptions();
+}
+$("dpx-tpls").onclick = async e => { const d = e.target.closest("[data-tpl-del]"); if (d) { await dcDo(() => api("/api/admin/discord/templates?name=" + encodeURIComponent(d.dataset.tplDel), { method: "DELETE" }), "Template deleted"); loadTemplates(); } };
+$("dp-save-tpl").onclick = async () => {
+    const name = prompt("Name for this template:", $("dp-title").value || "");
+    if (!name || !name.trim()) return;
+    const d = dpDraft();
+    if (await dcDo(() => post("/api/admin/discord/templates", { name, draft: { text: d.text, embed: d.embed, buttons: d.buttons, ping: d.ping, poll: d.poll, reactions: d.reactions, persona: d.persona } }), "Template saved")) loadTemplates();
+};
+
+// ---- the Guide ----
+const GUIDE = [
+    ["Start here", [
+        ["⚙️", "Connect the bot", "setup", "dc-setup-panel", "Links your Discord server to the website. Everything else needs this once.",
+            ["Over SSH: <code>python3 rotaidem/strato/setup.py discord</code> and paste the keys it asks for.", "Set-up: paste your <strong>Server ID</strong> and <strong>Buyer role ID</strong>, Save.",
+             "Press <strong>Invite the bot</strong> and accept (do it again after updates: new tools need new permissions).", "Press <strong>Add the slash commands</strong>, then <strong>Check set-up</strong>: everything should be green."],
+            "Members see the bot in the member list and its / commands."],
+        ["✅", "Verified buyer role", "setup", "dc-setup-panel", "Licence holders automatically get a role that opens your buyer-only channels. It is taken away when a licence is revoked.",
+            ["In Discord make a role, e.g. <em>Verified buyer</em>, and drag the bot's role above it.", "Lock the buyer channels: @everyone View Channel off, buyer role View Channel on.", "Post the <strong>Verify button</strong> (Set-up → In Discord)."],
+            "Members press Verify, log in on rotaidem.com, Link Discord, and get the role. <code>/verify</code> checks again."],
+    ]],
+    ["📣 Post", [
+        ["✍️", "Post to Discord", "post", "dp-panel", "Write a message with a card, picture, link buttons, a poll and reactions, and the bot posts it. You can edit or delete it afterwards from the list.",
+            ["Pick the channel and who to ping.", "Write the message and/or fill in the card. The preview shows how it will look.", "Press <strong>Post</strong>. Start from… fills it in from a product update or news post."],
+            "Members see a normal post from the bot (or from one of your <em>Post as</em> names)."],
+        ["⏰", "Post later", "post", "dp-panel", "Write it now and it goes out at the time you choose.", ["Choose <strong>Later</strong>, pick the date and time, press Schedule.", "It goes out at the first website visit after that time (usually within a minute or two)."], ""],
+        ["🔁", "Repeating posts", "post", "dr-panel", "A post that comes back every day or every week, e.g. <em>Screenshot Saturday</em>.", ["Choose the channel, write the text, pick the day and time (your time).", "Pause or delete it any time from the list."], ""],
+        ["🎭", "Post as another name and picture", "post", "dpx-panel", "Posts can come from e.g. <em>HeavyPro Updates</em> with the HeavyPro logo instead of the bot.",
+            ["In <strong>Post as &amp; templates</strong>, add a name and pick a picture, Save.", "When posting, choose it under <strong>Post as</strong>."], "Members see that name and picture, with a small BOT tag."],
+        ["📝", "Message templates", "post", "dpx-panel", "Save a post you make often and reuse it in one click.", ["Write the post, press <strong>Save as template</strong> and name it.", "Next time: <strong>Start from…</strong> → your template."], ""],
+        ["🤖", "Automatic posts", "post", "da-form", "The bot posts by itself: product updates, news posts, sales (for staff), welcomes, a team feed with a weekly report, and outage alerts.",
+            ["Choose a channel for each one you want under <strong>Automatic posts</strong>, Save. Empty = off."], ""],
+        ["💬", "News discussions", "post", "dpx-panel", "Opens a thread under every news post so people can talk about it.", ["Tick <strong>Open a discussion thread under every news post</strong>, Save."], "Members click the thread under the news post."],
+    ]],
+    ["🎫 Support", [
+        ["🎫", "Support tickets", "support", "dk-panel", "A private thread between one member and your team, inside Discord.",
+            ["Under Automatic posts choose a <strong>Support tickets</strong> channel.", "Set-up → In Discord → <strong>Post the ticket button</strong> in e.g. #support.", "Read and answer tickets here or in Discord. Your team needs the <em>Manage Threads</em> permission to see them."],
+            "Members press the button (or type <code>/support</code>), fill in a short form, and a private ticket opens. They get pinged when you answer."],
+        ["🗂️", "Ticket topics", "support", "ds-panel", "The ticket button becomes a menu: Technical help, Licence, Billing… The topic shows in the ticket's name.", ["Write the topics in <strong>Ticket topics</strong>, one per line, Save.", "Post the ticket button again."], ""],
+        ["🙋", "Claim, close and auto-close", "support", "ds-panel", "Your team presses <strong>Claim</strong> so everyone knows who handles it; <strong>Close ticket</strong> archives it. Tickets with no reply for a few days can close by themselves.",
+            ["Pick <strong>Close tickets with no reply after</strong>, Save."], "Every closed ticket's conversation is saved in Messages."],
+        ["1️⃣", "One open ticket each", "support", "ds-panel", "Stops one person opening many tickets.", ["Pick <strong>Open tickets per member</strong>, Save."], "If they already have one open, the bot points them to it."],
+        ["⭐", "Ratings and email copy", "support", "ds-panel", "When a ticket closes the member gets a DM to rate it 1 to 5 stars, and (if linked) the conversation by email. The average is under Insights.",
+            ["Tick the two boxes in Support settings, Save."], "Members press the stars in their DMs."],
+        ["💬", "Answer tickets from the website", "support", "dk-panel", "Read a ticket and answer it here; the bot posts your answer with your name. <strong>Insert a saved answer</strong> fills in one of your /tag answers.", [], ""],
+        ["💡", "Suggestions", "support", "ds-panel", "Members suggest ideas and vote 👍 👎. You mark them Planned, Accepted, Declined or Done and the post changes.", ["Choose a <strong>Suggestions channel</strong>, Save."], "Members type <code>/suggest</code>."],
+        ["🚩", "Reports", "support", "ds-panel", "Members report a bad message to your team without making noise.", ["Choose a <strong>mod log channel</strong> (Moderation)."], "Right-click a message → Apps → <strong>Report to staff</strong>."],
+        ["📋", "Forms and applications", "support", "ds-panel", "E.g. a beta tester application with up to 5 questions. Answers come here; Approve can give a role and DMs them.",
+            ["Under Forms: title, questions, optional role, Save form.", "Choose a channel under <strong>Post in…</strong> to post its button."], "Members press the button and fill it in."],
+    ]],
+    ["🛡️ Moderation", [
+        ["🚫", "Blocked words (AutoMod)", "mod", "dam-panel", "Discord blocks messages with your words instantly, all the time, and can time the person out.", ["Write the words (one per line, * for wildcards), Turn on."], "The message never appears; they see a short notice."],
+        ["🔗", "Block invite links (AutoMod)", "mod", "dam-panel", "Stops people advertising other Discord servers.", ["Put your own invite code under Allowed, Turn on."], ""],
+        ["📢", "Mention spam (AutoMod)", "mod", "dam-panel", "Blocks messages that ping lots of people, a common raid trick.", ["Choose the limit, Turn on."], ""],
+        ["🤖", "Spam filter (AutoMod)", "mod", "dam-panel", "Discord's own spam detection.", ["Turn on."], ""],
+        ["🧼", "Word lists (AutoMod)", "mod", "dam-panel", "Discord's ready-made lists of swear words, sexual words and slurs.", ["Tick the lists, Turn on."], ""],
+        ["🔎", "Find a member: timeout, kick, ban", "mod", "dm-panel", "Search by name or ID. You see their website account if linked. Then warn, time out, kick or ban.", ["Type the reason first: it is saved in Discord's audit log.", "<strong>Show bans</strong> lists bans with Unban."], ""],
+        ["⚠️", "Warnings", "mod", "dw-panel", "A warning DMs the member. At the limit (e.g. 3) they are timed out automatically.", ["Set the limit and timeout in Moderation settings.", "Warn from <strong>Find a member</strong> or with <code>/warn</code> in Discord. Remove warnings from the list."], ""],
+        ["🧑‍✈️", "Staff commands in Discord", "mod", "dw-panel", "Your moderators can act right in Discord: <code>/warn</code>, <code>/warnings</code>, <code>/timeout</code>, <code>/clear</code>, <code>/slowmode</code>, <code>/lock</code>, <code>/unlock</code>, and right-click a member → Apps → <strong>User info</strong>.",
+            ["Tick <strong>Staff commands in Discord</strong>, Save.", "Only people with the right Discord permission see them (e.g. Timeout Members for /warn)."], ""],
+        ["📒", "Mod log", "mod", "dw-panel", "One staff channel where every timeout, kick, ban, warning, clean-up, lock, report, blocked message and application shows up.", ["Choose the <strong>Mod log channel</strong> (staff only), Save."], ""],
+        ["🧹", "Clean up a channel", "server", "dx-panel", "Deletes the last 5 to 100 messages, or only one person's. Discord only allows messages from the last 14 days.", ["Server → Server tools → Clean up a channel. Or <code>/clear</code> in Discord."], ""],
+        ["🔒", "Lock a channel, slowmode", "server", "dx-panel", "Stop members writing in one channel, or let them write only every few seconds.", ["Server → Channel controls. Or <code>/lock</code>, <code>/unlock</code>, <code>/slowmode</code> in Discord."], ""],
+        ["🚨", "Lockdown", "mod", "dsf-panel", "Locks every public channel at once (a raid). End lockdown opens exactly those again.", ["Write a note (optional), press <strong>Lock everything</strong>."], ""],
+        ["🛡️", "Server safety settings", "mod", "dsf-panel", "Who can talk (verified email, phone…), picture scanning and default notifications.", ["Choose, Save. During a raid pick “Member for 10 minutes”."], ""],
+        ["📜", "Discord audit log", "mod", "dw-panel", "Who did what in the server lately: bans, deleted channels, role changes…", ["Press <strong>Show the latest 50</strong>."], ""],
+        ["💾", "Server snapshot", "mod", "dsf-panel", "Downloads a file with all roles, channels and permissions, to rebuild by hand if something is deleted.", ["Press <strong>Download snapshot</strong> now and then."], ""],
+    ]],
+    ["🎉 Community", [
+        ["🏷️", "Saved answers (/tag)", "community", "dg-panel", "As many ready answers as you like (install, refund, vatsim…), for your team and members.", ["Under Saved answers: name, answer, optional button, Save."], "Type <code>/tag</code>, pick one; <code>for:@someone</code> mentions them."],
+        ["⏰", "Reminders (/remind)", "community", "", "Members set their own reminders: the bot DMs them when it is time. Nothing to set up.", [], "<code>/remind in:2h about:Group flight</code> (m, h, d or w; up to 30 days)."],
+        ["🎁", "Button giveaways", "community", "dg-panel", "Members press 🎉 Enter; winners are drawn by themselves when time is up. End now or re-draw any time.", ["Channel, prize, how long, how many winners, Start."], ""],
+        ["🎉", "Reaction giveaway winners", "community", "dt-panel", "For a giveaway where people reacted with an emoji: picks fair random winners.", ["Paste the message link and the emoji, Pick winners."], ""],
+        ["📅", "Server events", "community", "dt-panel", "An event at the top of the server (e.g. a Sunday group flight) that members can follow.", ["Name, place, start and end, Create event."], ""],
+        ["🔘", "Role buttons", "server", "dx-panel", "Members click to get or remove roles like <em>News pings</em> or <em>MSFS 2024</em>.", ["Server tools → Role buttons: tick roles, choose a channel, Post."], "Click a button to get the role, click again to remove it."],
+        ["📜", "Rules gate", "community", "dmw-panel", "New people must press <em>I accept the rules</em> to get a role that shows the rest of the server.", ["Make a role (e.g. Member). Hide channels from @everyone and show them to that role.", "Welcome &amp; members → Rules gate: channel, role, rules, Post."], ""],
+        ["👋", "Welcome message and DM", "community", "dmw-panel", "Your own welcome text when someone links their account, plus an optional private welcome DM.", ["Write them under Welcome &amp; thank-you messages, Save."], ""],
+        ["🔗", "Role for everyone who links", "community", "dmw-panel", "A role for anyone who linked their Rotaidem account, also without a licence.", ["Pick the role, Save."], ""],
+        ["🙏", "Thank-you DM to buyers", "community", "dmw-panel", "After a purchase, buyers who linked Discord get a thank-you DM with buttons to their keys and the install guide.", ["Write the text, Save. Empty = off."], ""],
+        ["📧", "Invite licence holders", "community", "dmw-panel", "Emails customers with a licence who have not linked Discord yet. Each person gets it once.", ["Check the text, press <strong>Send to the next 50</strong>."], ""],
+        ["⌨️", "Your own slash commands", "server", "dx-panel", "E.g. <code>/rules</code> or <code>/livery</code>: the bot answers with your text and a link button.", ["Server tools → Your own slash commands: add, Save."], ""],
+        ["🙋", "Member commands", "", "", "Ready for everyone: <code>/help</code>, <code>/status</code>, <code>/version</code>, <code>/download</code>, <code>/store</code>, <code>/roadmap</code>, <code>/socials</code>, <code>/profile</code>, <code>/faq</code> (pick a question from your website FAQ), <code>/licence</code> (their keys, with a button to get them by DM), <code>/orders</code> (their orders), <code>/account</code>.", [], "Only the member who asks sees their keys and orders."],
+    ]],
+    ["🧰 Server", [
+        ["🎨", "Roles", "server", "dsv-panel", "Create, rename, recolour and delete roles. New roles never get permissions, so they are safe.", [], ""],
+        ["#️⃣", "Channels", "server", "dsv-panel", "Create text, voice, announcement or forum channels and categories (optionally only for verified buyers), and delete channels.", [], ""],
+        ["😀", "Custom emojis", "server", "dsv-panel", "Upload your own emojis (e.g. the HeavyPro logo).", ["Name it, pick a picture (up to 256 KB), Upload."], ""],
+        ["✉️", "Invites", "server", "dsv-panel", "See every invite, who made it and how many people used it; delete old ones.", ["Press Load."], ""],
+        ["📈", "Live stat channels", "server", "dsv-panel", "Channels whose name shows live numbers, e.g. 👥 Members: 128 or ✈️ Pilots: 54.", ["Make a voice channel nobody joins, pick it, write the name with {members}, {online}, {linked}, {buyers} or {licences}, Save."], ""],
+        ["📦", "Product roles", "server", "dsv-panel", "An extra role per product (e.g. HeavyPro owner) that follows the licence, like the buyer role.", ["Pick a role per product, Save, then Set-up → Check everyone again."], ""],
+        ["👥", "Give a role to many people", "server", "dsv-panel", "Give or take a role for everyone linked, only licence holders, or only those without.", [], ""],
+        ["🔄", "Daily role check and milestones", "server", "dx-panel", "Checks the buyer role for everyone once a day, and celebrates 25, 50, 100, 250… members.", ["Server tools → Automation: tick, Save."], ""],
+        ["🏷️", "Bot nickname", "server", "dx-panel", "What the bot is called in your server.", [], ""],
+    ]],
+    ["📊 Insights", [
+        ["📊", "Insights", "insights", "di-panel", "What waits for you (reports, applications…), ticket ratings, the most used commands and buttons, and bot use per day.", [], ""],
+    ]],
+];
+function renderGuide() {
+    const q = ($("dgd-q").value || "").toLowerCase().trim(), strip = h => h.replace(/<[^>]+>/g, "");
+    $("dgd-list").innerHTML = GUIDE.map(([group, items]) => {
+        const shown = items.filter(it => !q || strip([it[1], it[4], ...it[5], it[6]].join(" ")).toLowerCase().includes(q));
+        return shown.length ? `<h3>${esc(group)}</h3>` + shown.map(([icon, title, sec, panel, what, steps, discord]) => `<details${q ? " open" : ""}><summary>${icon} <b>${esc(title)}</b><span>${strip(what).slice(0, 90)}${strip(what).length > 90 ? "…" : ""}</span></summary><div class="body">` +
+            `<p style="margin:0 0 8px"><strong>What it does:</strong> ${what}</p>` +
+            (steps.length ? `<strong>How to set it up:</strong><ol>${steps.map(s => `<li>${s}</li>`).join("")}</ol>` : "") +
+            (discord ? `<p style="margin:0 0 10px"><strong>In Discord:</strong> ${discord}</p>` : "") +
+            (sec ? `<button class="btn btn-sm" type="button" data-guide-go="${sec}" data-panel="${panel}">Take me there →</button>` : "") + `</div></details>`).join("") : "";
+    }).join("") || '<p class="muted">Nothing found. Try another word.</p>';
+}
+$("dgd-q").oninput = renderGuide;
+$("dgd-list").onclick = e => {
+    const b = e.target.closest("[data-guide-go]");
+    if (!b) return;
+    showDsec(b.dataset.guideGo);
+    const el = $(b.dataset.panel);
+    if (el) setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+};
 
 // Shop: Stripe set-up, discount codes, prices, sales and revenue per product
 function shopMoney(cents, currency) {

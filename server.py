@@ -2538,6 +2538,7 @@ def fulfil_checkout(session):
     if user:
         audit(user, "stripe_order", f"{product_id} {amount:.2f} {str(session.get('currency') or '').upper()}")
     product = db().first("SELECT name FROM products WHERE id = ?", product_id) or {}
+    discord_buyer_thanks(db().first("SELECT * FROM users WHERE id = ?", user_id) if user_id else None, product.get("name") or product_id)
     today_count = db().first("SELECT COUNT(*) AS n FROM stripe_payments WHERE created_at >= ?", utc_stamp()[:10] + " 00:00:00") or {}
     discord_auto("sales", {"text": f"🎉 New sale: **{product.get('name') or product_id}** for {amount:.2f} {str(session.get('currency') or '').upper()}"
                                    f" ({today_count.get('n') or 1} today)" + (f" · referred by {referred_by['code']}" if referred_by else "")})
@@ -3070,7 +3071,8 @@ DISCORD_STATE_MINUTES = 15
 # Add Reactions, Manage Messages (pins), Read Message History, Send Polls, Manage Events
 DISCORD_BOT_PERMISSIONS = str(268435456 | 1 | 1024 | 2048 | 16384 | 131072 | 64 | 8192 | 65536 | (1 << 49) | (1 << 33) | (1 << 36) | (1 << 38) | (1 << 34)  # + create private threads, send in threads, manage threads (support tickets)
                               | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 26) | (1 << 40)  # + kick, ban, manage channels (slowmode, lock), change nickname, timeout members
-                              | (1 << 5) | (1 << 7) | (1 << 30))  # + manage server (invite list), view audit log, manage emojis
+                              | (1 << 5) | (1 << 7) | (1 << 30)  # + manage server (invite list, AutoMod), view audit log, manage emojis
+                              | (1 << 29) | (1 << 35))  # + manage webhooks (post as another name), create public threads (news discussions)
 
 
 def discord_settings():
@@ -3095,22 +3097,37 @@ def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20,
     headers = {"Authorization": auth, "Content-Type": kind, "User-Agent": "DiscordBot (https://rotaidem.com, 1.0)"}
     if reason:  # shown in the server's Audit Log in Discord
         headers["X-Audit-Log-Reason"] = urllib.parse.quote(str(reason)[:400])
-    req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return (json.loads(raw) if raw else {}), "", resp.status
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode(errors="replace")
+    for attempt in (1, 2):
+        req = urllib.request.Request(DISCORD_API_URL + path, data=data, method=method, headers=headers)
         try:
-            message = json.loads(raw).get("message") or raw[:200]
-        except ValueError:
-            message = raw[:200]
-        app.logger.warning("Discord %s %s -> %s: %s", method, path.split("?")[0], exc.code, message)
-        return None, f"Discord said ({exc.code}): {message}", exc.code
-    except (OSError, ValueError) as exc:
-        app.logger.warning("Discord %s %s: %s", method, path.split("?")[0], exc)
-        return None, "Could not reach Discord. Try again in a minute.", 0
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                return (json.loads(raw) if raw else {}), "", resp.status
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt == 1:  # rate limited: Discord says how long to wait
+                try:
+                    wait = float(json.loads(exc.read().decode(errors="replace")).get("retry_after") or 1)
+                except (ValueError, AttributeError):
+                    wait = 1.0
+                if wait <= 5:
+                    time.sleep(wait)
+                    continue
+            return discord_http_error(method, path, exc)
+        except (OSError, ValueError) as exc:
+            app.logger.warning("Discord %s %s: %s", method, path.split("?")[0], exc)
+            return None, "Could not reach Discord. Try again in a minute.", 0
+    return None, "Discord is busy. Try again in a minute.", 429
+
+
+def discord_http_error(method, path, exc):
+    """(None, a readable error, the HTTP status) from Discord's error answer."""
+    raw = exc.read().decode(errors="replace")
+    try:
+        message = json.loads(raw).get("message") or raw[:200]
+    except ValueError:
+        message = raw[:200]
+    app.logger.warning("Discord %s %s -> %s: %s", method, path.split("?")[0], exc.code, message)
+    return None, f"Discord said ({exc.code}): {message}", exc.code
 
 
 def has_buyer_licence(user):
@@ -3223,8 +3240,11 @@ def discord_callback():
         db().run("UPDATE users SET discord_result = ? WHERE id = ?", f"{utc_stamp()[:16]} UTC: could not add them to the server: {join_error}"[:300], user["id"])
     db().run("INSERT INTO audit_logs (admin_id, action, target, ip_address, created_at) VALUES (?, 'discord_linked', ?, ?, ?)",
              user["id"], f"{name} ({result})", request.remote_addr or "", utc_stamp())
+    if result != "not in server":
+        discord_link_role(discord_id, True)
     if first_link and result != "not in server":
         discord_welcome(discord_id, result == "given")
+        discord_welcome_dm(discord_id, user.get("name") or name)
     return back("linked" if buyer else "linked-no-licence")
 
 
@@ -3236,6 +3256,7 @@ def discord_unlink():
     if user.get("discord_id") and discord_ready():
         cfg = discord_settings()
         discord_call("DELETE", f"/guilds/{cfg['guild_id']}/members/{user['discord_id']}/roles/{cfg['role_id']}")
+        discord_link_role(user["discord_id"], False)
     db().run("UPDATE users SET discord_id = NULL, discord_name = NULL, discord_linked_at = NULL WHERE id = ?", user["id"])
     return jsonify({"ok": True})
 
@@ -3633,7 +3654,7 @@ DISCORD_EMOJI = re.compile(r"^[^\s<>:/\\]{1,16}$")
 def discord_send(channel, b, by="Rotaidem"):
     """Posts one message (and its reactions, pin and publishing). Returns (message id, error, published)."""
     message = discord_message(b, discord_channel_names())
-    sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+    sent, error, hooked = discord_post_message(channel, message, discord_persona(b))
     if error:
         return None, error, False
     mid = sent["id"]
@@ -3648,7 +3669,7 @@ def discord_send(channel, b, by="Rotaidem"):
     summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or (message.get("poll") or {}).get("question", {}).get("text")
                or b.get("text") or "")[:120]
     posts = [{"id": mid, "channel_id": channel, "channel": str(b.get("channel_name") or "")[:100], "summary": summary, "at": utc_stamp(), "by": by,
-              "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping")}}] + discord_posts()
+              "hook": hooked, "draft": {k: b.get(k) for k in ("text", "embed", "buttons", "ping", "persona")}}] + discord_posts()
     set_setting("discord.posts", posts[:50])
     return mid, "", published
 
@@ -3657,7 +3678,7 @@ def discord_posts():
     return get_setting("discord.posts", []) or []
 
 
-DISCORD_POST_FIELDS = ("channel_name", "text", "embed", "buttons", "ping", "poll", "reactions", "pin", "publish")
+DISCORD_POST_FIELDS = ("channel_name", "text", "embed", "buttons", "ping", "poll", "reactions", "pin", "publish", "persona")
 
 
 def discord_scheduled():
@@ -3683,9 +3704,10 @@ def discord_auto(kind, b):
     if not channel:
         return
     try:
-        _, error, _ = discord_send(channel, b, "Automatic")
+        mid, error, _ = discord_send(channel, b, "Automatic")
         if error:
             app.logger.warning("Automatic Discord post (%s): %s", kind, error)
+        return mid
     except Exception:  # noqa: BLE001
         app.logger.exception("Automatic Discord post (%s) failed", kind)
 
@@ -3700,8 +3722,11 @@ def discord_announce_news():
             continue
         set_setting("discord.announced_posts", sorted(done | {post["id"]}))
         done.add(post["id"])
-        discord_auto("news", {"embed": {"title": post["title"], "description": str(post["content"] or "")[:600], "url": "/newsletter",
-                                        "image": post.get("image_url") or ""}, "buttons": [{"label": "Read on rotaidem.com", "url": "/newsletter"}]})
+        mid = discord_auto("news", {"embed": {"title": post["title"], "description": str(post["content"] or "")[:600], "url": "/newsletter",
+                                              "image": post.get("image_url") or ""}, "buttons": [{"label": "Read on rotaidem.com", "url": "/newsletter"}]})
+        if mid and discord_extra()["news_threads"]:  # a thread under the post to talk about it
+            discord_call("POST", f"/channels/{discord_settings()['news_channel']}/messages/{mid}/threads",
+                         payload={"name": ("💬 " + str(post["title"] or "News"))[:100], "auto_archive_duration": 4320})
 
 
 def discord_run_due():
@@ -3842,7 +3867,9 @@ def admin_discord_edit(channel, message_id):
     except ValueError as exc:
         return err(str(exc), 400)
     message.pop("poll", None)  # a poll cannot be changed once it is posted
-    _, error, status = discord_call("PATCH", f"/channels/{channel}/messages/{message_id}", payload=message)
+    old = next((p for p in discord_posts() if p["id"] == message_id), {})
+    path = discord_hook_path(channel, message_id) if old.get("hook") else f"/channels/{channel}/messages/{message_id}"
+    _, error, status = discord_call("PATCH", path or f"/channels/{channel}/messages/{message_id}", payload=message)
     if error:
         return err("That message is gone from Discord" if status == 404 else error, 404 if status == 404 else 502)
     summary = ((message["embeds"][0].get("title") if message["embeds"] else "") or b.get("text") or "")[:120]
@@ -3859,7 +3886,9 @@ def admin_discord_delete(channel, message_id):
         return err("Only the Owner or an Admin can delete Discord posts", 403)
     if not discord_ready() or not SNOWFLAKE.match(channel) or not SNOWFLAKE.match(message_id):
         return err("Message not found", 404)
-    _, error, status = discord_call("DELETE", f"/channels/{channel}/messages/{message_id}")
+    old = next((p for p in discord_posts() if p["id"] == message_id), {})
+    path = (discord_hook_path(channel, message_id) if old.get("hook") else "") or f"/channels/{channel}/messages/{message_id}"
+    _, error, status = discord_call("DELETE", path)
     if error and status != 404:  # already gone from Discord: just forget it here
         return err(error, 502)
     set_setting("discord.posts", [p for p in discord_posts() if p["id"] != message_id])
@@ -3884,7 +3913,8 @@ DISCORD_COMMANDS = [
     {"name": "account", "type": 1, "description": "Your Rotaidem account: orders, licences and settings"},
     {"name": "store", "type": 1, "description": "Where to buy Rotaidem products"},
     {"name": "roadmap", "type": 1, "description": "What Rotaidem is working on next"},
-    {"name": "faq", "type": 1, "description": "Answers to common questions, and the install guide"},
+    {"name": "faq", "type": 1, "description": "Answers to common questions, and the install guide",
+     "options": [{"type": 3, "name": "question", "description": "Pick a question to show its answer", "required": False, "autocomplete": True, "max_length": 100}]},
     {"name": "socials", "type": 1, "description": "Rotaidem's website, reviews and social links"},
     {"name": "help", "type": 1, "description": "What the Rotaidem bot can do"},
 ]
@@ -3946,8 +3976,9 @@ def discord_cmd_licence(event):
                              components=discord_link_row(("My account", "/account")))
     lines = [f"`{r['license_key'][:5]}••••-••••-{r['license_key'][-4:]}` {r['product_id']}: {r['used']}/{r['max_activations']} computers"
              f"{'' if r['status'] == 'active' else ' (revoked)'}" for r in rows[:10]]
-    return discord_reply("Your licences (only you can see this):\n" + "\n".join(lines) + "\nFull keys are under My account.",
-                         components=discord_link_row(("My account", "/account")))
+    return discord_reply("Your licences (only you can see this):\n" + "\n".join(lines) + "\nFull keys are under My account, or press the button.",
+                         components=discord_link_row(("My account", "/account")) + [{"type": 1, "components": [
+                             {"type": 2, "style": 2, "label": "Send me the full keys by DM", "emoji": {"name": "🔑"}, "custom_id": "keys_dm"}]}])
 
 
 def discord_cmd_download(event):
@@ -3994,10 +4025,6 @@ def discord_cmd_roadmap(event):
     return discord_reply("What we're building next:", components=discord_link_row(("Roadmap", "/roadmap"), ("Latest news", "/newsletter")))
 
 
-def discord_cmd_faq(event):
-    return discord_reply("Answers to common questions:", components=discord_link_row(("Help & FAQ", "/support"), ("Install guide", "/installation")))
-
-
 def discord_cmd_socials(event):
     labels = {"discord": "Discord", "youtube": "YouTube", "instagram": "Instagram", "x": "X", "facebook": "Facebook", "twitch": "Twitch", "tiktok": "TikTok"}
     buttons = [{"type": 2, "style": 5, "label": labels.get(k, k), "url": u} for k, u in list((site_config().get("socials") or {}).items())[:5]]
@@ -4011,6 +4038,11 @@ def discord_support_submit(event):
               for c in row.get("components") or []}
     if not values.get("message"):
         return discord_reply("The message was empty, so nothing was sent.")
+    limit = int(discord_extra()["ticket_limit"] or 0)
+    if limit and discord_settings().get("tickets_channel"):
+        mine = ditems("ticket", status="open", member=discord_id, limit=10)
+        if len(mine) >= limit:
+            return discord_reply(f"You already have an open ticket: <#{mine[0]['ref']}>. Please write there, and we will answer as soon as we can.")
     if not discord_claim(f"support.{discord_id}.{int(time.time()) // 600}"):
         return discord_reply("You sent a message a moment ago. We will answer it; please wait a little before sending another.")
     email = (user or {}).get("email") or f"Discord: {name}"
@@ -4043,6 +4075,7 @@ def discord_open_ticket(channel, discord_id, name, subject, message, topic=""):
         close = [{"type": 1, "components": [{"type": 2, "style": 4, "label": "Close ticket", "emoji": {"name": "🔒"}, "custom_id": "close_ticket"},
                                             {"type": 2, "style": 1, "label": "Claim", "emoji": {"name": "🙋"}, "custom_id": "claim_ticket"}]}]
         discord_call("POST", f"/channels/{thread['id']}/messages", payload={"content": body[:2000], "components": close, "allowed_mentions": {"users": [discord_id]}})
+        ditem_add("ticket", {"title": title, "name": str(name)[:80], "topic": topic}, ref=thread["id"], member=discord_id, status="open")
         return True
     except Exception:  # noqa: BLE001 - a member never sees a ticketing problem; the inbox already has the message
         app.logger.exception("Opening ticket thread failed for %s", name)
@@ -4061,9 +4094,9 @@ def discord_close_ticket(event):
 
 DISCORD_HANDLERS = {"status": discord_cmd_status, "version": discord_cmd_version, "licence": discord_cmd_licence, "download": discord_cmd_download,
                     "profile": discord_cmd_profile, "support": discord_cmd_support, "ticket": discord_cmd_ticket, "account": discord_cmd_account,
-                    "store": discord_cmd_store, "roadmap": discord_cmd_roadmap, "faq": discord_cmd_faq, "socials": discord_cmd_socials, "help": discord_cmd_help,
+                    "store": discord_cmd_store, "roadmap": discord_cmd_roadmap, "faq": lambda e: discord_cmd_faq(e), "socials": discord_cmd_socials, "help": discord_cmd_help,
                     "tag": lambda e: discord_cmd_tag(e), "remind": lambda e: discord_cmd_remind(e), "suggest": lambda e: discord_cmd_suggest(e),
-                    "Report to staff": lambda e: discord_cmd_report(e)}
+                    "Report to staff": lambda e: discord_cmd_report(e), "orders": lambda e: discord_cmd_orders(e)}
 
 
 def discord_interaction(event):
@@ -4073,8 +4106,8 @@ def discord_interaction(event):
     discord_count_use(event)
     try:
         cid = str(data.get("custom_id") or "")
-        if event.get("type") == 4:  # Discord asks for suggestions while someone types /tag
-            return discord_tag_autocomplete(event)
+        if event.get("type") == 4:  # Discord asks for suggestions while someone types /tag or /faq
+            return discord_faq_autocomplete(event) if data.get("name") == "faq" else discord_tag_autocomplete(event)
         if event.get("type") == 5:  # a form was sent
             if cid == "support" or cid.startswith("support:"):
                 return discord_support_submit(event)
@@ -4098,6 +4131,12 @@ def discord_interaction(event):
                 return discord_giveaway_enter(event, cid[3:])
             if cid.startswith("form:"):
                 return discord_form_open(event, cid[5:])
+            if cid == "rules_accept":
+                return discord_rules_accept(event)
+            if cid == "keys_dm":
+                return discord_keys_dm(event)
+            if cid.startswith("rate:") and cid.count(":") == 2:
+                return discord_ticket_rate(event, *cid[5:].split(":"))
             return discord_reply("That button is not active any more.")
         if data.get("name") in DISCORD_STAFF_BITS:
             return discord_cmd_staff(event)
@@ -4118,8 +4157,9 @@ def discord_team_message(who, text, source):
 
 
 def discord_welcome(discord_id, buyer):
-    discord_auto("welcome", {"text": f"👋 Welcome <@{discord_id}>!" + (" You have the Verified buyer role: the buyer channels are open." if buyer else
-                                                                      " Type /help to see what the Rotaidem bot can do.")})
+    note = " You have the Verified buyer role: the buyer channels are open." if buyer else " Type /help to see what the Rotaidem bot can do."
+    template = discord_extra()["welcome_text"] or "👋 Welcome {member}!{buyer}"
+    discord_auto("welcome", {"text": discord_render(template, member=f"<@{discord_id}>", buyer=note)[:1900]})
 
 
 def discord_weekly_report():
@@ -4317,11 +4357,11 @@ def snowflake_time(sid):
 # 1-2. Support tickets from the admin: list, read, reply, close (with a transcript in the inbox), reopen
 
 def discord_ticket_transcript(thread_id, title, closed_by):
-    """Keep a closed ticket's conversation in the website inbox (marked handled). Never raises."""
+    """Keep a closed ticket's conversation in the website inbox (marked handled). Returns the text ('' if none). Never raises."""
     try:
         rows, error, _ = discord_call("GET", f"/channels/{thread_id}/messages?limit=100", timeout=8)
         if error or not rows or not discord_claim(f"transcript.{thread_id}.{rows[0]['id']}"):
-            return False
+            return ""
         lines = []
         for m in reversed(rows):
             who = (m.get("author") or {}).get("global_name") or (m.get("author") or {}).get("username") or "?"
@@ -4330,10 +4370,10 @@ def discord_ticket_transcript(thread_id, title, closed_by):
                 lines.append(f"[{snowflake_time(m['id'])[:16]}] {who}: {text}")
         body = f"[Discord ticket, closed by {closed_by}] {title}\n\n" + "\n".join(lines)
         db().run("INSERT INTO messages (name, email, message, handled) VALUES (?, ?, ?, 1)", (title or "Discord ticket")[:100], "Discord ticket", body[:15000])
-        return True
+        return "\n".join(lines)
     except Exception:  # noqa: BLE001 - closing a ticket never fails over the copy
         app.logger.exception("Saving the ticket transcript failed")
-        return False
+        return ""
 
 
 def discord_ticket_close(thread_id, title, by_name):
@@ -4344,8 +4384,11 @@ def discord_ticket_close(thread_id, title, by_name):
             title = (info or {}).get("name") or "Discord ticket"
         discord_call("POST", f"/channels/{thread_id}/messages", payload={
             "content": f"🔒 Ticket closed by **{by_name}**. Open a new one any time with **/support** or the ticket button.", "allowed_mentions": {"parse": []}})
-        discord_ticket_transcript(thread_id, title, by_name)
+        transcript = discord_ticket_transcript(thread_id, title, by_name)
         _, error, _ = discord_call("PATCH", f"/channels/{thread_id}", payload={"archived": True, "locked": True})
+        t = ditem_row(db().first("SELECT * FROM discord_items WHERE kind = 'ticket' AND ref = ? AND status = 'open'", thread_id))
+        if t:  # the rating and the email go out at the next visit (a button answer must be quick)
+            ditem_save(t, status="followup", transcript=transcript[:12000], closed_by=by_name)
         return error
     except Exception:  # noqa: BLE001
         app.logger.exception("Closing ticket failed")
@@ -4432,6 +4475,7 @@ def admin_discord_ticket_action(thread_id, action):
     else:
         _, error, _ = discord_call("PATCH", f"/channels/{thread_id}", payload={"archived": False, "locked": False})
         if not error:
+            db().run("UPDATE discord_items SET status = 'open' WHERE kind = 'ticket' AND ref = ?", thread_id)
             discord_call("POST", f"/channels/{thread_id}/messages", payload={
                 "content": f"🔓 Ticket reopened by **{str(user.get('name') or 'the team')[:60]}**.", "allowed_mentions": {"parse": []}})
     if error:
@@ -5036,6 +5080,7 @@ DISCORD_MEMBER_COMMANDS = [
     {"name": "tag", "type": 1, "description": "Show a saved answer from the Rotaidem team",
      "options": [{"type": 3, "name": "name", "description": "Which answer", "required": True, "autocomplete": True, "max_length": 60},
                  {"type": 6, "name": "for", "description": "Mention someone with it", "required": False}]},
+    {"name": "orders", "type": 1, "description": "Your latest Rotaidem orders (only you see them)"},
     {"name": "remind", "type": 1, "description": "The bot reminds you (by DM) later",
      "options": [{"type": 3, "name": "in", "description": "When: 10m, 2h, 3d or 1w", "required": True, "max_length": 10},
                  {"type": 3, "name": "about", "description": "What about", "required": True, "max_length": 300}]},
@@ -5370,6 +5415,12 @@ def discord_jobs():
             except Exception:  # noqa: BLE001
                 app.logger.exception("Repeating Discord post %s failed", rp["id"])
             ditem_save(rp, due=discord_next_run(rp), sent=int(rp.get("sent") or 0) + 1)  # from now: no catch-up burst after a quiet spell
+    for t in [ditem_row(x) for x in db().all("SELECT * FROM discord_items WHERE kind = 'ticket' AND status = 'followup' LIMIT 5")]:
+        if ditem_take(t["id"], "followup", "closed"):
+            try:
+                discord_ticket_followup(t)
+            except Exception:  # noqa: BLE001
+                app.logger.exception("Ticket follow-up failed")
     if time.time() - float(get_setting("discord.hourly_at", 0) or 0) >= 1800:
         set_setting("discord.hourly_at", time.time())
         discord_update_stats()
@@ -5452,6 +5503,19 @@ def admin_save_discord_extra():
         new["ticket_autoclose_days"] = clamp_int(b.get("ticket_autoclose_days"), 0, 0, 60)
     if "staff_commands" in b:
         new["staff_commands"] = bool(b.get("staff_commands"))
+    for k in ("ticket_rating", "ticket_email", "news_threads"):
+        if k in b:
+            new[k] = bool(b.get(k))
+    if "ticket_limit" in b:
+        new["ticket_limit"] = clamp_int(b.get("ticket_limit"), 1, 0, 5)
+    for k, most in (("welcome_text", 1500), ("welcome_dm", 1500), ("buyer_dm", 1500)):
+        if k in b:
+            new[k] = str(b.get(k) or "").strip()[:most]
+    if "link_role" in b:
+        role = str(b.get("link_role") or "").strip()
+        if role and (not SNOWFLAKE.match(role) or role == discord_settings()["role_id"]):
+            return err("Choose the role from the list (not the buyer role)", 400)
+        new["link_role"] = role
     if "ticket_categories" in b:
         cats = [" ".join(str(c).split())[:80] for c in (b.get("ticket_categories") or []) if str(c).strip()][:25]
         new["ticket_categories"] = list(dict.fromkeys(cats))
@@ -6061,7 +6125,525 @@ def admin_discord_insights():
                     "totals": {"tags": count("tag"), "reminders_waiting": count("reminder", "pending"), "suggestions_open": count("suggestion", "open"),
                                "reports_open": count("report", "open"), "applications_waiting": count("application", "pending"),
                                "warnings": count("warning", "active"), "giveaways_running": count("giveaway", "running"),
-                               "repeating_posts": count("recurring", "active")}})
+                               "repeating_posts": count("recurring", "active")},
+                    "ratings": [int(json.loads(r["data"] or "{}").get("rating") or 0) for r in db().all("SELECT data FROM discord_items WHERE kind = 'ticket'")
+                                if json.loads(r["data"] or "{}").get("rating")]})
+
+
+# ---------- Discord, part 4: AutoMod, safety, welcome, customers, ticket follow-up, personas, templates ----------
+
+DISCORD_EXTRA4 = {"welcome_text": "", "welcome_dm": "", "link_role": "", "rules_role": "", "buyer_dm": "", "ticket_limit": 1,
+                  "ticket_rating": True, "ticket_email": True, "news_threads": False, "personas": []}
+DISCORD_EXTRA.update(DISCORD_EXTRA4)
+AUTOMOD_PREFIX = "Rotaidem: "
+AUTOMOD_KINDS = {"words": "Blocked words", "invites": "Invite links", "mentions": "Mention spam", "spam": "Spam", "presets": "Word lists"}
+AUTOMOD_INVITES = ["*discord.gg/*", "*discord.com/invite/*", "*discordapp.com/invite/*", "*dsc.gg/*"]
+
+
+def discord_render(template, **values):
+    out = str(template or "")
+    for k, v in values.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+
+# --- AutoMod: Discord's own filters, which work all the time without anything running on the website ---
+
+def automod_rules():
+    rows, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}/auto-moderation/rules", timeout=10)
+    return rows or [], error
+
+
+def automod_view(r):
+    meta = r.get("trigger_metadata") or {}
+    kind = next((k for k, v in AUTOMOD_KINDS.items() if r.get("name") == AUTOMOD_PREFIX + v), "")
+    actions = {a.get("type"): a.get("metadata") or {} for a in r.get("actions") or []}
+    return {"id": r.get("id"), "name": r.get("name"), "kind": kind, "enabled": bool(r.get("enabled")), "trigger": r.get("trigger_type"),
+            "words": [w for w in meta.get("keyword_filter") or [] if not (kind == "invites" and w in AUTOMOD_INVITES)],
+            "allow": meta.get("allow_list") or [], "presets": meta.get("presets") or [], "limit": meta.get("mention_total_limit"),
+            "alert": 2 in actions, "timeout": int((actions.get(3) or {}).get("duration_seconds") or 0) // 60, "ours": bool(kind)}
+
+
+@app.get("/api/admin/discord/automod")
+def admin_discord_automod():
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    rows, error = automod_rules()
+    if error:
+        return err(discord_perm_hint(error), 502)
+    return jsonify({"rules": [automod_view(r) for r in rows], "modlog": bool(discord_extra()["modlog_channel"])})
+
+
+@app.post("/api/admin/discord/automod")
+def admin_save_discord_automod():
+    """Create or change one of the website's AutoMod rules (blocked words, invite links, mention spam, spam, word lists)."""
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    b = body()
+    kind = str(b.get("kind") or "")
+    if kind not in AUTOMOD_KINDS:
+        return err("Unknown filter", 400)
+    clean = lambda items, most: [w for w in (" ".join(str(x).split())[:60] for x in (items or [])) if w][:most]  # noqa: E731
+    words, allow = clean(b.get("words"), 1000), clean(b.get("allow"), 100)
+    message = str(b.get("message") or "").strip()[:150] or "This message was blocked by the server's filters."
+    actions = [{"type": 1, "metadata": {"custom_message": message}}]
+    modlog = discord_extra()["modlog_channel"]
+    if b.get("alert", True) and modlog:
+        actions.append({"type": 2, "metadata": {"channel_id": modlog}})
+    minutes = clamp_int(b.get("timeout"), 0, 0, 40320)
+    if minutes and kind in ("words", "mentions"):
+        actions.append({"type": 3, "metadata": {"duration_seconds": minutes * 60}})
+    if kind == "words":
+        if not words:
+            return err("Write at least one word or phrase (one per line). Use * as a wildcard, e.g. *scam*", 400)
+        trigger, meta = 1, {"keyword_filter": words, "allow_list": allow}
+    elif kind == "invites":
+        trigger, meta = 1, {"keyword_filter": AUTOMOD_INVITES, "allow_list": allow}
+    elif kind == "mentions":
+        trigger, meta = 5, {"mention_total_limit": clamp_int(b.get("limit"), 5, 1, 50), "mention_raid_protection_enabled": True}
+    elif kind == "spam":
+        trigger, meta = 3, {}
+        actions = [a for a in actions if a["type"] != 3]
+    else:
+        presets = [p for p in (b.get("presets") or []) if p in (1, 2, 3)]
+        if not presets:
+            return err("Tick at least one list", 400)
+        trigger, meta = 4, {"presets": presets, "allow_list": allow}
+    payload = {"name": AUTOMOD_PREFIX + AUTOMOD_KINDS[kind], "event_type": 1, "trigger_type": trigger, "trigger_metadata": meta,
+               "actions": actions, "enabled": b.get("enabled", True) is not False}
+    rows, error = automod_rules()
+    if error:
+        return err(discord_perm_hint(error), 502)
+    old = next((r for r in rows if r.get("name") == payload["name"]), None)
+    gid = discord_settings()["guild_id"]
+    if old:
+        payload.pop("trigger_type")
+        payload.pop("event_type")
+        rule, error, _ = discord_call("PATCH", f"/guilds/{gid}/auto-moderation/rules/{old['id']}", payload=payload, reason=f"By {user.get('name')}")
+    else:
+        rule, error, _ = discord_call("POST", f"/guilds/{gid}/auto-moderation/rules", payload=payload, reason=f"By {user.get('name')}")
+    if error:
+        return err(discord_perm_hint(error) + (" Discord allows only one Spam, one Word lists and one Mention spam filter per server." if "50035" in error or "maximum" in error.lower() else ""), 502)
+    audit(user, "discord_automod", f"{AUTOMOD_KINDS[kind]} {'on' if payload['enabled'] else 'off'}")
+    return jsonify({"ok": True, "rule": automod_view(rule or {})})
+
+
+@app.delete("/api/admin/discord/automod/<rule_id>")
+def admin_delete_discord_automod(rule_id):
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    if not SNOWFLAKE.match(rule_id):
+        return err("Unknown filter", 404)
+    _, error, _ = discord_call("DELETE", f"/guilds/{discord_settings()['guild_id']}/auto-moderation/rules/{rule_id}", reason=f"By {user.get('name')}")
+    if error:
+        return err(discord_perm_hint(error), 502)
+    audit(user, "discord_automod_delete", rule_id)
+    return jsonify({"ok": True})
+
+
+# --- safety: lockdown, server safety settings, a snapshot of roles and channels ---
+
+@app.get("/api/admin/discord/lockdown")
+def admin_discord_lockdown_state():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify(get_setting("discord.lockdown", {}) or {})
+
+
+@app.post("/api/admin/discord/lockdown")
+def admin_discord_lockdown():
+    """Lock every public text channel at once (a raid, a bad update), and unlock exactly those again."""
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    b, gid, by = body(), discord_settings()["guild_id"], user.get("name") or "Admin"
+    rows, error, _ = discord_call("GET", f"/guilds/{gid}/channels", timeout=10)
+    if error:
+        return err(error, 502)
+    state = get_setting("discord.lockdown", {}) or {}
+    on, done, failed = bool(b.get("on")), [], 0
+    targets = [c for c in rows or [] if c.get("type") in (0, 5)] if on else [c for c in rows or [] if c["id"] in (state.get("channels") or [])]
+    for c in targets:
+        ow = next((o for o in c.get("permission_overwrites") or [] if o.get("id") == gid), {})
+        allow, deny = int(ow.get("allow") or 0), int(ow.get("deny") or 0)
+        if on and (deny & 1024 or deny & DISCORD_SEND == DISCORD_SEND):
+            continue  # hidden from @everyone (staff or buyer channels), or locked already: leave it alone
+        deny = deny | DISCORD_SEND if on else deny & ~DISCORD_SEND
+        allow = allow & ~DISCORD_SEND if on else allow
+        _, e, _ = discord_call("PUT", f"/channels/{c['id']}/permissions/{gid}", payload={"type": 0, "allow": str(allow), "deny": str(deny)},
+                               reason=f"{'Lockdown' if on else 'Lockdown ended'} by {by}")
+        if e:
+            failed += 1
+        else:
+            done.append(c["id"])
+    set_setting("discord.lockdown", {"on": True, "channels": done, "at": utc_stamp(), "by": by} if on else {})
+    note, channel = str(b.get("note") or "").strip()[:500], str(b.get("channel_id") or "")
+    if note and SNOWFLAKE.match(channel):
+        discord_call("POST", f"/channels/{channel}/messages", payload={"content": ("🚨 " if on else "✅ ") + note, "allowed_mentions": {"parse": []}})
+    discord_modlog(f"{'🚨 Lockdown' if on else '✅ Lockdown ended'}: {len(done)} channel(s)", [f"By {by}", note], "#e5484d" if on else "#4cc38a")
+    audit(user, "discord_lockdown", f"{'on' if on else 'off'}: {len(done)} channels, {failed} failed")
+    return jsonify({"ok": True, "channels": len(done), "failed": failed})
+
+
+DISCORD_SAFETY = {"verification_level": (0, 4), "explicit_content_filter": (0, 2), "default_message_notifications": (0, 1)}
+
+
+@app.get("/api/admin/discord/safety")
+def admin_discord_safety():
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    guild, error, _ = discord_call("GET", f"/guilds/{discord_settings()['guild_id']}", timeout=10)
+    if error:
+        return err(error, 502)
+    return jsonify({k: guild.get(k) for k in DISCORD_SAFETY})
+
+
+@app.post("/api/admin/discord/safety")
+def admin_save_discord_safety():
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    b = body()
+    payload = {k: clamp_int(b.get(k), lo, lo, hi) for k, (lo, hi) in DISCORD_SAFETY.items() if k in b}
+    if not payload:
+        return err("Nothing to change", 400)
+    _, error, _ = discord_call("PATCH", f"/guilds/{discord_settings()['guild_id']}", payload=payload, reason=f"By {user.get('name')}")
+    if error:
+        return err(discord_perm_hint(error) + (" (The highest levels may need 2FA on the owner's account.)" if "2FA" in error or "60003" in error else ""), 502)
+    discord_modlog("🛡️ Server safety settings changed", [f"By {user.get('name')}", ", ".join(f"{k} = {v}" for k, v in payload.items())])
+    audit(user, "discord_safety", json.dumps(payload))
+    return jsonify({"ok": True, **payload})
+
+
+@app.get("/api/admin/discord/snapshot")
+def admin_discord_snapshot():
+    """Roles, channels and their permissions as a file: a record to rebuild the server by hand if something goes wrong."""
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    gid = discord_settings()["guild_id"]
+    guild, e1, _ = discord_call("GET", f"/guilds/{gid}", timeout=10)
+    roles, e2, _ = discord_call("GET", f"/guilds/{gid}/roles", timeout=10)
+    channels, e3, _ = discord_call("GET", f"/guilds/{gid}/channels", timeout=10)
+    if e1 or e2 or e3:
+        return err(e1 or e2 or e3, 502)
+    names = {r["id"]: r.get("name") for r in roles or []}
+    cats = {c["id"]: c.get("name") for c in channels or [] if c.get("type") == 4}
+    snap = {"server": (guild or {}).get("name"), "taken": utc_stamp() + " UTC", "by": user.get("name"),
+            "roles": [{k: r.get(k) for k in ("name", "color", "position", "hoist", "mentionable", "permissions", "managed")} for r in sorted(roles or [], key=lambda r: -r.get("position", 0))],
+            "channels": [{"name": c.get("name"), "type": {0: "text", 2: "voice", 4: "category", 5: "announcement", 13: "stage", 15: "forum"}.get(c.get("type"), c.get("type")),
+                          "category": cats.get(c.get("parent_id"), ""), "topic": c.get("topic") or "", "position": c.get("position"),
+                          "slowmode": c.get("rate_limit_per_user") or 0,
+                          "permissions": [{"for": names.get(o["id"], "member " + o["id"]) if o.get("type") == 0 else "member " + o["id"], "allow": o.get("allow"), "deny": o.get("deny")}
+                                          for o in c.get("permission_overwrites") or []]} for c in sorted(channels or [], key=lambda c: (c.get("parent_id") or "", c.get("position", 0)))]}
+    audit(user, "discord_snapshot", f"{len(snap['roles'])} roles, {len(snap['channels'])} channels")
+    return jsonify(snap)
+
+
+# --- members: rules gate, a role for everyone who links, welcome text and DM, thank-you DM to buyers ---
+
+@app.post("/api/admin/discord/rules-gate")
+def admin_discord_rules_gate():
+    user, problem = discord_admin()
+    if problem:
+        return problem
+    b, cfg = body(), discord_settings()
+    channel, role = str(b.get("channel_id") or ""), str(b.get("role_id") or "")
+    rules = str(b.get("rules") or "").strip()[:4000]
+    if not SNOWFLAKE.match(channel) or not rules:
+        return err("Choose the rules channel and write the rules", 400)
+    roles, error, _ = discord_call("GET", f"/guilds/{cfg['guild_id']}/roles", timeout=10)
+    if error:
+        return err(error, 502)
+    if not any(r["id"] == role and discord_role_ok(r, cfg) for r in roles or []):
+        return err("Choose the role people get after accepting (a normal role, not the buyer role)", 400)
+    button = {"type": 2, "style": 3, "label": str(b.get("label") or "I accept the rules")[:80], "emoji": {"name": "✅"}, "custom_id": "rules_accept"}
+    _, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload={
+        "embeds": [{"title": str(b.get("title") or "📜 Server rules")[:256], "description": rules, "color": 0x4CC38A}],
+        "components": [{"type": 1, "components": [button]}], "allowed_mentions": {"parse": []}})
+    if error:
+        return err(discord_perm_hint(error), 502)
+    set_setting("discord.extra", {**discord_extra(), "rules_role": role})
+    audit(user, "discord_rules_gate", channel)
+    return jsonify({"ok": True})
+
+
+def discord_rules_accept(event):
+    role, member = discord_extra()["rules_role"], event.get("member") or {}
+    discord_id = str((member.get("user") or {}).get("id") or "")
+    if not role or not SNOWFLAKE.match(discord_id):
+        return discord_reply("This button is not in use any more.")
+    if role in (member.get("roles") or []):
+        return discord_reply("You accepted the rules already. Welcome! ✈️")
+    _, error, status = discord_call("PUT", f"/guilds/{discord_settings()['guild_id']}/members/{discord_id}/roles/{role}", reason="Accepted the rules")
+    if error:
+        return discord_reply("I could not give you the role. The team has to move the bot's role above it." if status == 403 else "Something went wrong. Try again in a minute.")
+    return discord_reply("✅ Thanks! You can now see the rest of the server. Have a look at /help.")
+
+
+def discord_link_role(discord_id, give):
+    role = discord_extra()["link_role"]
+    if role and discord_ready() and SNOWFLAKE.match(str(discord_id or "")):
+        discord_call("PUT" if give else "DELETE", f"/guilds/{discord_settings()['guild_id']}/members/{discord_id}/roles/{role}", reason="Linked a Rotaidem account")
+
+
+def discord_welcome_dm(discord_id, name):
+    text = discord_extra()["welcome_dm"]
+    if text:
+        discord_dm(discord_id, {"content": discord_render(text, name=name)[:2000], "components": discord_link_row(("My account", "/account"))})
+
+
+def discord_buyer_thanks(user, product_name):
+    """A thank-you DM in Discord after a purchase, for buyers who linked Discord. Never fails the caller."""
+    try:
+        text = discord_extra()["buyer_dm"]
+        if text and user and user.get("discord_id") and discord_ready():
+            discord_dm(user["discord_id"], {"content": discord_render(text, name=user.get("name") or "there", product=product_name)[:2000],
+                                            "components": discord_link_row(("My licence keys", "/account"), ("Install guide", "/installation"))})
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Buyer thank-you DM failed")
+
+
+# --- customers in Discord: /orders, /faq answers, "Send me my keys" ---
+
+def discord_cmd_orders(event):
+    _, _, user = discord_member(event)
+    if not user:
+        return discord_reply("Link your Discord on your Rotaidem account first (My account, Discord).", components=discord_link_row(("My account", "/account#discord")))
+    rows = db().all("SELECT o.amount, o.currency, o.payment_status, o.created_at, o.product_id, p.name FROM orders o LEFT JOIN products p ON p.id = o.product_id "
+                    "WHERE o.customer_id = ? ORDER BY o.id DESC LIMIT 5", user["id"])
+    if not rows:
+        return discord_reply("You have no orders on this account yet.", components=discord_link_row(("Store", "/addons/")))
+    lines = [f"• **{r['name'] or r['product_id']}**: {float(r['amount'] or 0):.2f} {str(r['currency'] or '').upper()}, {r['payment_status'] or ''}, {str(r['created_at'] or '')[:10]}" for r in rows]
+    return discord_reply("Your latest orders (only you can see this):\n" + "\n".join(lines), components=discord_link_row(("All orders", "/account")))
+
+
+def discord_faq_items():
+    return get_setting("site.faq", []) or []
+
+
+def discord_faq_autocomplete(event):
+    typed = str(next((o.get("value") for o in (event.get("data") or {}).get("options") or [] if o.get("focused")), "") or "").lower().strip()
+    items = list(enumerate(discord_faq_items()))
+    hits = [(i, f) for i, f in items if typed in f["q"].lower()] if typed else items
+    return {"type": 8, "data": {"choices": [{"name": f["q"][:100], "value": str(i)} for i, f in hits[:25]]}}
+
+
+def discord_cmd_faq(event):
+    q = str(discord_opts(event).get("question") or "")
+    items = discord_faq_items()
+    if q.isdigit() and int(q) < len(items):
+        f = items[int(q)]
+        return discord_reply(embeds=[{"title": "❓ " + f["q"][:250], "description": f["a"][:4000], "color": 0xAAB6C2}], public=True,
+                             components=discord_link_row(("All questions", "/support")))
+    return discord_reply("Answers to common questions (type /faq and pick a question to show it here):",
+                         components=discord_link_row(("Help & FAQ", "/support"), ("Install guide", "/installation")))
+
+
+def discord_keys_dm(event):
+    discord_id, _, user = discord_member(event)
+    if not user:
+        return discord_reply("Link your Discord on your Rotaidem account first.", components=discord_link_row(("My account", "/account#discord")))
+    if not discord_claim(f"keys.{discord_id}.{int(time.time()) // 600}"):
+        return discord_reply("I sent them a moment ago. Look in your DMs.")
+    rows = db().all("SELECT l.license_key, l.product_id, p.name FROM licenses l LEFT JOIN products p ON p.id = l.product_id "
+                    "WHERE l.status = 'active' AND (l.customer_id = ? OR LOWER(l.email) = ?) ORDER BY l.id DESC LIMIT 20", user["id"], (user.get("email") or "").lower())
+    if not rows:
+        return discord_reply("There are no active licence keys on your account.")
+    text = "🔑 Your Rotaidem licence keys. Keep them private:\n" + "\n".join(f"**{r['name'] or r['product_id']}**: `{r['license_key']}`" for r in rows)
+    error = discord_dm(discord_id, {"content": text[:2000]})
+    return discord_reply("Could not DM you. Allow DMs from server members (Privacy settings) and try again, or see My account." if error else "📬 Sent to your DMs.")
+
+
+# --- ticket follow-up: one open ticket each, a rating, the conversation by email ---
+
+def discord_ticket_followup(t):
+    """After a ticket closed (run from discord_jobs): ask for a rating, and email the conversation to linked members."""
+    ex = discord_extra()
+    if ex["ticket_rating"]:
+        buttons = [{"type": 2, "style": 2, "label": "⭐" * n, "custom_id": f"rate:{t['ref']}:{n}"} for n in range(1, 6)]
+        discord_dm(t["member"], {"content": f"Your Rotaidem ticket **{t.get('title', '')}** is closed. How did we do?", "components": [{"type": 1, "components": buttons}]})
+    acc = db().first("SELECT * FROM users WHERE discord_id = ?", t["member"]) if ex["ticket_email"] else None
+    if acc and acc.get("email") and t.get("transcript") and RESEND_API_KEY:
+        text = f"Here is your support conversation with us, for your records.\n\n{t['transcript'][:12000]}"
+        send_one(acc["email"], "Your Rotaidem support ticket", reply_email_html(acc.get("name"), text, "The Rotaidem team"))
+
+
+def discord_ticket_rate(event, thread_id, stars):
+    discord_id = discord_member(event)[0]
+    t = ditem_row(db().first("SELECT * FROM discord_items WHERE kind = 'ticket' AND ref = ? AND member = ?", thread_id, discord_id))
+    if not t or not stars.isdigit() or not 1 <= int(stars) <= 5:
+        return discord_reply("This rating is not active any more.")
+    if not t.get("rating"):
+        ditem_save(t, rating=int(stars))
+        discord_modlog(f"{'⭐' * int(stars)} for ticket {t.get('title', '')}", [f"<@{discord_id}>"])
+    return {"type": 7, "data": {"content": f"Thanks for your rating: {'⭐' * int(t.get('rating') or stars)}", "components": []}}
+
+
+# --- posting as another name and picture (personas) through a channel webhook ---
+
+def discord_persona(b):
+    personas = discord_extra()["personas"]
+    try:
+        i = int(b.get("persona"))
+    except (TypeError, ValueError):
+        return None
+    return personas[i] if 0 <= i < len(personas) else None
+
+
+def discord_webhook(channel, fresh=False):
+    hooks = get_setting("discord.webhooks", {}) or {}
+    if channel in hooks and not fresh:
+        return hooks[channel], ""
+    made, error, _ = discord_call("POST", f"/channels/{channel}/webhooks", payload={"name": "Rotaidem"})
+    if error:
+        return None, error
+    hooks[channel] = {"id": made["id"], "token": made["token"]}
+    set_setting("discord.webhooks", hooks)
+    return hooks[channel], ""
+
+
+def discord_post_message(channel, message, persona):
+    """(sent message, error, webhook used): through the bot, or through a webhook with a persona's name and picture."""
+    if not persona:
+        sent, error, _ = discord_call("POST", f"/channels/{channel}/messages", payload=message)
+        return sent, error, False
+    for fresh in (False, True):  # a webhook someone deleted in Discord: make a new one once
+        hook, error = discord_webhook(channel, fresh)
+        if error:
+            return None, discord_perm_hint(error), True
+        payload = {**message, "username": persona["name"][:80]}
+        if persona.get("avatar"):
+            payload["avatar_url"] = discord_absolute(persona["avatar"])
+        sent, error, status = discord_call("POST", f"/webhooks/{hook['id']}/{hook['token']}?wait=true&with_components=true", payload=payload)
+        if status != 404:
+            return sent, error, True
+    return None, error, True
+
+
+def discord_hook_path(channel, message_id):
+    hook = (get_setting("discord.webhooks", {}) or {}).get(channel)
+    return f"/webhooks/{hook['id']}/{hook['token']}/messages/{message_id}" if hook else ""
+
+
+@app.post("/api/admin/discord/personas")
+def admin_save_discord_personas():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    out = []
+    for p in (body().get("personas") or [])[:5]:
+        name, avatar = " ".join(str((p or {}).get("name") or "").split())[:80], str((p or {}).get("avatar") or "").strip()
+        if not name or re.search(r"discord|clyde", name, re.I):
+            return err("Each name needs some text, and Discord does not allow the words Discord or Clyde in it", 400)
+        if avatar and not valid_image_url(avatar):
+            return err("The picture must be an uploaded picture or an https:// link", 400)
+        out.append({"name": name, "avatar": avatar})
+    set_setting("discord.extra", {**discord_extra(), "personas": out})
+    audit(user, "discord_personas", ", ".join(p["name"] for p in out) or "none")
+    return jsonify({"ok": True, "personas": out})
+
+
+# --- message templates for the composer ---
+
+@app.get("/api/admin/discord/templates")
+def admin_discord_templates():
+    if not staff_user():
+        return err("Admin only", 403)
+    return jsonify({"templates": get_setting("discord.templates", []) or []})
+
+
+@app.post("/api/admin/discord/templates")
+def admin_save_discord_template():
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    b = body()
+    name = " ".join(str(b.get("name") or "").split())[:60]
+    draft = {k: b.get("draft", {}).get(k) for k in ("text", "embed", "buttons", "ping", "poll", "reactions", "persona")} if isinstance(b.get("draft"), dict) else {}
+    if not name or not draft:
+        return err("Give the template a name", 400)
+    try:
+        discord_message({**draft, "text": draft.get("text") or "·"})  # the same checks as posting
+    except ValueError as exc:
+        return err(str(exc), 400)
+    items = [t for t in get_setting("discord.templates", []) or [] if t["name"].lower() != name.lower()]
+    if len(items) >= 30:
+        return err("Up to 30 templates", 400)
+    set_setting("discord.templates", sorted(items + [{"name": name, "draft": draft}], key=lambda t: t["name"].lower()))
+    audit(user, "discord_template", name)
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/discord/templates")
+def admin_delete_discord_template():
+    name = str(request.args.get("name") or "")
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    set_setting("discord.templates", [t for t in get_setting("discord.templates", []) or [] if t["name"] != name])
+    return jsonify({"ok": True})
+
+
+# --- licence holders who have not linked Discord: invite them by email ---
+
+def discord_unlinked_holders():
+    linked = db().all("SELECT id, email FROM users WHERE discord_id IS NOT NULL AND discord_id <> ''")
+    linked_ids, linked_emails = {u["id"] for u in linked}, {(u["email"] or "").lower() for u in linked}
+    gone = {(r["email"] or "").lower() for r in db().all("SELECT email FROM subscribers WHERE unsubscribed = 1")}
+    out = {}
+    for r in db().all("SELECT l.email, l.customer_id, l.product_id, u.name FROM licenses l LEFT JOIN users u ON u.id = l.customer_id "
+                      "WHERE l.status = 'active' AND l.email IS NOT NULL AND l.email <> ''"):
+        email = r["email"].lower()
+        if email in linked_emails or r["customer_id"] in linked_ids or email in gone or not EMAIL_RE.match(email):
+            continue
+        item = out.setdefault(email, {"email": email, "name": r.get("name") or "", "products": []})
+        if r["product_id"] not in item["products"]:
+            item["products"].append(r["product_id"])
+    invited = {r["key"][len("discord.claim.invite."):] for r in db().all("SELECT key FROM meta WHERE key LIKE ?", "discord.claim.invite.%")}
+    return [{**v, "invited": k in invited} for k, v in sorted(out.items())]
+
+
+@app.get("/api/admin/discord/unlinked")
+def admin_discord_unlinked():
+    if not manager_user():
+        return err("Only the Owner or an Admin can do this", 403)
+    people = discord_unlinked_holders()
+    return jsonify({"people": people[:300], "total": len(people), "waiting": sum(1 for p in people if not p["invited"])})
+
+
+@app.post("/api/admin/discord/unlinked/email")
+def admin_discord_unlinked_email():
+    """Email up to 50 licence holders (not invited before) how to join the Discord and get the buyer role."""
+    user = manager_user()
+    if not user:
+        return err("Only the Owner or an Admin can do this", 403)
+    if not RESEND_API_KEY:
+        return err("Email is not set up (RESEND_API_KEY)", 503)
+    b = body()
+    subject = " ".join(str(b.get("subject") or "").split())[:120] or "Join the Rotaidem Discord"
+    template = str(b.get("text") or "").strip()[:3000] or ("You have a Rotaidem licence, so you can join the buyer-only channels in our Discord: early news, "
+                                                            "help from other pilots and from us.\n\nOpen My account and press Link Discord: {link}")
+    batch, messages = [], []
+    for p in [p for p in discord_unlinked_holders() if not p["invited"]][:50]:
+        if discord_claim("invite." + p["email"]):
+            batch.append(p)
+            text = discord_render(template, link=site_url() + "/account#discord", invite=discord_settings().get("invite_url") or "", name=p["name"] or "there")
+            messages.append({"from": MAIL_FROM, "to": [p["email"]], "subject": subject, "html": reply_email_html(p["name"], text, "The Rotaidem team"),
+                             "reply_to": site_config()["contact_email"]})
+    if not messages:
+        return jsonify({"ok": True, "sent": 0, "left": 0})
+    sent, error = send_batch(messages)
+    if not sent:
+        for p in batch:  # not sent: they can be invited next time
+            db().run("DELETE FROM meta WHERE key = ?", "discord.claim.invite." + p["email"])
+        return err(error or "Sending failed", 502)
+    audit(user, "discord_invite_emails", f"{len(messages)} sent")
+    return jsonify({"ok": True, "sent": len(messages), "left": sum(1 for p in discord_unlinked_holders() if not p["invited"])})
 
 
 # ---------- RotaHub: what the desktop app shows, set in Admin -> RotaHub ----------
