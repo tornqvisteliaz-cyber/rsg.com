@@ -2719,6 +2719,26 @@ class StratoCGITests:
         orders = [o for o in self.ok(self.w.cgi("GET", "/api/admin/orders", token=t))["orders"] if o.get("payment_ref") == sid]
         self.assertEqual(len(orders), 1, "the order stays for the books")
 
+    def test_status_page_checks_once_a_minute(self):
+        first = self.ok(self.w.cgi("GET", "/api/status"))
+        states = {c["id"]: c["state"] for c in first["checks"]}
+        self.assertEqual((states["website"], states["database"]), ("ok", "ok"))
+        self.assertEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], first["checked_at"], "within a minute: the saved answer")
+        staff = self.ok(self.w.cgi("GET", "/api/admin/status", query="refresh=1", token=self.owner_token))
+        self.assertIn("detail", staff["checks"][0])
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if os.path.exists(db_file):  # old checks, but someone else is running them right now: no second run
+            import sqlite3
+            conn = sqlite3.connect(db_file)
+            conn.execute("UPDATE meta SET value = json_set(value, '$.at', 0) WHERE key = 'status.last'")
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('status.running', ?)", (json.dumps(time.time()),))
+            conn.commit()
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], "1970-01-01T00:00:00Z")
+            conn.execute("UPDATE meta SET value = '0' WHERE key = 'status.running'")
+            conn.commit()
+            conn.close()
+            self.assertNotEqual(self.ok(self.w.cgi("GET", "/api/status"))["checked_at"], "1970-01-01T00:00:00Z", "then the next visitor runs them")
+
     def test_privacy_cleanup_and_public_pages(self):
         public = self.w.public
         for page in ("privacy", "terms", "refunds", "cookies"):

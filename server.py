@@ -2501,7 +2501,7 @@ def stripe_mode():
     return "" if not STRIPE_SECRET_KEY else ("test" if "_test_" in STRIPE_SECRET_KEY else "live")
 
 
-def stripe_call(method, path, fields=None, idempotency_key=""):
+def stripe_call(method, path, fields=None, idempotency_key="", timeout=30):
     """Stripe's API with the secret key from config.env. Returns (answer, error text).
     Pass idempotency_key on money-moving POSTs so a retry cannot pay twice."""
     data = urllib.parse.urlencode(fields or {}).encode() if method == "POST" else None
@@ -2511,7 +2511,7 @@ def stripe_call(method, path, fields=None, idempotency_key=""):
         headers["Idempotency-Key"] = idempotency_key
     req = urllib.request.Request(f"{STRIPE_API_URL}{path}", data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode()), ""
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode(errors="replace")
@@ -3132,7 +3132,7 @@ def discord_ready():
     return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN and cfg["guild_id"] and cfg["role_id"])
 
 
-def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20, reason=""):
+def discord_call(method, path, payload=None, form=None, bearer=None, timeout=10, reason="", wait_on_limit=True):
     """Discord's API with the bot token (or a member's OAuth token). Returns (answer, error text, HTTP status)."""
     if form is not None:
         data, kind = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
@@ -3151,12 +3151,12 @@ def discord_call(method, path, payload=None, form=None, bearer=None, timeout=20,
                 raw = resp.read()
                 return (json.loads(raw) if raw else {}), "", resp.status
         except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt == 1:  # rate limited: Discord says how long to wait
+            if exc.code == 429 and attempt == 1 and wait_on_limit:  # rate limited: Discord says how long to wait
                 try:
                     wait = float(json.loads(exc.read().decode(errors="replace")).get("retry_after") or 1)
                 except (ValueError, AttributeError):
                     wait = 1.0
-                if wait <= 5:
+                if wait <= 2:  # longer waits would hold up the website: give up and say so
                     time.sleep(wait)
                     continue
             return discord_http_error(method, path, exc)
@@ -8327,7 +8327,7 @@ def status_downloads():
 def status_checkout():
     if not STRIPE_SECRET_KEY:
         raise StatusOff()
-    _, error = stripe_call("GET", "/v1/balance")
+    _, error = stripe_call("GET", "/v1/balance", timeout=6)
     if error:
         raise RuntimeError(error)
 
@@ -8340,7 +8340,7 @@ def status_email():
 def status_discord():
     if not DISCORD_BOT_TOKEN:
         raise StatusOff()
-    _, error, _ = discord_call("GET", "/users/@me", timeout=8)
+    _, error, _ = discord_call("GET", "/users/@me", timeout=6, wait_on_limit=False)
     if error:
         raise RuntimeError(error)
 
@@ -8381,6 +8381,24 @@ def status_alert(before, checks):
             "buttons": [{"label": "Live status", "url": "/status"}]})
 
 
+def claim_every(key, seconds):
+    """True for one caller at most every `seconds` (one row in meta, swapped atomically: two requests at the same moment cannot both win)."""
+    now = time.time()
+    row = db().first("SELECT value FROM meta WHERE key = ?", key)
+    if not row:
+        try:
+            db().run("INSERT INTO meta (key, value) VALUES (?, ?)", key, json.dumps(now))
+            return True
+        except Exception:  # noqa: BLE001 - another request inserted it a moment ago
+            return False
+    try:
+        if now - float(json.loads(row["value"])) < seconds:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return db().run("UPDATE meta SET value = ? WHERE key = ? AND value = ?", json.dumps(now), key, row["value"]).rowcount == 1
+
+
 def status_run(force=False):
     """The latest checks (run again when older than a minute) and the uptime history."""
     now = time.time()
@@ -8389,6 +8407,10 @@ def status_run(force=False):
     except Exception:  # noqa: BLE001 - database down: check anyway, nothing to compare with
         last, history = None, []
     if last and not force and now - float(last.get("at") or 0) < STATUS_FRESH_SECONDS:
+        return last, history
+    # One visitor a minute runs the checks (some ask Stripe and Discord); the others get the last answer
+    # straight away, so a crowd on /status never piles up slow requests on the shared website process.
+    if last and not force and not claim_every("status.running", STATUS_FRESH_SECONDS):
         return last, history
     checks = []
     for cid, name, fn in STATUS_CHECKS:
