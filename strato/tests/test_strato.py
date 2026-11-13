@@ -2072,8 +2072,8 @@ class StratoCGITests:
             # staff post an "Open a ticket" button; clicking it shows the ticket form (a modal)
             before = len(self.discord.messages)
             self.ok(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets, "text": "Need help?"}, token=t))
-            panel = self.discord.messages[-1][1]
-            self.assertEqual((len(self.discord.messages), panel["components"][0]["components"][0]["custom_id"]), (before + 1, "open_ticket"))
+            posted = [m for ch, m in self.discord.messages[before:] if ch == tickets]  # (queued follow-up DMs may go out in the same visit)
+            self.assertEqual((len(posted), posted[0]["components"][0]["components"][0]["custom_id"]), (1, "open_ticket"))
             opened = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "open_ticket"}, "channel_id": tickets,
                                                 "member": {"user": {"id": "300000000000000079", "username": "Newbie"}}}))
             self.assertEqual((opened["type"], opened["data"]["custom_id"]), (9, "support"), "a support modal opens")
