@@ -220,6 +220,90 @@ link from `setup.py discord` (and Admin → Discord → Invite the bot) asks for
 invited the bot before, open the invite link again or give its role those permissions in Server
 Settings → Roles.
 
+**More tools in Admin → Discord:**
+
+- **Support tickets:** every ticket from `/support` or the ticket button, open and closed. Read it,
+  answer as the team (the bot posts it with your name), close or reopen it. A closed ticket's whole
+  conversation is saved in **Messages** (marked handled), also when it is closed from Discord.
+- **Members & moderation:** find a member by name or ID (you see their website account if linked),
+  then **timeout** (10 minutes to a week), **kick** or **ban**; *Show bans* lists bans with **Unban**.
+  The reason you type shows in Discord's audit log.
+- **Role buttons:** pick roles (e.g. News pings, MSFS 2024) and post buttons; members click to get or
+  remove a role. The buyer role and roles with moderator powers can never be handed out this way.
+- **Your own slash commands:** e.g. `/rules` or `/livery` with your reply and a link button. Saving
+  updates the commands in your server; `/help` lists them too.
+- **Clean up a channel:** delete the last 5 to 100 messages, or only one member's (Discord allows this
+  for messages from the last 14 days).
+- **Channel controls:** slowmode, and **lock / unlock** a channel for @everyone (other permissions of
+  the channel are kept), with an optional note posted in it.
+- **Automation:** check the buyer role for every linked member once a day, and celebrate member
+  milestones (25, 50, 100, 250, 500, 1,000 …) in a channel you choose.
+- **Bot nickname:** what the bot is called in your server.
+
+**Even more (Admin → Discord is split into Post, Support, Moderation, Community, Server, Insights and
+Set-up):**
+
+- **Saved answers** (`/tag`): as many as you like (install, refund, vatsim…). Members start typing and
+  Discord suggests them; `/tag install for:@someone` mentions that person. Uses are counted.
+- **Reminders** (`/remind in:2h about:Group flight`): the bot DMs them when it is time (or pings them in
+  the channel if DMs are closed). Up to 30 days, 10 waiting per member.
+- **Suggestions** (`/suggest`, when a suggestions channel is chosen): posted with 👍 👎; set Planned,
+  Accepted, Declined or Done with a note in the admin, and the post in Discord changes with it.
+- **Report to staff**: right-click any message → Apps → *Report to staff* (when a mod log channel is
+  chosen). It goes to the mod log with a link; the admin lists reports to mark handled.
+- **Forms** (e.g. a beta tester application, up to 5 questions): post its button; answers come to
+  the admin; **Approve** can give a role, and the member gets a DM either way.
+- **Button giveaways**: members press 🎉 Enter (optionally verified buyers only); winners are drawn
+  by themselves when the time is up, with *End now* and *Re-draw*.
+- **Ticket topics, Claim and auto-close**: the ticket panel becomes a topic menu (Technical help,
+  Licence, Billing…), the team can **Claim** a ticket, and tickets with no reply for N days close.
+- **Staff commands in Discord**: `/warn`, `/warnings`, `/timeout`, `/clear`, `/slowmode`, `/lock`,
+  `/unlock` and right-click a member → Apps → *User info* (linked account, licences, warnings).
+  Only members with the matching Discord permission see them.
+- **Warnings**: a DM to the member; at the limit (e.g. 3) they are timed out automatically.
+- **Mod log**: every timeout, kick, ban, warning, clean-up, lock, report, application and giveaway.
+- **Server management**: create roles (always without permissions), rename/recolour/delete them;
+  create channels (optionally only for verified buyers) and delete them; upload custom emojis; list
+  and delete invites; read Discord's audit log.
+- **Live stat channels**: e.g. `👥 Members: {members}` or `✈️ Pilots: {buyers}`, renamed about every
+  30 minutes.
+- **Product roles**: an extra role per product (e.g. *HeavyPro owner*) that follows the licence.
+- **Repeating posts**: every day or every week at a time you choose (e.g. *Screenshot Saturday*).
+- **Give a role to many people**: everyone linked, only licence holders, or only those without.
+- **Insights**: what is waiting for you, the most used commands and buttons, and use per day.
+
+Timed things (reminders, giveaways, repeating posts, stat channels, auto-close) run at the first
+visit to the website after they are due, like scheduled posts.
+
+**📖 Guide (Admin → Discord → Guide):** every feature with *what it does*, *how to set it up* step by
+step and *what members see*, searchable, with a *Take me there* button. Part 4 added:
+
+- **AutoMod** (Discord's own filters, run by Discord all the time): blocked words (with an optional
+  timeout), invite links to other servers, mention spam, Discord's spam filter, and ready-made word
+  lists. Blocked messages are reported in the mod log.
+- **Lockdown**: lock every public channel at once, and open exactly those again.
+- **Server safety settings** (who can talk, picture scanning, default notifications) and a **server
+  snapshot** file with all roles, channels and permissions.
+- **Rules gate**: an *I accept the rules* button that gives a role.
+- **Welcome post and welcome DM** with your own text, a **role for everyone who links**, and a
+  **thank-you DM** to buyers after a purchase.
+- **Invite licence holders** who have not linked Discord, by email (once each, 50 per press).
+- **`/orders`**, **`/faq`** answers from the website FAQ, and a *Send me the full keys by DM*
+  button on `/licence`.
+- Tickets: **one open ticket each**, a **⭐ rating** DM and the **conversation by email** after
+  closing, and **saved answers** inside ticket replies.
+- **Post as another name and picture** (through a channel webhook), **message templates**, and a
+  **discussion thread** under each news post.
+
+The bot also needs **Manage Webhooks** and **Create Public Threads** now: press **Invite the bot**
+again and accept.
+
+These need **Timeout Members**, **Kick Members**, **Ban Members**, **Manage Channels**, **Manage
+Server** (to list invites), **View Audit Log**, **Manage Expressions** (emojis) and **Change
+Nickname** as well. The invite link asks for them; a bot invited earlier: press **Invite the bot**
+again and accept (or give its role those permissions). The bot's role must be above the roles it
+gives and the members it moderates.
+
 ## Affiliate program
 
 Reward people who send you buyers. In **Admin -> Affiliates**, add an affiliate with a short **code**
@@ -241,21 +325,23 @@ visitor arrives with that link and buys (within 30 days), the affiliate earns th
   about affiliates there.
 - This is separate from the Endorsely script; use either or both.
 
-**Automatic payouts (Stripe Connect).** Instead of paying each affiliate by hand, let the site do it:
+**Automatic payouts (PayPal).** Instead of paying each affiliate by hand, let the site do it:
 
-- The affiliate presses **Set up automatic payouts** on their My account page and completes Stripe's
-  onboarding (their name, bank or debit card — you never see it). This uses Stripe Connect, which your
-  account already supports; it adds no new service or monthly cost.
+- One-time set-up: get a **PayPal Payouts** API app (PayPal Developer dashboard → My Apps & Credentials,
+  a Live app with the Payouts feature), then over SSH run `python3 rotaidem/strato/setup.py paypal` and
+  paste its **Client ID** and **Secret**. They are stored in `config.env`, never in Git.
+- The affiliate just enters their **PayPal email** on their My account page — no onboarding, no bank
+  details to you.
 - In **Admin -> Affiliates -> Automatic payouts**, switch **Pay affiliates automatically** on. From then
-  on, each commission is sent **straight to a connected affiliate the moment their referred sale is
-  paid** — automatic and direct, no button to press and no waiting.
-- The **catch-up minimum** only covers affiliates who connect Stripe *after* they have already earned:
+  on, each commission is sent **straight to the affiliate's PayPal the moment their referred sale is
+  paid** — automatic and direct, no button to press.
+- The **catch-up minimum** only covers affiliates who add their PayPal *after* they have already earned:
   the site sweeps up what they are owed above that minimum (weekly, or with **Run payouts now**). Anyone
-  who was already connected is paid instantly, minimum or not.
-- You always receive the full sale first, so your Stripe balance covers the commission. Transfers carry
-  an idempotency key, so a retry can never pay twice. A buyer's success page never fails over a payout —
-  if a transfer cannot be made it stays pending and the next sweep settles it.
-- Affiliates who do not connect Stripe are still paid by hand with **Mark paid** — nothing changes.
+  who already had a PayPal email is paid instantly, minimum or not.
+- You always receive the full sale first, so your balance covers the commission. Each payout carries a
+  `sender_batch_id`, so a retry can never pay twice. A buyer's success page never fails over a payout —
+  if PayPal cannot be reached the commission stays pending and the next run settles it.
+- Affiliates who do not give a PayPal email are still paid by hand with **Mark paid** — nothing changes.
 - STRATO has no always-on cron, so the weekly catch-up happens on the first visit after it is due (the
   same way scheduled Discord posts work).
 

@@ -140,15 +140,66 @@ class FakeStripe:
         self.server.shutdown()
 
 
+class FakePayPal:
+    """Stands in for api-m.paypal.com: an OAuth token and the Payouts endpoint. sender_batch_id is
+    idempotent (a repeat returns the same batch and makes no second payout)."""
+
+    def __init__(self):
+        self.payouts, self.batches = [], {}  # payouts: list of paid items; batches: sender_batch_id -> payout_batch_id
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, data):
+                raw = json.dumps(data).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path == "/v1/oauth2/token":
+                    if not self.headers.get("Authorization", "").startswith("Basic "):
+                        return self.reply(401, {"error": "invalid_client"})
+                    return self.reply(200, {"access_token": "test-token", "token_type": "Bearer", "expires_in": 32400})
+                if self.path == "/v1/payments/payouts":
+                    if self.headers.get("Authorization", "") != "Bearer test-token":
+                        return self.reply(401, {"message": "Authentication failed"})
+                    body = json.loads(raw)
+                    sbid = body["sender_batch_header"]["sender_batch_id"]
+                    if sbid in outer.batches:  # idempotent: same sender_batch_id never pays twice
+                        return self.reply(200, {"batch_header": {"payout_batch_id": outer.batches[sbid], "batch_status": "PENDING"}})
+                    bid = "PB-" + str(len(outer.batches) + 1)
+                    outer.batches[sbid] = bid
+                    for it in body["items"]:
+                        outer.payouts.append({"batch": bid, "receiver": it["receiver"], "amount": it["amount"]["value"], "currency": it["amount"]["currency"]})
+                    return self.reply(200, {"batch_header": {"payout_batch_id": bid, "batch_status": "PENDING", "sender_batch_header": body["sender_batch_header"]}})
+                return self.reply(404, {"message": "not found"})
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self):
+        self.server.shutdown()
+
+
 class FakeDiscord:
     """Stands in for discord.com/api: OAuth2 code exchange, the user, server members and their roles, commands, messages.
     An OAuth2 code "code-<discord id>" belongs to that Discord user."""
     BOT = "Bot bot-token-test"
 
     def __init__(self):
-        self.members, self.commands, self.messages = {}, [], []  # members: {discord id: set of role ids}
+        self.members, self.commands, self.messages, self.threads, self.archived = {}, [], [], [], []  # threads: (parent, id, body); archived: (thread id, {archived,locked})
         self.posted, self.crossposted = {}, []  # message id -> (channel, message) for Post to Discord
         self.reactions, self.pins = [], []
+        self.thread_state, self.overwrites, self.bulk, self.mod, self.reasons, self.bans = {}, {}, [], [], [], {}  # Discord tools
+        self.emojis, self.created, self.deleted = [], [], []  # part 3: emojis, created roles/channels, deleted things
+        self.automod, self.guild_changes, self.hooks, self.hook_calls = {}, [], {}, []  # part 4: AutoMod rules, server settings, webhooks
         self.bot_position = 5  # the bot's role; the buyer role is at 3. Below it, Discord refuses to give the role.
         outer = self
 
@@ -174,8 +225,118 @@ class FakeDiscord:
                 if self.path == "/users/@me" and auth.startswith("Bearer access-"):
                     uid = auth[len("Bearer access-"):]
                     return self.reply(200, {"id": uid, "username": "pilot" + uid[-3:], "global_name": "Pilot " + uid[-3:]})
+                if parts[:1] == ["webhooks"] and len(parts) >= 3:
+                    if parts[1] not in outer.hooks or parts[2] != "hook-token-" + parts[1]:
+                        return self.reply(404, {"message": "Unknown Webhook"})
+                    outer.hook_calls.append((self.command, self.path, json.loads(raw) if raw else None))
+                    if self.command == "POST":
+                        outer.messages.append((outer.hooks[parts[1]], json.loads(raw)))
+                        mid = str(1500000000000000000 + len(outer.messages))
+                        return self.reply(200, {"id": mid})
+                    return self.reply(200, {}) if self.command == "PATCH" else self.reply(204)
                 if auth != FakeDiscord.BOT:
                     return self.reply(401, {"message": "401: Unauthorized"})
+                if self.headers.get("X-Audit-Log-Reason"):
+                    outer.reasons.append(urllib.parse.unquote(self.headers["X-Audit-Log-Reason"]))
+                # --- Discord tools: tickets, members, bans, channels, clean-up ---
+                guild = "1100000000000000001"
+                thread_of = lambda tid: next((t for t in outer.threads if t[1] == tid), None)  # noqa: E731
+                thread_json = lambda t: {"id": t[1], "parent_id": t[0], "type": 12, "name": t[2]["name"], "guild_id": guild,  # noqa: E731
+                                         "message_count": sum(1 for ch, _ in outer.messages if ch == t[1]), "thread_metadata": {"archived": bool(outer.thread_state.get(t[1]))}}
+                # --- part 4: AutoMod, server settings, webhooks (posting as another name), news threads ---
+                if parts[:1] == ["guilds"] and parts[2:3] == ["auto-moderation"]:
+                    if self.command == "GET":
+                        return self.reply(200, list(outer.automod.values()))
+                    if self.command == "DELETE":
+                        outer.automod.pop(parts[4], None)
+                        return self.reply(204)
+                    rule = json.loads(raw)
+                    rid = parts[4] if self.command == "PATCH" else str(1900000000000000000 + len(outer.automod) + len(outer.deleted))
+                    outer.automod[rid] = {**outer.automod.get(rid, {}), **rule, "id": rid}
+                    return self.reply(200, outer.automod[rid])
+                if parts[:1] == ["guilds"] and len(parts) == 2 and self.command == "PATCH":
+                    outer.guild_changes.append(json.loads(raw))
+                    return self.reply(200, {"id": parts[1]})
+                if parts[:1] == ["channels"] and parts[2:] == ["webhooks"] and self.command == "POST":
+                    hid = str(2000000000000000000 + len(outer.hooks))
+                    outer.hooks[hid] = parts[1]
+                    return self.reply(200, {"id": hid, "token": "hook-token-" + hid})
+                if parts[:1] == ["channels"] and len(parts) == 5 and parts[4] == "threads" and self.command == "POST":
+                    outer.created.append(("thread", parts[3], json.loads(raw)))
+                    return self.reply(201, {"id": "1650000000000000000"})
+                # --- part 3: DMs, emojis, invites, audit log, creating roles and channels ---
+                if self.path == "/users/@me/channels" and self.command == "POST":
+                    return self.reply(200, {"id": "dm" + json.loads(raw)["recipient_id"]})
+                if parts[:1] == ["guilds"] and len(parts) >= 3 and parts[2] == "emojis":
+                    if self.command == "GET":
+                        return self.reply(200, outer.emojis)
+                    if self.command == "POST":
+                        e = {"id": str(1800000000000000000 + len(outer.emojis) + len(outer.deleted)), "name": json.loads(raw)["name"], "animated": False}
+                        outer.emojis.append(e)
+                        return self.reply(201, e)
+                    outer.emojis[:] = [e for e in outer.emojis if e["id"] != parts[3]]
+                    outer.deleted.append(("emoji", parts[3]))
+                    return self.reply(204)
+                if parts[:1] == ["guilds"] and parts[2:] == ["invites"]:
+                    return self.reply(200, [{"code": "abcDEF", "channel": {"name": "general"}, "inviter": {"username": "eliaz"}, "uses": 5, "max_uses": 0, "expires_at": None}])
+                if parts[:1] == ["invites"] and self.command == "DELETE":
+                    outer.deleted.append(("invite", parts[1]))
+                    return self.reply(200, {})
+                if parts[:1] == ["guilds"] and parts[2:] == ["audit-logs"]:
+                    return self.reply(200, {"audit_log_entries": [{"id": "1500000000000000001", "user_id": "999", "action_type": 22, "target_id": "300000000000000090", "reason": "Spam"}],
+                                            "users": [{"id": "999", "username": "Rotaidem bot"}, {"id": "300000000000000090", "username": "spammer"}]})
+                if parts[:1] == ["guilds"] and parts[2:] == ["roles"] and self.command == "POST":
+                    outer.created.append(("role", json.loads(raw)))
+                    return self.reply(200, {"id": "1200000000000000099", **json.loads(raw)})
+                if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "roles" and self.command in ("PATCH", "DELETE"):
+                    (outer.created if self.command == "PATCH" else outer.deleted).append(("role", parts[3], json.loads(raw) if raw else None))
+                    return self.reply(200, {}) if self.command == "PATCH" else self.reply(204)
+                if parts[:1] == ["guilds"] and parts[2:] == ["channels"] and self.command == "POST":
+                    outer.created.append(("channel", json.loads(raw)))
+                    return self.reply(201, {"id": "1400000000000000099", "name": json.loads(raw)["name"]})
+                if parts[:1] == ["channels"] and len(parts) == 2 and self.command == "DELETE":
+                    outer.deleted.append(("channel", parts[1]))
+                    return self.reply(200, {})
+                if parts[:1] == ["guilds"] and parts[2:] == ["threads", "active"]:
+                    return self.reply(200, {"threads": [thread_json(t) for t in outer.threads if not outer.thread_state.get(t[1])]})
+                if parts[:1] == ["channels"] and parts[2:] == ["threads", "archived", "private"]:
+                    return self.reply(200, {"threads": [thread_json(t) for t in outer.threads if t[0] == parts[1] and outer.thread_state.get(t[1])]})
+                if parts[:1] == ["channels"] and len(parts) == 2 and self.command == "GET":
+                    t = thread_of(parts[1])
+                    if t:
+                        return self.reply(200, thread_json(t))
+                    return self.reply(200, {"id": parts[1], "type": 0, "name": "general", "guild_id": guild,
+                                            "permission_overwrites": outer.overwrites.get(parts[1], [{"id": guild, "type": 0, "allow": "0", "deny": "1024"}])})
+                if parts[:1] == ["channels"] and parts[2:] == ["messages"] and self.command == "GET":
+                    if parts[1] == "1400000000000000005":  # a busy channel to clean up: 3 recent messages and 1 older than 14 days
+                        now = lambda days: str(int(time.time() * 1000 - days * 86400000 - 1420070400000) << 22)  # noqa: E731
+                        user = lambda uid: {"id": uid, "username": "u" + uid[-2:]}  # noqa: E731
+                        return self.reply(200, [{"id": now(0.01), "author": user("300000000000000091")}, {"id": now(0.02), "author": user("300000000000000092")},
+                                                {"id": now(0.03), "author": user("300000000000000091")}, {"id": now(30), "author": user("300000000000000091")}])
+                    mine = [(str(1500000000000000000 + i + 1), m) for i, (ch, m) in enumerate(outer.messages) if ch == parts[1]]
+                    return self.reply(200, [{"id": mid, "content": m.get("content", ""), "embeds": m.get("embeds") or [], "author": {"id": "999", "username": "Rotaidem bot", "bot": True}}
+                                            for mid, m in reversed(mine)])
+                if parts[:1] == ["channels"] and parts[2:] == ["messages", "bulk-delete"]:
+                    outer.bulk.append((parts[1], json.loads(raw)["messages"]))
+                    return self.reply(204)
+                if parts[:1] == ["channels"] and len(parts) == 4 and parts[2] == "permissions":
+                    outer.overwrites[parts[1]] = [{"id": parts[3], **json.loads(raw)}]
+                    return self.reply(204)
+                if parts[:1] == ["guilds"] and parts[2:] == ["members", "search"]:
+                    return self.reply(200, [{"user": {"id": "300000000000000090", "username": "spammer", "global_name": "Spammy"}, "nick": None,
+                                             "joined_at": "2026-01-01T00:00:00Z", "roles": []}])
+                if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command in ("PATCH", "DELETE"):
+                    outer.mod.append((self.command, parts[3], json.loads(raw) if raw else None))
+                    return self.reply(200, {}) if self.command == "PATCH" else self.reply(204)
+                if parts[:1] == ["guilds"] and len(parts) >= 3 and parts[2] == "bans":
+                    if self.command == "GET":
+                        return self.reply(200, [{"user": {"id": uid, "username": "banned" + uid[-2:]}, "reason": why} for uid, why in outer.bans.items()])
+                    if self.command == "PUT":
+                        outer.bans[parts[3]] = outer.reasons[-1] if outer.reasons else ""
+                        outer.mod.append(("BAN", parts[3], json.loads(raw)))
+                    else:
+                        outer.bans.pop(parts[3], None)
+                    return self.reply(204)
                 if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command == "PUT":
                     data = json.loads(raw)
                     if data.get("access_token") != "access-" + parts[3]:
@@ -187,6 +348,8 @@ class FakeDiscord:
                 if parts[:1] == ["guilds"] and parts[2:] == ["roles"]:
                     return self.reply(200, [{"id": parts[1], "name": "@everyone", "position": 0, "permissions": "1024"},
                                             {"id": "1200000000000000002", "name": "Verified buyer", "position": 3, "permissions": "0"},
+                                            {"id": "1200000000000000003", "name": "News pings", "position": 1, "permissions": "0", "color": 3447003},
+                                            {"id": "1200000000000000004", "name": "Mods", "position": 2, "permissions": str(1 << 1)},
                                             {"id": "1200000000000000009", "name": "Rotaidem bot", "position": outer.bot_position, "permissions": str((1 << 28) | 1)}])
                 if parts[:1] == ["guilds"] and len(parts) == 4 and parts[2] == "members" and self.command == "GET":
                     return self.reply(200, {"roles": ["1200000000000000009"]}) if parts[3] == "999" else self.reply(404, {"message": "Unknown Member"})
@@ -197,8 +360,10 @@ class FakeDiscord:
                         return self.reply(404, {"message": "Unknown Member"})
                     (outer.members[parts[3]].add if self.command == "PUT" else outer.members[parts[3]].discard)(parts[5])
                     return self.reply(204)
-                if parts[:1] == ["applications"] and self.command == "PUT":
+                if parts[:1] == ["applications"] and parts[-1:] == ["commands"] and self.command == "PUT":
                     outer.commands = json.loads(raw)
+                    return self.reply(200, outer.commands)
+                if parts[:1] == ["applications"] and parts[-1:] == ["commands"] and self.command == "GET":
                     return self.reply(200, outer.commands)
                 if parts[:1] == ["guilds"] and parts[2:] == ["channels"]:
                     return self.reply(200, [{"id": "1400000000000000001", "type": 4, "name": "Info", "position": 0},
@@ -216,6 +381,11 @@ class FakeDiscord:
                 if parts[:1] == ["channels"] and len(parts) == 5 and parts[4] == "crosspost":
                     outer.crossposted.append(parts[3])
                     return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and len(parts) == 2 and self.command == "PATCH":  # archive/lock a thread, slowmode
+                    outer.archived.append((parts[1], json.loads(raw)))
+                    if "archived" in json.loads(raw):
+                        outer.thread_state[parts[1]] = json.loads(raw)["archived"]
+                    return self.reply(200, {"id": parts[1], **json.loads(raw)})
                 if parts[:1] == ["channels"] and len(parts) == 4 and self.command in ("PATCH", "DELETE"):
                     if parts[3] not in outer.posted:
                         return self.reply(404, {"message": "Unknown Message"})
@@ -224,6 +394,10 @@ class FakeDiscord:
                         return self.reply(204)
                     outer.posted[parts[3]] = (parts[1], json.loads(raw))
                     return self.reply(200, {"id": parts[3]})
+                if parts[:1] == ["channels"] and parts[-1:] == ["threads"] and self.command == "POST":
+                    tid = str(1600000000000000000 + len(outer.threads))
+                    outer.threads.append((parts[1], tid, json.loads(raw)))  # (parent channel, thread id, body)
+                    return self.reply(201, {"id": tid, **json.loads(raw)})
                 if parts[:1] == ["channels"] and self.command == "POST":
                     outer.messages.append((parts[1], json.loads(raw)))
                     mid = str(1500000000000000000 + len(outer.messages))
@@ -343,7 +517,7 @@ class Webspace:
     """A temporary STRATO-like webspace: rotaidem/ (the program), rotaidem-data/ (private) and
     rotaidem-public/ (the folder the domain shows), as on STRATO's new platform."""
 
-    def __init__(self, db_values, resend_url, stripe_url="", discord_url=""):
+    def __init__(self, db_values, resend_url, stripe_url="", discord_url="", paypal_url=""):
         self.root = tempfile.mkdtemp(prefix="strato-")
         self.app = os.path.join(self.root, "rotaidem")
         os.mkdir(self.app)
@@ -361,6 +535,8 @@ class Webspace:
         if discord_url:
             self.values.update(DISCORD_CLIENT_ID="112233445566778899", DISCORD_CLIENT_SECRET="client-secret-test", DISCORD_BOT_TOKEN="bot-token-test",
                                DISCORD_PUBLIC_KEY=ed25519_keys(DISCORD_SEED)[2].hex(), DISCORD_API_URL=discord_url)
+        if paypal_url:
+            self.values.update(PAYPAL_CLIENT_ID="paypal-id-test", PAYPAL_SECRET="paypal-secret-test", PAYPAL_API_URL=paypal_url)
         if "MYSQL_HOST" not in self.values:
             self.values["DATA_DIR"] = self.data
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import setup; "
@@ -422,7 +598,8 @@ class StratoCGITests:
         cls.resend = FakeResend()
         cls.stripe = FakeStripe()
         cls.discord = FakeDiscord()
-        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url)
+        cls.paypal = FakePayPal()
+        cls.w = Webspace(cls.db_values, cls.resend.url, cls.stripe.url, cls.discord.url, cls.paypal.url)
 
     @classmethod
     def tearDownClass(cls):
@@ -430,6 +607,7 @@ class StratoCGITests:
         cls.resend.stop()
         cls.stripe.stop()
         cls.discord.stop()
+        cls.paypal.stop()
 
     @classmethod
     def login(cls, who, password):
@@ -1546,7 +1724,7 @@ class StratoCGITests:
         self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "x"}, token=buyer).status, 404, "buyer is not an affiliate")
         self.assertEqual(self.w.cgi("POST", "/api/account/affiliate/apply", {}, token=buyer).status, 404, "no self-signup endpoint")
 
-    def test_affiliate_payouts_over_stripe_connect(self):
+    def test_affiliate_payouts_by_paypal(self):
         t = self.owner_token
         self.ok(self.w.cgi("POST", "/api/save-product", {"name": "Pay App", "id": "pay-app", "status": "published", "pay_amount": "100", "pay_currency": "usd"}, token=t))
         partner, partner_email = self.customer("partner")
@@ -1556,37 +1734,34 @@ class StratoCGITests:
         self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer))
         sid = list(self.stripe.sessions)[-1]; self.stripe.pay(sid)
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer, query="session_id=" + sid))
-        # the affiliate starts Stripe onboarding; we get a link and an Express account is created
-        connect = self.ok(self.w.cgi("POST", "/api/account/affiliate/connect", {}, token=partner))
-        self.assertIn("connect.stripe.test/setup/acct_test_", connect["url"])
-        self.assertEqual(len(self.stripe.accounts), 1)
-        acct = list(self.stripe.accounts)[0]
+        # only this affiliate's payouts (other tests share the fake PayPal and the database)
+        mine = lambda: [p for p in self.paypal.payouts if p["receiver"] == "partner@paypal.test"]
+        paid_me = lambda run: [p for p in run["paid"] if p["code"] == "partner"]
         # turn automatic payouts on with a 10.00 minimum
         self.ok(self.w.cgi("POST", "/api/admin/affiliates/settings", {"payouts_on": True, "payout_min": "10"}, token=t))
-        # before onboarding finishes, Stripe cannot pay: a run sends nothing
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
-        self.assertEqual(self.stripe.transfers, [])
-        # the affiliate finishes onboarding (Stripe enables payouts); now a run pays the commission
-        self.stripe.accounts[acct]["payouts_enabled"] = True
-        run = self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))
-        self.assertEqual(run["paid"], [{"code": "partner", "amount": 20.0, "currency": "USD", "transfer": "tr_test_1"}])
-        self.assertEqual(len(self.stripe.transfers), 1)
-        self.assertEqual((self.stripe.transfers[0]["amount"], self.stripe.transfers[0]["destination"]), (2000, acct))
-        self.assertEqual(len(self.stripe.idempotency), 1, "the transfer carried an idempotency key")
+        # no PayPal email yet: partner is not paid
+        self.assertEqual(paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))), [])
+        self.assertEqual(mine(), [])
+        # the affiliate adds their PayPal email; now a run pays the commission there
+        self.ok(self.w.cgi("POST", "/api/account/affiliate/payout", {"payout": "partner@paypal.test"}, token=partner))
+        got = paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t)))
+        self.assertEqual(len(got), 1)
+        self.assertEqual((got[0]["amount"], got[0]["currency"]), (20.0, "USD"))
+        self.assertTrue(got[0]["transfer"].startswith("PB-"), got[0]["transfer"])
+        self.assertEqual([(p["amount"], p["currency"]) for p in mine()], [("20.00", "USD")])
         # the commission is now paid, and the affiliate sees it on My account
         me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
         self.assertEqual((me["pending"]["amount"], me["paid"]["amount"], me["payouts_ready"]), (0, 20.0, True))
         self.assertEqual(me["orders_list"][0]["status"], "paid")
-        # a second run pays nothing and never double-transfers
-        self.assertEqual(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))["paid"], [])
-        self.assertEqual(len(self.stripe.transfers), 1)
-        # with payouts on and the affiliate set up, a NEW referred sale pays instantly and directly:
-        # straight through the moment the sale is paid, no run and no minimum wait
+        # a second run pays nothing more and never double-pays (sender_batch_id is idempotent)
+        self.assertEqual(paid_me(self.ok(self.w.cgi("POST", "/api/admin/affiliates/payout-run", {}, token=t))), [])
+        self.assertEqual(len(mine()), 1)
+        # with payouts on and a PayPal email saved, a NEW referred sale pays instantly, straight to PayPal
         payer2, _ = self.customer("payer2")
         self.ok(self.w.cgi("POST", "/api/checkout/pay-app", {"ref": "partner"}, token=payer2))
         sid2 = list(self.stripe.sessions)[-1]; self.stripe.pay(sid2)
         self.ok(self.w.cgi("GET", "/api/checkout/status", token=payer2, query="session_id=" + sid2))
-        self.assertEqual(len(self.stripe.transfers), 2, "the second commission was paid instantly on the sale")
+        self.assertEqual(len(mine()), 2, "the second commission was paid instantly on the sale")
         me = self.ok(self.w.cgi("GET", "/api/account/affiliate", token=partner))["affiliate"]
         self.assertEqual((me["pending"]["amount"], me["paid"]["amount"]), (0, 40.0))
         self.assertTrue(all(o["status"] == "paid" for o in me["orders_list"]))
@@ -1716,7 +1891,10 @@ class StratoCGITests:
             self.assertGreaterEqual(counts.get("given", 0), 1)
             self.assertEqual(self.discord.members["300000000000000002"], set())
             self.ok(self.w.cgi("POST", "/api/admin/discord/command", token=t))
-            self.assertEqual([c["name"] for c in self.discord.commands], ["verify"])
+            registered = [c["name"] for c in self.discord.commands]
+            self.assertIn("verify", registered)  # the buyer-role command is always registered
+            self.assertTrue({"verify", "status", "version", "licence", "download", "profile", "support", "ticket", "account", "store", "roadmap", "faq", "socials", "help",
+                             "tag", "remind"} <= set(registered))
             self.assertEqual(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "general", "text": "Hi"}, token=t).status, 400)
             self.ok(self.w.cgi("POST", "/api/admin/discord/post", {"channel_id": "1300000000000000003", "text": "Verify here"}, token=t))
             channel, message = self.discord.messages[-1]
@@ -1787,7 +1965,10 @@ class StratoCGITests:
             del self.discord.posted[plain["id"]]  # deleted in Discord by hand: forgotten here too
             self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/1400000000000000002/{plain['id']}", token=t))
             self.assertEqual(mine(), [])
-            self.assertIn("562950222081089", self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"], "the bot may post and embed")
+            invite = self.ok(self.w.cgi("GET", "/api/admin/discord", token=t))["invite_url"]
+            perms = int(invite.split("permissions=")[1].split("&")[0])
+            for bit, name in ((11, "send messages"), (14, "embed links"), (28, "manage roles")):
+                self.assertTrue(perms >> bit & 1, f"the bot invite must grant {name}")
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
 
@@ -1854,6 +2035,640 @@ class StratoCGITests:
         finally:
             self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "updates_channel": "", "news_channel": "", "sales_channel": ""}, token=t))
 
+    def test_discord_support_tickets(self):
+        t, guild, role, tickets = self.owner_token, "1100000000000000001", "1200000000000000002", "1400000000000000002"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            def submit(uid):
+                return {"type": 5, "data": {"custom_id": "support", "components": [
+                    {"type": 1, "components": [{"type": 4, "custom_id": "subject", "value": "Install help"}]},
+                    {"type": 1, "components": [{"type": 4, "custom_id": "message", "value": "HeavyPro won't start"}]}]},
+                    "member": {"user": {"id": uid, "username": "Pilot"}}}
+            # no tickets channel yet: the message goes to the inbox, no thread is opened
+            threads_before = len(self.discord.threads)
+            ans = self.ok(self.discord_call(submit("300000000000000077")))
+            self.assertIn("got your message", ans["data"]["content"])
+            self.assertEqual(len(self.discord.threads), threads_before)
+            self.assertTrue(any("HeavyPro won't start" in m["message"] for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"]))
+            # choose a tickets channel: /support now opens a private thread and pings the member
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "tickets_channel": tickets}, token=t))
+            ans = self.ok(self.discord_call(submit("300000000000000078")))
+            self.assertIn("private ticket thread", ans["data"]["content"])
+            self.assertEqual(len(self.discord.threads), threads_before + 1)
+            parent, tid, tbody = self.discord.threads[-1]
+            self.assertEqual((parent, tbody["type"]), (tickets, 12), "a private thread in the tickets channel")
+            thread_msg = next(m for ch, m in self.discord.messages if ch == tid)
+            self.assertIn("<@300000000000000078>", thread_msg["content"])
+            self.assertIn("HeavyPro won't start", thread_msg["content"])
+            self.assertEqual(thread_msg["allowed_mentions"]["users"], ["300000000000000078"])
+            # the ticket has a Close button
+            self.assertEqual(thread_msg["components"][0]["components"][0]["custom_id"], "close_ticket")
+            # pressing Close archives and locks the thread, and acknowledges silently (type 6)
+            close = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "close_ticket"}, "channel_id": tid,
+                                               "member": {"user": {"id": "300000000000000078", "username": "Pilot"}}}))
+            self.assertEqual(close["type"], 6)
+            self.assertEqual(self.discord.archived[-1], (tid, {"archived": True, "locked": True}))
+            self.assertTrue(any("Ticket closed" in m["content"] for ch, m in self.discord.messages if ch == tid))
+            # staff post an "Open a ticket" button; clicking it shows the ticket form (a modal)
+            before = len(self.discord.messages)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets, "text": "Need help?"}, token=t))
+            posted = [m for ch, m in self.discord.messages[before:] if ch == tickets]  # (queued follow-up DMs may go out in the same visit)
+            self.assertEqual((len(posted), posted[0]["components"][0]["components"][0]["custom_id"]), (1, "open_ticket"))
+            opened = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "open_ticket"}, "channel_id": tickets,
+                                                "member": {"user": {"id": "300000000000000079", "username": "Newbie"}}}))
+            self.assertEqual((opened["type"], opened["data"]["custom_id"]), (9, "support"), "a support modal opens")
+            # a customer cannot post the ticket panel
+            buyer, _ = self.customer("ticketnope")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets}, token=buyer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": ""}, token=t))
+
+    def test_discord_tickets_from_admin(self):
+        t, guild, role, tickets = self.owner_token, "1100000000000000001", "1200000000000000002", "1400000000000000002"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "tickets_channel": tickets}, token=t))
+        try:
+            self.ok(self.discord_call({"type": 5, "data": {"custom_id": "support", "components": [
+                {"type": 1, "components": [{"type": 4, "custom_id": "subject", "value": "Licence move"}]},
+                {"type": 1, "components": [{"type": 4, "custom_id": "message", "value": "New PC, old key"}]}]},
+                "member": {"user": {"id": "300000000000000081", "username": "Mover"}}}))
+            tid = self.discord.threads[-1][1]
+            listed = self.ok(self.w.cgi("GET", "/api/admin/discord/tickets", token=t))
+            mine = next(x for x in listed["tickets"] if x["id"] == tid)
+            self.assertEqual((listed["channel"], mine["open"], mine["name"]), (tickets, True, "🎫 Licence move"))
+            # read it, answer it as the team (the bot posts with the staff member's name)
+            msgs = self.ok(self.w.cgi("GET", f"/api/admin/discord/tickets/{tid}", token=t))["messages"]
+            self.assertIn("New PC, old key", msgs[0]["text"])
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/reply", {"text": "Use Move licence under My account."}, token=t))
+            answer = self.discord.messages[-1]
+            self.assertEqual(answer[0], tid)
+            self.assertIn("(Rotaidem team):\nUse Move licence", answer[1]["content"])
+            self.assertEqual(answer[1]["allowed_mentions"], {"parse": []})
+            # only tickets: another channel is not one, customers cannot read tickets
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord/tickets/1400000000000000003", token=t).status, 404)
+            customer, _ = self.customer("ticketpeek")
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord/tickets", token=customer).status, 403)
+            self.assertEqual(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/close", token=customer).status, 403)
+            # closing: a note, archived and locked, and the whole conversation saved in Messages (handled)
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/close", token=t))
+            self.assertEqual(self.discord.archived[-1], (tid, {"archived": True, "locked": True}))
+            transcript = next(m for m in self.ok(self.w.cgi("GET", "/api/admin/messages", token=t))["messages"] if "[Discord ticket, closed by" in (m["message"] or "") and "Use Move licence" in m["message"])
+            self.assertIn("New PC, old key", transcript["message"])
+            self.assertTrue(transcript["handled"])
+            self.assertEqual(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/reply", {"text": "hello?"}, token=t).status, 400, "closed: reopen first")
+            self.assertFalse(next(x for x in self.ok(self.w.cgi("GET", "/api/admin/discord/tickets", token=t))["tickets"] if x["id"] == tid)["open"])
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/reopen", token=t))
+            self.assertEqual(self.discord.archived[-1], (tid, {"archived": False, "locked": False}))
+            self.assertIn("reopened", self.discord.messages[-1][1]["content"])
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": ""}, token=t))
+
+    def test_discord_role_buttons_and_own_commands(self):
+        t, guild, role, news, mods = self.owner_token, "1100000000000000001", "1200000000000000002", "1200000000000000003", "1200000000000000004"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        try:
+            # only harmless roles can be handed out by a button: not the buyer role, not roles with moderator powers
+            roles = {r["id"] for r in self.ok(self.w.cgi("GET", "/api/admin/discord/roles", token=t))["roles"]}
+            self.assertEqual(roles, {news})
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/role-panel", {"channel_id": "1400000000000000002", "roles": [{"role_id": mods}]}, token=t).status, 400)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/role-panel", {"channel_id": "1400000000000000002", "roles": [{"role_id": role}]}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/role-panel", {"channel_id": "1400000000000000002", "text": "Roles!",
+                                                                             "roles": [{"role_id": news, "label": "News pings", "emoji": "📰"}]}, token=t))
+            button = self.discord.messages[-1][1]["components"][0]["components"][0]
+            self.assertEqual((button["custom_id"], button["label"], button["emoji"]), ("role:" + news, "News pings", {"name": "📰"}))
+            # a member clicks: they get the role; clicking again removes it
+            uid = "300000000000000085"
+            self.discord.members[uid] = set()
+            click = lambda has: self.ok(self.discord_call({"type": 3, "data": {"custom_id": "role:" + news},  # noqa: E731
+                                                            "member": {"user": {"id": uid, "username": "Reader"}, "roles": [news] if has else []}}))
+            self.assertIn("You now have **News pings**", click(False)["data"]["content"])
+            self.assertIn(news, self.discord.members[uid])
+            self.assertIn("Removed", click(True)["data"]["content"])
+            self.assertNotIn(news, self.discord.members[uid])
+            forged = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "role:" + mods}, "member": {"user": {"id": uid}, "roles": []}}))
+            self.assertIn("not in use", forged["data"]["content"])
+            self.assertNotIn(mods, self.discord.members[uid])
+            # the admin's own slash commands: checked, registered with the built-in ones, answered by the bot
+            bad = [[{"name": "help", "description": "x", "reply": "x"}], [{"name": "Bad Name", "description": "x", "reply": "x"}],
+                   [{"name": "rules", "description": "x", "reply": ""}], [{"name": "rules", "description": "x", "reply": "x", "button_url": "javascript:alert(1)", "button_label": "x"}]]
+            for commands in bad:
+                self.assertEqual(self.w.cgi("POST", "/api/admin/discord/custom-commands", {"commands": commands}, token=t).status, 400, commands)
+            saved = self.ok(self.w.cgi("POST", "/api/admin/discord/custom-commands", {"commands": [
+                {"name": "/Rules", "description": "Our server rules", "reply": "Be kind. No piracy.", "button_label": "Full rules", "button_url": "/rules", "public": True}]}, token=t))
+            self.assertTrue(saved["registered"])
+            self.assertEqual(saved["commands"][0]["name"], "rules")
+            self.assertIn("rules", {c["name"] for c in self.discord.commands})
+            self.assertIn("verify", {c["name"] for c in self.discord.commands})
+            ans = self.ok(self.discord_call({"type": 2, "data": {"name": "rules"}, "member": {"user": {"id": uid}}}))["data"]
+            self.assertEqual((ans["content"], ans["components"][0]["components"][0]["url"]), ("Be kind. No piracy.", "https://rotaidem.test/rules"))
+            self.assertNotIn("flags", ans, "public: everyone sees the answer")
+            self.assertIn("/rules", self.ok(self.discord_call({"type": 2, "data": {"name": "help"}, "member": {"user": {"id": uid}}}))["data"]["content"])
+            self.assertTrue(self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))["ok"], "the set-up check counts the admin's commands too")
+            customer, _ = self.customer("cmdmaker")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/custom-commands", {"commands": []}, token=customer).status, 403)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/role-panel", {"channel_id": "1400000000000000002"}, token=customer).status, 403)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/custom-commands", {"commands": []}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
+
+    def test_discord_moderation_channels_and_automation(self):
+        t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "welcome_channel": "1400000000000000003"}, token=t))
+        try:
+            found = self.ok(self.w.cgi("GET", "/api/admin/discord/members", query="q=spam", token=t))["members"]
+            self.assertEqual((found[0]["id"], found[0]["name"], found[0]["account"]), ("300000000000000090", "Spammy", None))
+            spammer = "300000000000000090"
+            mod = lambda action, **extra: self.w.cgi("POST", "/api/admin/discord/moderate", {"member_id": spammer, "action": action, "reason": "Spam links", **extra}, token=t)  # noqa: E731
+            self.ok(mod("timeout", minutes=60))
+            method, who, change = self.discord.mod[-1]
+            self.assertEqual((method, who), ("PATCH", spammer))
+            self.assertGreater(change["communication_disabled_until"], time.strftime("%Y-%m-%dT%H:%M", time.gmtime()))
+            self.assertIn("Spam links", self.discord.reasons[-1], "the reason is in Discord's audit log")
+            self.ok(mod("untimeout"))
+            self.assertEqual(self.discord.mod[-1][2], {"communication_disabled_until": None})
+            self.ok(mod("kick"))
+            self.assertEqual(self.discord.mod[-1][:2], ("DELETE", spammer))
+            self.ok(mod("ban", delete_messages=True))
+            self.assertEqual(self.discord.mod[-1], ("BAN", spammer, {"delete_message_seconds": 86400}))
+            self.assertIn(spammer, [b["id"] for b in self.ok(self.w.cgi("GET", "/api/admin/discord/bans", token=t))["bans"]])
+            self.ok(mod("unban"))
+            self.assertNotIn(spammer, self.discord.bans)
+            self.assertEqual(mod("explode").status, 400)
+            customer, _ = self.customer("wannabemod")
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/moderate", {"member_id": spammer, "action": "ban"}, token=customer).status, 403)
+            self.assertEqual(self.w.cgi("GET", "/api/admin/discord/members", query="q=spam", token=customer).status, 403)
+            # clean-up: only one member's messages, and never ones older than 14 days
+            busy = "1400000000000000005"
+            r = self.ok(self.w.cgi("POST", "/api/admin/discord/purge", {"channel_id": busy, "count": 10, "member_id": "300000000000000091"}, token=t))
+            self.assertEqual((r["deleted"], r["too_old"], len(self.discord.bulk[-1][1])), (2, 1, 2))
+            r = self.ok(self.w.cgi("POST", "/api/admin/discord/purge", {"channel_id": busy, "count": 3}, token=t))
+            self.assertEqual((r["deleted"], r["too_old"]), (3, 0))
+            # channel controls: slowmode, lock keeps the other permissions (here: View Channel denied), unlock
+            general = "1400000000000000002"
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/channel/{general}", {"slowmode": 30}, token=t))
+            self.assertEqual(self.discord.archived[-1], (general, {"rate_limit_per_user": 30}))
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/channel/{general}", {"locked": True, "note": "Paused for the update"}, token=t))
+            self.assertEqual(self.discord.overwrites[general][0], {"id": guild, "type": 0, "allow": "0", "deny": str(1024 | 2048 | (1 << 38))})
+            self.assertEqual(self.discord.messages[-1], (general, {"content": "🔒 Paused for the update", "allowed_mentions": {"parse": []}}))
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/channel/{general}", {"locked": False}, token=t))
+            self.assertEqual(self.discord.overwrites[general][0]["deny"], "1024")
+            # the bot's nickname in the server
+            self.ok(self.w.cgi("POST", "/api/admin/discord/nickname", {"nickname": "  Rotaidem   Tower "}, token=t))
+            self.assertEqual(self.discord.mod[-1], ("PATCH", "@me", {"nick": "Rotaidem Tower"}))
+            # automation: turning milestones on skips the ones already passed (the server has 128 members)
+            auto = self.ok(self.w.cgi("POST", "/api/admin/discord/automation", {"auto_sync": True, "milestones": True}, token=t))
+            self.assertEqual((auto["auto_sync"], auto["milestones"], auto["nickname"]), (True, True, "Rotaidem Tower"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/automation", token=t))["milestone_last"], 100)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/automation", {"milestone_channel": "nope"}, token=t).status, 400)
+            db_file = os.path.join(self.w.data, "rotaidem.db")
+            if os.path.exists(db_file):  # as if the last milestone was 50 and an hour passed: the next visit celebrates 100
+                import sqlite3
+                conn = sqlite3.connect(db_file)
+                for key, value in (("discord.milestone_last", "50"), ("discord.milestone_checked", "0"), ("discord.checked", "0")):
+                    conn.execute("UPDATE meta SET value = ? WHERE key = ?", (value, key))
+                conn.commit()
+                conn.close()
+                self.ok(self.w.cgi("GET", "/api/site"))
+                post = self.discord.messages[-1]
+                self.assertEqual((post[0], post[1]["embeds"][0]["title"]), ("1400000000000000003", "🎉 100 members!"))
+                state = self.ok(self.w.cgi("GET", "/api/admin/discord/automation", token=t))
+                self.assertEqual((state["milestone_last"], state["autosync"]["day"], state["autosync"]["done"]), (100, time.strftime("%Y-%m-%d", time.gmtime()), True))
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automation", {"auto_sync": False, "milestones": False}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "welcome_channel": ""}, token=t))
+
+    def due_now(self, *keys):
+        """SQLite only: as if time passed, so the next visit runs what is due. False on MySQL (those checks are skipped)."""
+        db_file = os.path.join(self.w.data, "rotaidem.db")
+        if not os.path.exists(db_file):
+            return False
+        import sqlite3
+        conn = sqlite3.connect(db_file)
+        conn.execute("UPDATE discord_items SET due = '2001-01-01 00:00:00' WHERE kind IN ('reminder', 'recurring', 'giveaway') AND status IN ('pending', 'active')")
+        for key in ("discord.checked",) + keys:
+            conn.execute("UPDATE meta SET value = '0' WHERE key = ?", (key,))
+        conn.commit()
+        conn.close()
+        self.ok(self.w.cgi("GET", "/api/site"))
+        return True
+
+    def test_discord_bot_member_features(self):
+        t, guild, role, news = self.owner_token, "1100000000000000001", "1200000000000000002", "1200000000000000003"
+        sugg, modlog, general = "1400000000000000006", "1400000000000000007", "1400000000000000002"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role}, token=t))
+        uid, uid2 = "300000000000000101", "300000000000000102"
+        member = lambda who=uid, perms="0": {"user": {"id": who, "username": "pilot" + who[-3:]}, "roles": [], "permissions": perms}  # noqa: E731
+        try:
+            saved = self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"suggestions_channel": sugg, "modlog_channel": modlog}, token=t))
+            self.assertTrue(saved["registered"])
+            names = {c["name"] for c in self.discord.commands}
+            self.assertTrue({"tag", "remind", "suggest", "Report to staff", "warn", "User info"} <= names)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/extra", {"modlog_channel": "general"}, token=t).status, 400)
+
+            # saved answers: as many as you like, picked with autocomplete, shown to everyone
+            for bad in ({"name": "Bad!", "text": "x"}, {"name": "x", "text": ""}, {"name": "x", "text": "y", "button_url": "ftp://x", "button_label": "x"}):
+                self.assertEqual(self.w.cgi("POST", "/api/admin/discord/tags", bad, token=t).status, 400, bad)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/tags", {"name": "Install", "text": "Get RotaHub, then press Install.", "button_label": "Guide", "button_url": "/installation"}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord/tags", {"name": "refund", "text": "Refunds within 14 days."}, token=t))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/tags", {"name": "install", "text": "again"}, token=t).status, 400, "names are unique")
+            choices = self.ok(self.discord_call({"type": 4, "data": {"name": "tag", "options": [{"name": "name", "value": "ins", "focused": True}]}, "member": member()}))
+            self.assertEqual((choices["type"], [c["value"] for c in choices["data"]["choices"]]), (8, ["install"]))
+            ans = self.ok(self.discord_call({"type": 2, "data": {"name": "tag", "options": [{"name": "name", "value": "install"}, {"name": "for", "value": uid2}]}, "member": member()}))["data"]
+            self.assertEqual(ans["content"], f"<@{uid2}> Get RotaHub, then press Install.")
+            self.assertEqual((ans["allowed_mentions"]["users"], ans["components"][0]["components"][0]["url"]), ([uid2], "https://rotaidem.test/installation"))
+            self.assertNotIn("flags", ans)
+            tags = {x["ref"]: x for x in self.ok(self.w.cgi("GET", "/api/admin/discord/tags", token=t))["tags"]}
+            self.assertEqual(tags["install"]["uses"], 1)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/tags", {"id": tags["refund"]["id"], "name": "refunds", "text": "Refunds within 14 days of buying."}, token=t))
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/tags/{tags['install']['id']}", token=t))
+            self.assertEqual([x["ref"] for x in self.ok(self.w.cgi("GET", "/api/admin/discord/tags", token=t))["tags"]], ["refunds"])
+
+            # reminders: checked, and delivered by DM when due
+            self.assertIn("10m", self.ok(self.discord_call({"type": 2, "data": {"name": "remind", "options": [{"name": "in", "value": "soon"}, {"name": "about", "value": "x"}]}, "member": member()}))["data"]["content"])
+            ans = self.ok(self.discord_call({"type": 2, "data": {"name": "remind", "options": [{"name": "in", "value": "2h"}, {"name": "about", "value": "Group flight"}]},
+                                             "member": member(), "channel_id": general}))["data"]
+            self.assertIn("<t:", ans["content"])
+            if self.due_now():
+                self.assertTrue(any(ch == "dm" + uid and "Group flight" in m["content"] for ch, m in self.discord.messages), "the reminder came by DM")
+
+            # suggestions: a form, then a post to vote on; the team sets its status
+            modal = self.ok(self.discord_call({"type": 2, "data": {"name": "suggest"}, "member": member()}))
+            self.assertEqual((modal["type"], modal["data"]["custom_id"]), (9, "suggest"))
+            self.ok(self.discord_call({"type": 5, "data": {"custom_id": "suggest", "components": [{"type": 1, "components": [{"type": 4, "custom_id": "idea", "value": "A Q400 profile please"}]}]}, "member": member()}))
+            channel, post = self.discord.messages[-1]
+            self.assertEqual((channel, post["embeds"][0]["description"]), (sugg, "A Q400 profile please"))
+            self.assertTrue({"👍", "👎"} <= {e for _, e in self.discord.reactions[-2:]})
+            s = self.ok(self.w.cgi("GET", "/api/admin/discord/suggestions", token=t))["suggestions"][0]
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/suggestions/{s['id']}", {"status": "accepted", "note": "Coming in 1.2"}, token=t))
+            mid = next(k for k, v in self.discord.posted.items() if v[0] == sugg and v[1].get("embeds") and "Q400" in v[1]["embeds"][0]["description"])
+            self.assertEqual(self.discord.posted[mid][1]["embeds"][0]["fields"][0]["value"], "✅ Accepted: Coming in 1.2")
+
+            # Report to staff (right-click a message): into the mod log with a link, listed for the team
+            msg_id = "1500000000000000777"
+            report = {"type": 2, "guild_id": guild, "channel_id": general, "member": member(uid2), "data": {"type": 3, "name": "Report to staff", "target_id": msg_id, "resolved": {
+                "messages": {msg_id: {"id": msg_id, "channel_id": general, "content": "cheap keys here", "author": {"id": "300000000000000090", "username": "spammer"}}}}}}
+            self.assertIn("got your report", self.ok(self.discord_call(report))["data"]["content"])
+            self.assertIn("already", self.ok(self.discord_call(report))["data"]["content"])
+            log_ch, log = self.discord.messages[-1]
+            self.assertEqual((log_ch, log["components"][0]["components"][0]["url"]), (modlog, f"https://discord.com/channels/{guild}/{general}/{msg_id}"))
+            rep = self.ok(self.w.cgi("GET", "/api/admin/discord/suggestions", token=t))["reports"][0]
+            self.assertEqual((rep["author"], rep["text"], rep["status"]), ("spammer", "cheap keys here", "open"))
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/reports/{rep['id']}", {"resolved": True}, token=t))
+
+            # forms: a button opens the questions; the team approves: the role and a DM
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/forms", {"title": "Beta", "questions": []}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/forms", {"title": "Beta tester", "role_id": news,
+                                                                      "questions": [{"label": "Which aircraft do you fly?"}, {"label": "Why you?", "long": True}]}, token=t))
+            form = self.ok(self.w.cgi("GET", "/api/admin/discord/forms", token=t))["forms"][0]
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/forms/{form['id']}/post", {"channel_id": general}, token=t))
+            self.assertEqual(self.discord.messages[-1][1]["components"][0]["components"][0]["custom_id"], "form:" + form["id"])
+            self.discord.members[uid] = set()
+            opened = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "form:" + form["id"]}, "member": member()}))
+            self.assertEqual((opened["type"], len(opened["data"]["components"]), opened["data"]["components"][1]["components"][0]["style"]), (9, 2, 2))
+            sent = {"type": 5, "data": {"custom_id": "form:" + form["id"], "components": [
+                {"type": 1, "components": [{"type": 4, "custom_id": "q0", "value": "PMDG 737"}]}, {"type": 1, "components": [{"type": 4, "custom_id": "q1", "value": "I test a lot"}]}]}, "member": member()}
+            self.assertIn("Thanks", self.ok(self.discord_call(sent))["data"]["content"])
+            self.assertIn("already sent", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "form:" + form["id"]}, "member": member()}))["data"]["content"])
+            app = self.ok(self.w.cgi("GET", "/api/admin/discord/forms", token=t))["applications"][0]
+            self.assertEqual([a["a"] for a in app["answers"]], ["PMDG 737", "I test a lot"])
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/applications/{app['id']}", {"action": "approve", "note": "Welcome!"}, token=t))
+            self.assertIn(news, self.discord.members[uid])
+            self.assertTrue(any(ch == "dm" + uid and "approved" in m["content"] for ch, m in self.discord.messages))
+            self.assertEqual(self.w.cgi("POST", f"/api/admin/discord/applications/{app['id']}", {"action": "decline"}, token=t).status, 400, "handled once")
+
+            # button giveaways: enter once, winners drawn, re-draw picks someone else
+            self.ok(self.w.cgi("POST", "/api/admin/discord/giveaways", {"channel_id": general, "prize": "HeavyPro licence", "hours": 1, "winners": 1}, token=t))
+            gw = self.ok(self.w.cgi("GET", "/api/admin/discord/giveaways", token=t))["giveaways"][0]
+            self.assertEqual(self.discord.posted[gw["message"]][1]["components"][0]["components"][0]["custom_id"], "gw:" + gw["id"])
+            for who in (uid, uid2):
+                self.assertIn("You are in", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "gw:" + gw["id"]}, "member": member(who)}))["data"]["content"])
+            self.assertIn("already in", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "gw:" + gw["id"]}, "member": member()}))["data"]["content"])
+            first = self.ok(self.w.cgi("POST", f"/api/admin/discord/giveaways/{gw['id']}/end", token=t))["winners"]
+            self.assertEqual(len(first), 1)
+            self.assertIn(first[0], (uid, uid2))
+            self.assertTrue(self.discord.posted[gw["message"]][1]["components"][0]["components"][0]["disabled"])
+            self.assertIn(f"<@{first[0]}>", self.discord.messages[-2][1]["content"] if "Giveaway" in str(self.discord.messages[-1]) else self.discord.messages[-1][1]["content"])
+            again = self.ok(self.w.cgi("POST", f"/api/admin/discord/giveaways/{gw['id']}/reroll", token=t))["winners"]
+            self.assertEqual(again, [uid2 if first[0] == uid else uid])
+            self.assertIn("ended", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "gw:" + gw["id"]}, "member": member("300000000000000103")}))["data"]["content"])
+
+            usage = self.ok(self.w.cgi("GET", "/api/admin/discord/insights", token=t))
+            self.assertGreaterEqual(usage["usage"].get("/tag", 0), 1)
+            self.assertGreaterEqual(usage["usage"].get("gw", 0), 2)
+            customer, _ = self.customer("botfan")
+            for path in ("/api/admin/discord/tags", "/api/admin/discord/forms", "/api/admin/discord/giveaways", "/api/admin/discord/extra"):
+                self.assertEqual(self.w.cgi("POST", path, {}, token=customer).status, 403, path)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"suggestions_channel": "", "modlog_channel": ""}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": ""}, token=t))
+
+    def test_discord_staff_and_server_tools(self):
+        t, guild, role, news = self.owner_token, "1100000000000000001", "1200000000000000002", "1200000000000000003"
+        modlog, general, busy, tickets = "1400000000000000007", "1400000000000000002", "1400000000000000005", "1400000000000000008"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "tickets_channel": tickets, "welcome_channel": "1400000000000000003"}, token=t))
+        spammer, mod_id = "300000000000000090", "300000000000000201"
+        staff = lambda perms: {"user": {"id": mod_id, "username": "mod"}, "roles": [], "permissions": str(perms)}  # noqa: E731
+        resolved = {"users": {spammer: {"id": spammer, "username": "spammer"}}, "members": {spammer: {"nick": "Spammy", "joined_at": "2026-01-01T00:00:00Z"}}}
+        try:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"modlog_channel": modlog, "warn_limit": 2, "warn_timeout_minutes": 60}, token=t))
+            warn = lambda perms: self.discord_call({"type": 2, "channel_id": general, "member": staff(perms), "data": {"name": "warn", "resolved": resolved,  # noqa: E731
+                                                                                                                      "options": [{"name": "member", "value": spammer}, {"name": "reason", "value": "Spam links"}]}})
+            self.assertIn("staff command", self.ok(warn(0))["data"]["content"], "members without Timeout Members cannot warn")
+            self.assertIn("1 warning", self.ok(warn(1 << 40))["data"]["content"])
+            self.assertTrue(any(ch == "dm" + spammer and "Spam links" in m["content"] for ch, m in self.discord.messages), "the member gets a DM")
+            before = len(self.discord.mod)
+            self.assertIn("timed out", self.ok(warn(8))["data"]["content"], "an Administrator may too; the 2nd warning times them out")
+            self.assertEqual(self.discord.mod[before][:2], ("PATCH", spammer))
+            self.assertTrue(any(ch == modlog and "Warning for Spammy" in m["embeds"][0]["title"] for ch, m in self.discord.messages if m.get("embeds")))
+            listed = self.ok(self.discord_call({"type": 2, "member": staff(1 << 40), "data": {"name": "warnings", "resolved": resolved, "options": [{"name": "member", "value": spammer}]}}))
+            self.assertIn("2 active warning", listed["data"]["content"])
+            warnings = self.ok(self.w.cgi("GET", "/api/admin/discord/warnings", token=t))["warnings"]
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/warnings/{warnings[0]['id']}", token=t))
+            self.assertEqual(len(self.ok(self.w.cgi("GET", "/api/admin/discord/warnings", query="member=" + spammer, token=t))["warnings"]), 1)
+            # /clear, /lock and right-click User info in Discord
+            self.assertIn("Deleted 3", self.ok(self.discord_call({"type": 2, "channel_id": busy, "member": staff(8192), "data": {"name": "clear", "options": [{"name": "count", "value": 5}]}}))["data"]["content"])
+            self.assertIn("staff command", self.ok(self.discord_call({"type": 2, "channel_id": general, "member": staff(8192), "data": {"name": "lock"}}))["data"]["content"])
+            self.assertIn("Locked", self.ok(self.discord_call({"type": 2, "channel_id": general, "member": staff(16), "data": {"name": "lock"}}))["data"]["content"])
+            self.assertTrue(int(self.discord.overwrites[general][0]["deny"]) & 2048)
+            self.ok(self.discord_call({"type": 2, "channel_id": general, "member": staff(16), "data": {"name": "unlock"}}))
+            info = self.ok(self.discord_call({"type": 2, "member": staff(1 << 40), "data": {"type": 2, "name": "User info", "target_id": spammer, "resolved": resolved}}))["data"]
+            self.assertIn("Active warnings: 1", info["embeds"][0]["description"])
+            self.assertEqual(info["flags"], 64)
+
+            # ticket topics: a menu on the panel, the topic in the thread name, and a Claim button for the team
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"ticket_categories": ["Install", "Licence", " ", "Install"]}, token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/extra", token=t))["ticket_categories"], ["Install", "Licence"])
+            self.ok(self.w.cgi("POST", "/api/admin/discord/ticket-panel", {"channel_id": tickets}, token=t))
+            menu = self.discord.messages[-1][1]["components"][0]["components"][0]
+            self.assertEqual((menu["type"], [o["label"] for o in menu["options"]]), (3, ["Install", "Licence"]))
+            modal = self.ok(self.discord_call({"type": 3, "data": {"custom_id": "ticket_cat", "component_type": 3, "values": ["1"]}, "member": staff(0)}))
+            self.assertEqual((modal["data"]["custom_id"], modal["data"]["title"]), ("support:1", "Ticket: Licence"))
+            self.ok(self.discord_call({"type": 5, "data": {"custom_id": "support:1", "components": [
+                {"type": 1, "components": [{"type": 4, "custom_id": "subject", "value": "Moved PC"}]}, {"type": 1, "components": [{"type": 4, "custom_id": "message", "value": "Help"}]}]},
+                "member": {"user": {"id": "300000000000000202", "username": "Pilot"}}}))
+            self.assertEqual(self.discord.threads[-1][2]["name"], "🎫 Licence · Moved PC")
+            first = next(m for ch, m in self.discord.messages if ch == self.discord.threads[-1][1])
+            self.assertEqual([b["custom_id"] for b in first["components"][0]["components"]], ["close_ticket", "claim_ticket"])
+            self.assertIn("Only the team", self.ok(self.discord_call({"type": 3, "channel_id": self.discord.threads[-1][1], "data": {"custom_id": "claim_ticket"}, "member": staff(0)}))["data"]["content"])
+            claimed = self.ok(self.discord_call({"type": 3, "channel_id": self.discord.threads[-1][1], "data": {"custom_id": "claim_ticket"}, "member": staff(1 << 34)}))
+            self.assertEqual((claimed["type"], len(claimed["data"]["components"][0]["components"])), (7, 1))
+
+            # server management: roles (always without permissions), channels, emojis, invites, audit log
+            self.ok(self.w.cgi("POST", "/api/admin/discord/roles/create", {"name": "MSFS 2024", "color": "#3366ff"}, token=t))
+            self.assertEqual(self.discord.created[-1], ("role", {"name": "MSFS 2024", "color": 0x3366FF, "permissions": "0"}))
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/roles/{news}", {"color": "#ff0000"}, token=t))
+            self.assertEqual(self.w.cgi("DELETE", f"/api/admin/discord/roles/{role}", token=t).status, 400, "not the buyer role")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/roles/{news}", token=t))
+            all_roles = {r["id"]: r for r in self.ok(self.w.cgi("GET", "/api/admin/discord/roles/all", token=t))["roles"]}
+            self.assertTrue(all_roles[role]["buyer"] and all_roles["1200000000000000004"]["powers"] and all_roles[news]["safe"])
+            self.ok(self.w.cgi("POST", "/api/admin/discord/channels/create", {"name": "Buyer Lounge", "kind": "text", "buyers_only": True}, token=t))
+            kind, made = self.discord.created[-1]
+            self.assertEqual((kind, made["name"], made["type"]), ("channel", "buyer-lounge", 0))
+            over = {o["id"]: o for o in made["permission_overwrites"]}
+            self.assertEqual((over[guild]["deny"], int(over[role]["allow"]) & 1024, int(over["999"]["allow"]) & 2048), ("1024", 1024, 2048))
+            self.assertEqual(self.w.cgi("DELETE", f"/api/admin/discord/channels/{tickets}", token=t).status, 400, "the website uses it")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/channels/{busy}", token=t))
+            self.assertIn(("channel", busy), self.discord.deleted)
+            png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 40).decode()
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/emojis", {"name": "x", "image": png}, token=t).status, 400)
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/emojis", {"name": "heavypro", "image": "data:text/html;base64,PGI+"}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/emojis", {"name": "heavypro", "image": png}, token=t))
+            emoji = self.ok(self.w.cgi("GET", "/api/admin/discord/emojis", token=t))["emojis"][0]
+            self.assertEqual((emoji["name"], emoji["url"]), ("heavypro", f"https://cdn.discordapp.com/emojis/{emoji['id']}.png"))
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/emojis/{emoji['id']}", token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/invites", token=t))["invites"][0]["uses"], 5)
+            self.ok(self.w.cgi("DELETE", "/api/admin/discord/invites/abcDEF", token=t))
+            self.assertIn(("invite", "abcDEF"), self.discord.deleted)
+            entry = self.ok(self.w.cgi("GET", "/api/admin/discord/audit-log", token=t))["entries"][0]
+            self.assertEqual((entry["who"], entry["what"], entry["target"], entry["reason"]), ("Rotaidem bot", "banned", "spammer", "Spam"))
+
+            # live stat channels
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/extra", {"stat_channels": [{"channel_id": general, "template": "Members"}]}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"stat_channels": [{"channel_id": "1400000000000000004", "template": "👥 Members: {members}"}]}, token=t))
+            done = self.ok(self.w.cgi("POST", "/api/admin/discord/stats/update", token=t))["channels"]
+            self.assertEqual(done[0]["name"], "👥 Members: 128")
+            self.assertEqual(self.discord.archived[-1], ("1400000000000000004", {"name": "👥 Members: 128"}))
+
+            # product roles: an extra role per product, following the licence like the buyer role
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/extra", {"product_roles": {"heavypro": role}}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"product_roles": {"heavypro": "1200000000000000005"}}, token=t))
+            owner, owner_email = self.customer("productroler")
+            self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": owner_email, "product_id": "heavypro", "send_email": False}, token=t))
+            self.discord_link(owner, "300000000000000203")
+            self.assertEqual(self.discord.members["300000000000000203"], {role, "1200000000000000005"})
+
+            # bulk roles: only safe roles; everyone linked gets it
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/bulk-role", {"role_id": role, "action": "add", "who": "linked"}, token=t).status, 400)
+            r = self.ok(self.w.cgi("POST", "/api/admin/discord/bulk-role", {"role_id": news, "action": "add", "who": "buyers"}, token=t))
+            self.assertGreaterEqual(r["done"], 1)
+            self.assertIn(news, self.discord.members["300000000000000203"])
+
+            # repeating posts
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/recurring", {"every": "week", "time": "25:00", "post": {"channel_id": general, "text": "x"}}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/recurring", {"every": "week", "weekday": 5, "time": "12:00", "post": {"channel_id": general, "text": "📸 Screenshot Saturday!"}}, token=t))
+            rp = self.ok(self.w.cgi("GET", "/api/admin/discord/recurring", token=t))["recurring"][0]
+            self.assertEqual((rp["due"][11:], time.strptime(rp["due"][:10], "%Y-%m-%d").tm_wday), ("12:00:00", 5))
+            if self.due_now("discord.hourly_at"):
+                self.assertTrue(any(ch == general and m.get("content") == "📸 Screenshot Saturday!" for ch, m in self.discord.messages))
+                after = self.ok(self.w.cgi("GET", "/api/admin/discord/recurring", token=t))["recurring"][0]
+                self.assertEqual((after["sent"], after["due"][11:]), (1, "12:00:00"))
+                self.assertGreater(after["due"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/recurring/{rp['id']}", {"active": False}, token=t))
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/recurring/{rp['id']}", token=t))
+            customer, _ = self.customer("notamod")
+            for method, path in (("POST", "/api/admin/discord/roles/create"), ("POST", "/api/admin/discord/channels/create"), ("POST", "/api/admin/discord/warnings"),
+                                 ("GET", "/api/admin/discord/audit-log"), ("POST", "/api/admin/discord/bulk-role"), ("DELETE", f"/api/admin/discord/channels/{general}")):
+                self.assertEqual(self.w.cgi(method, path, {}, token=customer).status, 403, path)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"modlog_channel": "", "product_roles": {}, "stat_channels": [], "ticket_categories": [], "warn_limit": 3}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": "", "welcome_channel": ""}, token=t))
+
+    def test_discord_automod_safety_and_posting(self):
+        t, guild, role, general, modlog = self.owner_token, "1100000000000000001", "1200000000000000002", "1400000000000000002", "1400000000000000007"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "news_channel": "1400000000000000003"}, token=t))
+        try:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"modlog_channel": modlog}, token=t))
+            # AutoMod: blocked words (with an alert in the mod log and a timeout), saved again = changed, not doubled
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "words", "words": []}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "words", "words": ["free nitro", " *crack* ", ""], "timeout": 10}, token=t))
+            (rule,) = [r for r in self.discord.automod.values() if r["name"] == "Rotaidem: Blocked words"]
+            self.assertEqual((rule["trigger_type"], rule["trigger_metadata"]["keyword_filter"]), (1, ["free nitro", "*crack*"]))
+            self.assertEqual({a["type"] for a in rule["actions"]}, {1, 2, 3})
+            self.assertEqual([a for a in rule["actions"] if a["type"] == 2][0]["metadata"]["channel_id"], modlog)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "words", "words": ["free nitro"], "enabled": False}, token=t))
+            self.assertEqual(len([r for r in self.discord.automod.values() if r["name"] == "Rotaidem: Blocked words"]), 1)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "invites", "allow": ["3XCy5abEBU"]}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "mentions", "limit": 8, "timeout": 60}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "spam", "timeout": 60}, token=t))
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "presets", "presets": []}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/automod", {"kind": "presets", "presets": [1, 3, 9]}, token=t))
+            listed = {r["kind"]: r for r in self.ok(self.w.cgi("GET", "/api/admin/discord/automod", token=t))["rules"]}
+            self.assertEqual((listed["words"]["enabled"], listed["words"]["words"], listed["words"]["timeout"]), (False, ["free nitro"], 0))
+            self.assertEqual((listed["invites"]["allow"], listed["invites"]["words"]), (["3XCy5abEBU"], []))
+            self.assertEqual((listed["mentions"]["limit"], listed["mentions"]["timeout"], listed["presets"]["presets"]), (8, 60, [1, 3]))
+            self.assertEqual(listed["spam"]["timeout"], 0, "Discord allows no timeout on the spam filter")
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/automod/{listed['spam']['id']}", token=t))
+            self.assertNotIn(listed["spam"]["id"], self.discord.automod)
+
+            # lockdown: every public channel at once, then exactly those again
+            r = self.ok(self.w.cgi("POST", "/api/admin/discord/lockdown", {"on": True, "note": "Spam wave, back soon", "channel_id": general}, token=t))
+            self.assertEqual(r["channels"], 2)
+            self.assertTrue(int(self.discord.overwrites[general][0]["deny"]) & 2048)
+            self.assertEqual(self.discord.messages[-2 if "Lockdown" in str(self.discord.messages[-1]) else -1][1]["content"], "🚨 Spam wave, back soon")
+            self.assertTrue(self.ok(self.w.cgi("GET", "/api/admin/discord/lockdown", token=t))["on"])
+            self.ok(self.w.cgi("POST", "/api/admin/discord/lockdown", {"on": False}, token=t))
+            self.assertEqual(self.discord.overwrites[general][0]["deny"], "0")
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/lockdown", token=t)), {})
+            self.discord.overwrites.clear()  # other tests expect the fake's default permissions
+            # server safety settings and the snapshot
+            self.ok(self.w.cgi("POST", "/api/admin/discord/safety", {"verification_level": 9, "default_message_notifications": 1}, token=t))
+            self.assertEqual(self.discord.guild_changes[-1], {"verification_level": 4, "default_message_notifications": 1})
+            snap = self.ok(self.w.cgi("GET", "/api/admin/discord/snapshot", token=t))
+            self.assertEqual((snap["server"], {c["name"] for c in snap["channels"]} >= {"general", "announcements"}), ("Rotaidem", True))
+            self.assertIn("Verified buyer", [r["name"] for r in snap["roles"]])
+
+            # posting as another name and picture: through a channel webhook, edited and deleted through it too
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/personas", {"personas": [{"name": "Discord Updates"}]}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/personas", {"personas": [{"name": "HeavyPro Updates", "avatar": "https://example.com/hp.png"}]}, token=t))
+            sent = self.ok(self.w.cgi("POST", "/api/admin/discord/message", {"channel_id": general, "text": "1.1.3 is out", "persona": 0,
+                                                                              "buttons": [{"label": "Get it", "url": "/heavypro"}]}, token=t))
+            method, path, payload = self.discord.hook_calls[-1]
+            self.assertEqual((method, payload["username"], payload["avatar_url"], payload["content"]), ("POST", "HeavyPro Updates", "https://example.com/hp.png", "1.1.3 is out"))
+            self.assertIn("with_components=true", path)
+            post = next(p for p in self.ok(self.w.cgi("GET", "/api/admin/discord/messages", token=t))["messages"] if p["id"] == sent["id"])
+            self.assertTrue(post["hook"])
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/message/{general}/{sent['id']}", {"text": "1.1.3 is out now"}, token=t))
+            self.assertEqual(self.discord.hook_calls[-1][:2][0], "PATCH")
+            self.assertTrue(self.discord.hook_calls[-1][1].endswith("/messages/" + sent["id"]))
+            self.ok(self.w.cgi("DELETE", f"/api/admin/discord/message/{general}/{sent['id']}", token=t))
+            self.assertEqual(self.discord.hook_calls[-1][0], "DELETE")
+            # message templates
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/templates", {"name": "", "draft": {"text": "x"}}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/templates", {"name": "Weekly update", "draft": {"text": "This week:", "ping": "buyers", "persona": "0"}}, token=t))
+            tpl = self.ok(self.w.cgi("GET", "/api/admin/discord/templates", token=t))["templates"]
+            self.assertEqual((tpl[0]["name"], tpl[0]["draft"]["ping"]), ("Weekly update", "buyers"))
+            self.ok(self.w.cgi("DELETE", "/api/admin/discord/templates", token=t, query="name=Weekly%20update"))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/admin/discord/templates", token=t))["templates"], [])
+            # a discussion thread under each news post
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"news_threads": True}, token=t))
+            self.ok(self.w.cgi("POST", "/api/newsletter", {"title": "Big news", "content": "HeavyPro 2 is coming"}, token=t))
+            if self.due_now():
+                kind, mid, thread = self.discord.created[-1]
+                self.assertEqual((kind, thread["name"]), ("thread", "💬 Big news"))
+            customer, _ = self.customer("notanadmin4")
+            for method, path in (("POST", "/api/admin/discord/automod"), ("POST", "/api/admin/discord/lockdown"), ("GET", "/api/admin/discord/snapshot"),
+                                 ("POST", "/api/admin/discord/safety"), ("POST", "/api/admin/discord/personas"), ("POST", "/api/admin/discord/templates")):
+                self.assertEqual(self.w.cgi(method, path, {}, token=customer).status, 403, path)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/personas", {"personas": []}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"modlog_channel": "", "news_threads": False}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "news_channel": ""}, token=t))
+
+    def test_discord_members_customers_and_ticket_followup(self):
+        t, guild, role, news, tickets, welcome = self.owner_token, "1100000000000000001", "1200000000000000002", "1200000000000000003", "1400000000000000009", "1400000000000000003"
+        self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": guild, "role_id": role, "tickets_channel": tickets, "welcome_channel": welcome}, token=t))
+        try:
+            # rules gate: only a safe role; pressing the button gives it once
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/rules-gate", {"channel_id": welcome, "role_id": "1200000000000000004", "rules": "Be nice"}, token=t).status, 400)
+            self.ok(self.w.cgi("POST", "/api/admin/discord/rules-gate", {"channel_id": welcome, "role_id": news, "rules": "1. Be nice"}, token=t))
+            gate = self.discord.messages[-1][1]
+            self.assertEqual((gate["embeds"][0]["description"], gate["components"][0]["components"][0]["custom_id"]), ("1. Be nice", "rules_accept"))
+            newbie = "300000000000000301"
+            self.discord.members[newbie] = set()
+            self.assertIn("Thanks", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "rules_accept"}, "member": {"user": {"id": newbie}, "roles": []}}))["data"]["content"])
+            self.assertIn(news, self.discord.members[newbie])
+            self.assertIn("already", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "rules_accept"}, "member": {"user": {"id": newbie}, "roles": [news]}}))["data"]["content"])
+
+            # linking: a role for everyone who links, the welcome post from your template, and a welcome DM
+            self.assertEqual(self.w.cgi("POST", "/api/admin/discord/extra", {"link_role": role}, token=t).status, 400, "not the buyer role")
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"link_role": "1200000000000000006", "welcome_text": "Hello {member}!{buyer}",
+                                                                      "welcome_dm": "Hi {name}, start in #getting-started", "ticket_limit": 1,
+                                                                      "buyer_dm": "Thanks for buying {product}, {name}!"}, token=t))
+            buyer, email = self.customer("linkwelcome")
+            pilot = "300000000000000302"
+            self.discord_link(buyer, pilot)
+            self.assertIn("1200000000000000006", self.discord.members[pilot])
+            self.assertTrue(any(ch == welcome and m.get("content", "").startswith(f"Hello <@{pilot}>! Type /help") for ch, m in self.discord.messages))
+            self.assertTrue(any(ch == "dm" + pilot and m["content"].startswith("Hi ") and "getting-started" in m["content"] for ch, m in self.discord.messages))
+            # a purchase: the thank-you DM, then /orders shows it
+            self.ok(self.w.cgi("POST", "/api/save-product", {"name": "DM App", "id": "dm-app", "status": "published", "pay_amount": "99", "pay_currency": "sek"}, token=t))
+            sid = self.ok(self.w.cgi("POST", "/api/checkout/dm-app", token=buyer))["url"].rsplit("/", 1)[-1]
+            self.stripe.pay(sid)
+            key = self.ok(self.w.cgi("GET", "/api/checkout/status", token=buyer, query="session_id=" + sid))["license_key"]
+            thanks = [m for ch, m in self.discord.messages if ch == "dm" + pilot and "Thanks for buying" in m.get("content", "")]
+            self.assertEqual(thanks[-1]["content"], "Thanks for buying DM App, linkwelcome!")
+            orders = self.ok(self.discord_call({"type": 2, "data": {"name": "orders"}, "member": {"user": {"id": pilot}}}))["data"]
+            self.assertIn("DM App", orders["content"])
+            self.assertEqual(orders["flags"], 64)
+            self.assertIn("Link your Discord", self.ok(self.discord_call({"type": 2, "data": {"name": "orders"}, "member": {"user": {"id": "300000000000000399"}}}))["data"]["content"])
+            # /licence has a button that DMs the full keys (once per 10 minutes)
+            lic = self.ok(self.discord_call({"type": 2, "data": {"name": "licence"}, "member": {"user": {"id": pilot}}}))["data"]
+            self.assertEqual(lic["components"][-1]["components"][0]["custom_id"], "keys_dm")
+            self.assertNotIn(key, lic["content"], "the reply shows masked keys only")
+            self.assertIn("Sent", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "keys_dm"}, "member": {"user": {"id": pilot}}}))["data"]["content"])
+            self.assertIn(key, self.discord.messages[-1][1]["content"])
+            self.assertEqual(self.discord.messages[-1][0], "dm" + pilot)
+            self.assertIn("moment ago", self.ok(self.discord_call({"type": 3, "data": {"custom_id": "keys_dm"}, "member": {"user": {"id": pilot}}}))["data"]["content"])
+            # /faq with answers from the website FAQ
+            self.ok(self.w.cgi("POST", "/api/admin/settings", {"faq": [{"q": "How do I install HeavyPro?", "a": "Use RotaHub."}, {"q": "Refunds?", "a": "Within 14 days."}]}, token=t))
+            choices = self.ok(self.discord_call({"type": 4, "data": {"name": "faq", "options": [{"name": "question", "value": "inst", "focused": True}]}, "member": {"user": {"id": pilot}}}))
+            self.assertEqual(choices["data"]["choices"], [{"name": "How do I install HeavyPro?", "value": "0"}])
+            ans = self.ok(self.discord_call({"type": 2, "data": {"name": "faq", "options": [{"name": "question", "value": "0"}]}, "member": {"user": {"id": pilot}}}))["data"]
+            self.assertEqual((ans["embeds"][0]["description"], "flags" in ans), ("Use RotaHub.", False))
+
+            # tickets: one open at a time; closing asks for a rating and emails the conversation
+            def ticket(subject):
+                return self.ok(self.discord_call({"type": 5, "data": {"custom_id": "support", "components": [
+                    {"type": 1, "components": [{"type": 4, "custom_id": "subject", "value": subject}]},
+                    {"type": 1, "components": [{"type": 4, "custom_id": "message", "value": "Help please"}]}]}, "member": {"user": {"id": pilot, "username": "Pilot"}}}))["data"]["content"]
+            self.assertIn("private ticket", ticket("First"))
+            tid = self.discord.threads[-1][1]
+            self.assertIn(f"<#{tid}>", ticket("Second"), "one open ticket: pointed to it")
+            self.ok(self.w.cgi("POST", f"/api/admin/discord/tickets/{tid}/close", token=t))
+            self.assertNotIn("already have an open ticket", ticket("After closing"), "closed: the limit no longer applies")
+            self.resend.requests.clear()
+            if self.due_now():
+                rate = next(m for ch, m in self.discord.messages if ch == "dm" + pilot and m.get("components") and m["components"][0]["components"][0].get("custom_id", "").startswith("rate:" + tid))
+                self.assertEqual(len(rate["components"][0]["components"]), 5)
+                self.assertIn("support conversation", self.resend.requests[-1]["body"][0]["html"])
+                self.assertEqual(self.resend.requests[-1]["body"][0]["to"], [email])
+                done = self.ok(self.discord_call({"type": 3, "data": {"custom_id": f"rate:{tid}:5"}, "user": {"id": pilot}}))
+                self.assertEqual((done["type"], done["data"]["components"]), (7, []))
+                self.assertIn(5, self.ok(self.w.cgi("GET", "/api/admin/discord/insights", token=t))["ratings"])
+                self.assertIn("not active", self.ok(self.discord_call({"type": 3, "data": {"custom_id": f"rate:{tid}:1"}, "user": {"id": "300000000000000398"}}))["data"]["content"])
+
+            # licence holders who never linked Discord: emailed once each
+            _, lonely = self.customer("neverlinked")
+            self.ok(self.w.cgi("POST", "/api/admin/licenses/generate", {"count": 1, "email": lonely, "product_id": "heavypro", "send_email": False}, token=t))
+            people = self.ok(self.w.cgi("GET", "/api/admin/discord/unlinked", token=t))["people"]
+            self.assertIn(lonely.lower(), [p["email"] for p in people])
+            self.assertNotIn(email.lower(), [p["email"] for p in people], "linked people are left out")
+            self.resend.requests.clear()
+            sent = self.ok(self.w.cgi("POST", "/api/admin/discord/unlinked/email", {"subject": "Join us", "text": "Link here: {link}"}, token=t))
+            self.assertGreaterEqual(sent["sent"], 1)
+            mail = next(m for m in self.resend.requests[-1]["body"] if m["to"] == [lonely.lower()])
+            self.assertIn("https://rotaidem.test/account#discord", mail["html"])
+            self.assertTrue(next(p for p in self.ok(self.w.cgi("GET", "/api/admin/discord/unlinked", token=t))["people"] if p["email"] == lonely.lower())["invited"])
+            customer, _ = self.customer("nosy4")
+            for method, path in (("POST", "/api/admin/discord/rules-gate"), ("GET", "/api/admin/discord/unlinked"), ("POST", "/api/admin/discord/unlinked/email")):
+                self.assertEqual(self.w.cgi(method, path, {}, token=customer).status, 403, path)
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord/extra", {"link_role": "", "welcome_text": "", "welcome_dm": "", "buyer_dm": ""}, token=t))
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "tickets_channel": "", "welcome_channel": ""}, token=t))
+
+    def test_discord_presence_config(self):
+        t = self.owner_token
+        # public: what the HeavyPro app needs for "Playing HeavyPro" with two buttons
+        cfg = self.ok(self.w.cgi("GET", "/api/discord/presence"))
+        self.assertEqual((cfg["app_id"], cfg["url"], cfg["name"]), ("112233445566778899", "https://rotaidem.test/heavypro", "HeavyPro"))
+        # the invite link is checked, then served to the app
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "join my server"}, token=t).status, 400)
+        self.assertEqual(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "https://evil.example/x"}, token=t).status, 400)
+        try:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"invite_url": "https://discord.gg/rotaidem"}, token=t))
+            self.assertEqual(self.ok(self.w.cgi("GET", "/api/discord/presence"))["invite"], "https://discord.gg/rotaidem")
+        finally:
+            self.ok(self.w.cgi("POST", "/api/admin/discord", {"guild_id": "", "role_id": "", "invite_url": ""}, token=t))
+
     def test_discord_set_up_check(self):
         t, guild, role = self.owner_token, "1100000000000000001", "1200000000000000002"
         self.assertFalse(self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))["ok"], "nothing chosen yet")
@@ -1861,6 +2676,14 @@ class StratoCGITests:
         try:
             check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))
             self.assertTrue(check["ok"], check)
+            # saving the settings registered the slash commands, and the check confirms the Public Key + commands
+            self.assertEqual({c["name"] for c in self.discord.commands}, {"verify", "status", "version", "licence", "download", "profile", "support", "ticket", "account", "store", "roadmap", "faq", "socials", "help",
+                                                                          "tag", "remind", "orders", "warn", "warnings", "timeout", "clear", "slowmode", "lock", "unlock", "User info"})
+            staff = {c["name"]: c for c in self.discord.commands if "default_member_permissions" in c}
+            self.assertEqual(staff["warn"]["default_member_permissions"], str(1 << 40), "staff commands are hidden from members")
+            texts = " ".join(c["text"] for c in check["checks"])
+            self.assertIn("slash commands are registered", texts)
+            self.assertIn("Public Key", texts)
             # the bot's role below the buyer role: the check says so, and so does the member's last result
             self.discord.bot_position = 2
             check = self.ok(self.w.cgi("GET", "/api/admin/discord/check", token=t))

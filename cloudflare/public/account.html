@@ -53,14 +53,12 @@
                 <div id="af-dash">
                     <div class="field" style="margin:0 0 14px"><label for="af-link">Your referral link</label><div style="display:flex;gap:8px"><input id="af-link" readonly style="font-family:ui-monospace,Consolas,monospace"><button class="btn btn-ghost" type="button" id="af-copy">Copy</button></div></div>
                     <div class="grid grid-3" style="gap:12px;margin-bottom:16px"><div class="card"><label class="muted">Referred sales</label><div class="stat-num" id="af-orders" style="font-size:28px">0</div></div><div class="card"><label class="muted">To be paid</label><div class="stat-num" id="af-pending" style="font-size:28px">0</div></div><div class="card"><label class="muted">Paid out</label><div class="stat-num" id="af-paid" style="font-size:28px">0</div></div></div>
-                    <!-- automatic payouts over Stripe: connect once, then commissions arrive on their own -->
+                    <!-- automatic payouts: enter a PayPal email and commissions are sent there automatically -->
                     <div id="af-connect" class="card" style="margin-bottom:16px;display:none">
                         <strong>Get paid automatically</strong>
-                        <p class="muted" id="af-connect-text" style="font-size:14px;margin:6px 0 10px"></p>
-                        <button class="btn btn-sm" type="button" id="af-connect-btn" style="display:none"></button>
-                        <p class="msg" id="af-connect-msg" style="margin:6px 0 0"></p>
+                        <p class="muted" id="af-connect-text" style="font-size:14px;margin:6px 0 0"></p>
                     </div>
-                    <form id="af-payout-form" class="field" style="margin:0 0 16px"><label for="af-payout">Or get paid by hand — where to send your money (PayPal email, IBAN…)</label><div style="display:flex;gap:8px"><input id="af-payout" placeholder="So we can pay you" maxlength="300"><button class="btn btn-ghost" type="submit">Save</button></div><p class="msg" id="af-payout-msg" style="margin:6px 0 0"></p></form>
+                    <form id="af-payout-form" class="field" style="margin:0 0 16px"><label for="af-payout">Your PayPal email (where we send your commissions)</label><div style="display:flex;gap:8px"><input id="af-payout" type="email" placeholder="you@example.com" maxlength="200"><button class="btn btn-ghost" type="submit">Save</button></div><p class="msg" id="af-payout-msg" style="margin:6px 0 0"></p></form>
                     <label class="muted" style="display:block;margin-bottom:6px">Orders you referred</label>
                     <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Product</th><th>Sale</th><th>Your cut</th><th>Status</th></tr></thead><tbody id="af-rows"><tr><td colspan="5" class="muted">None yet.</td></tr></tbody></table></div>
                 </div>
@@ -238,21 +236,15 @@ async function loadAffiliate() {
     document.getElementById("af-pending").textContent = aff.pending.amount.toFixed(2);
     document.getElementById("af-paid").textContent = aff.paid.amount.toFixed(2);
     document.getElementById("af-payout").value = aff.payout || "";
-    // automatic payouts (Stripe Connect): shown only while the code is active
-    const cbox = document.getElementById("af-connect"), ctext = document.getElementById("af-connect-text"), cbtn = document.getElementById("af-connect-btn");
+    // automatic payouts by PayPal: shown while the code is active
+    const cbox = document.getElementById("af-connect"), ctext = document.getElementById("af-connect-text");
     if (aff.status === "active") {
         cbox.style.display = "";
         const auto = d.payouts && d.payouts.on;
-        if (aff.connected && aff.payouts_ready) {
-            ctext.textContent = auto ? "Set up ✓ Every commission is sent straight to your Stripe account the moment your referred sale is paid." : "Set up ✓ You'll be paid straight to your Stripe account as soon as we switch automatic payouts on.";
-            cbtn.style.display = "none";
-        } else if (aff.connected) {
-            ctext.textContent = "Almost there — finish your Stripe details so we can pay you.";
-            cbtn.style.display = ""; cbtn.textContent = "Finish Stripe setup";
-        } else {
-            ctext.textContent = auto ? "Connect a Stripe account and each commission is paid straight to you, automatically, as soon as the sale is paid." : "Connect a Stripe account to get paid automatically once we switch payouts on.";
-            cbtn.style.display = ""; cbtn.textContent = "Set up automatic payouts";
-        }
+        ctext.textContent = aff.payouts_ready
+            ? (auto ? "Set up ✓ Each commission is sent to your PayPal the moment your referred sale is paid."
+                    : "Set up ✓ You'll be paid to your PayPal as soon as we switch automatic payouts on.")
+            : "Add your PayPal email below and we'll pay your commissions there automatically.";
     } else { cbox.style.display = "none"; }
     const rows = aff.orders_list || [];
     document.getElementById("af-rows").innerHTML = rows.length ? rows.map(o =>
@@ -267,18 +259,9 @@ document.getElementById("af-payout-form").onsubmit = async e => {
     e.preventDefault();
     const msg = document.getElementById("af-payout-msg");
     const r = await fetch("/api/account/affiliate/payout", { method: "POST", headers, body: JSON.stringify({ payout: document.getElementById("af-payout").value }) });
-    msg.className = r.ok ? "msg ok" : "msg error"; msg.textContent = r.ok ? "Saved." : "Could not save.";
-};
-document.getElementById("af-connect-btn").onclick = async () => {
-    const btn = document.getElementById("af-connect-btn"), msg = document.getElementById("af-connect-msg");
-    btn.disabled = true; btn.textContent = "Opening Stripe…";
-    const r = await fetch("/api/account/affiliate/connect", { method: "POST", headers });
     const d = await r.json().catch(() => ({}));
-    if (r.ok && d.url) { location.href = d.url; return; }
-    btn.disabled = false; msg.className = "msg error";
-    // show Stripe's own reason when we have it; otherwise say which layer failed
-    msg.textContent = d.error || (r.status === 404 ? "Payouts aren't live on the site yet (deploy the latest version)." : r.status === 501 ? "Open this from the main site, not the preview." : `Could not reach Stripe (error ${r.status}).`);
-    loadAffiliate();
+    msg.className = r.ok ? "msg ok" : "msg error"; msg.textContent = r.ok ? "Saved." : (d.error || "Could not save.");
+    if (r.ok) loadAffiliate();  // refresh the "set up ✓" line once a PayPal email is saved
 };
 
 init();

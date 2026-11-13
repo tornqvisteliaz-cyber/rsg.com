@@ -24,6 +24,7 @@ Commands (run over SSH in /home/www):
     python3 rotaidem/strato/setup.py admin-password  sets, changes or removes the extra password of the admin page
     python3 rotaidem/strato/setup.py signing-key     shows the public key HeavyPro uses to check licence answers
     python3 rotaidem/strato/setup.py stripe          sets up payments: the Stripe key and webhook secret (typed, never shown)
+    python3 rotaidem/strato/setup.py paypal          sets up PayPal Payouts to pay affiliates (keys typed, never shown)
     python3 rotaidem/strato/setup.py discord         connects the Discord bot for the verified buyer role (keys typed, never shown)
     python3 rotaidem/strato/setup.py fetch-installer [URL]  copies the newest HeavyPro installer from GitHub onto
                                                   rotaidem.com/files/ and points the Download buttons at it
@@ -32,6 +33,7 @@ Options:  deploy --public FOLDER   use another website folder (relative to the w
           deploy --cgi-htaccess    also enable CGI with cgi-bin/.htaccess (only if diagnose says CGI does not run)
           diagnose --offline       skip the DNS and HTTP tests;  diagnose DOMAIN   test another domain
 """
+import base64
 import getpass
 import hashlib
 import json
@@ -1155,6 +1157,44 @@ def cmd_stripe():
         say(f"Could not reach Stripe from this server: {exc}")
 
 
+def cmd_paypal():
+    """Affiliate payouts: the PayPal Payouts Client ID and Secret into config.env, then a test token."""
+    data_dir = current_data_dir()
+    values = require_config(data_dir)
+    say("PayPal Payouts pays your affiliates their commissions. At developer.paypal.com -> Apps & Credentials:")
+    say("  switch to Live, Create App, and under Features turn on Payouts.")
+    say("Nothing you type is shown. Press Enter to keep what is there now.")
+    say()
+    client_id = ask("Client ID (a long string beginning with A)", values.get("PAYPAL_CLIENT_ID", ""))
+    changed = False
+    if client_id and client_id != values.get("PAYPAL_CLIENT_ID"):
+        values["PAYPAL_CLIENT_ID"], changed = client_id, True
+    secret = ask_secret("Secret (Enter = keep what is there)")
+    if secret:
+        values["PAYPAL_SECRET"], changed = secret, True
+    if changed:
+        write_config(config_path(data_dir), values)
+        say("Saved in " + config_path(data_dir) + " (only you can read it).")
+    cid, sec = values.get("PAYPAL_CLIENT_ID", ""), values.get("PAYPAL_SECRET", "")
+    if not (cid and sec):
+        say("PayPal is not set up yet: affiliates can still be paid by hand with Mark paid.")
+        return
+    say()
+    api = values.get("PAYPAL_API_URL", "https://api-m.paypal.com").rstrip("/")
+    auth = base64.b64encode(f"{cid}:{sec}".encode()).decode()
+    req = urllib.request.Request(api + "/v1/oauth2/token", data=b"grant_type=client_credentials",
+                                 headers={"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        say("PayPal answered: the keys work" + (" (sandbox/test)." if "sandbox" in api else ", Live (real money)."))
+        say("Now switch 'Pay affiliates automatically' on in Admin -> Affiliates.")
+    except urllib.error.HTTPError as exc:
+        say(f"PayPal refused the keys ({exc.code}). Check they are copied completely and the app has Payouts turned on.")
+    except OSError as exc:
+        say(f"Could not reach PayPal from this server: {exc}")
+
+
 def cmd_discord():
     """Discord: the application's keys and its bot token into config.env, then a test call. The server and role are
     chosen in Admin -> Discord."""
@@ -1436,6 +1476,8 @@ def main():
         cmd_signing_key()
     elif command == "stripe":
         cmd_stripe()
+    elif command == "paypal":
+        cmd_paypal()
     elif command == "discord":
         cmd_discord()
     elif command == "fetch-installer":
@@ -1445,7 +1487,7 @@ def main():
     else:
         import difflib
         known = ["deploy", "diagnose", "backup", "install", "password", "permissions", "import", "reset-catalog", "update",
-                 "check", "email-test", "admin-password", "fetch-installer", "signing-key", "stripe", "discord"]
+                 "check", "email-test", "admin-password", "fetch-installer", "signing-key", "stripe", "paypal", "discord"]
         close = difflib.get_close_matches(command, known, n=1)
         say(f"Unknown command '{command}'." + (f" Did you mean:  python3 rotaidem/strato/setup.py {close[0]}" if close else ""))
         say("All commands:  python3 rotaidem/strato/setup.py help")

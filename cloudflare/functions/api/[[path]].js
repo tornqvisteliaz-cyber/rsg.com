@@ -61,7 +61,6 @@ async function handleRequest(context) {
     if (path.startsWith("/api/admin/affiliates")) return json({ error: "Affiliates are managed on the STRATO website.", unavailable: true }, 501);
     if (method === "GET" && path === "/api/account/affiliate") return accountAffiliate(request, env);
     if (method === "POST" && path === "/api/account/affiliate/payout") return accountAffiliatePayout(request, env);
-    if (method === "POST" && path === "/api/account/affiliate/connect") return json({ error: "Automatic payouts run on the STRATO website.", unavailable: true }, 501);
     if (method === "POST" && path === "/api/affiliate/click") return affiliateClick(request, env);
     if (method === "GET" && path === "/api/admin/hub") return adminHub(request, env);
     if (method === "GET" && path === "/api/admin/shop") return adminShop(request, env);
@@ -1007,8 +1006,9 @@ async function accountAffiliate(request, env) {
   const aff = await env.DB.prepare("SELECT * FROM affiliates WHERE user_id = ? OR LOWER(email) = ?").bind(user.id, String(user.email || "").toLowerCase()).first().catch(() => null);
   if (!aff) return json({ affiliate: null, percent: AFFILIATE_DEFAULT_PERCENT });
   const base = (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+  const paypalEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(aff.payout || "").trim());
   return json({ affiliate: { code: aff.code, percent: aff.percent, status: aff.status, payout: aff.payout || "", clicks: Number(aff.clicks) || 0,
-    connected: !!aff.stripe_account, payouts_ready: !!aff.payouts_ready,
+    payouts_ready: paypalEmail,  // has a valid PayPal email
     link: base + "/?ref=" + encodeURIComponent(aff.code), orders_list: await affiliateOrders(env, aff.id), ...(await affiliateTotals(env, aff.id)) },
     percent: AFFILIATE_DEFAULT_PERCENT, payouts: { on: false, min: 50, last: "" } });
 }
