@@ -553,6 +553,17 @@
                 <div class="full"><div class="hint" style="margin:0 0 12px">Leave a link empty to hide it.</div><button class="btn">Save</button></div>
             </div>
         </form>
+        <form class="panel" id="biz-form" style="margin-bottom:24px">
+            <div class="panel-head"><h2>Business details</h2><span class="muted" style="font-size:13px">EU law asks a web shop to say who sells. Shown in the footer and on the legal pages.</span></div>
+            <div class="panel-body form-grid">
+                <div class="field"><label for="bz-name">Company or trading name</label><input id="bz-name" maxlength="120" placeholder="e.g. Rotaidem (enskild firma)"></div>
+                <div class="field"><label for="bz-org">Organisation number</label><input id="bz-org" maxlength="40" placeholder="e.g. 900101-1234 or 559xxx-xxxx"></div>
+                <div class="field"><label for="bz-vat">VAT number (if registered)</label><input id="bz-vat" maxlength="40" placeholder="e.g. SE900101123401"></div>
+                <div class="field"><label for="bz-country">Country</label><input id="bz-country" maxlength="60" placeholder="Sweden"></div>
+                <div class="field full"><label for="bz-addr">Postal address</label><input id="bz-addr" maxlength="300" placeholder="Street, postcode, town"></div>
+                <div class="full"><div class="hint" style="margin:0 0 12px">The contact email above is shown with these. Fill in what you have; empty fields are left out.</div><button class="btn">Save</button></div>
+            </div>
+        </form>
         <form class="panel" id="links-form" style="margin-bottom:24px">
             <div class="panel-head"><h2>Short links</h2><span class="muted" style="font-size:13px">Easy addresses to share, like rotaidem.com/discord</span></div>
             <div class="panel-body">
@@ -661,7 +672,7 @@
             <div class="panel-head"><h2>What pilots say</h2><div class="actions"><a class="btn btn-ghost btn-sm" href="/heavypro" target="_blank" rel="noopener">HeavyPro page</a><a class="btn btn-ghost btn-sm" href="/" target="_blank" rel="noopener">Home page</a></div></div>
             <div class="panel-body">
                 <p class="muted" style="margin-top:0;font-size:14px">Quotes with a picture, shown under <strong>What pilots say</strong> on the home, HeavyPro and product pages, next to your Trustpilot link. The section stays hidden until there is one.</p>
-                <p class="notice">Only use words the person really sent you, and their photo only with their permission.</p>
+                <p class="notice">Only use words the person really sent you, and their photo only with their permission. Never write, buy or reward reviews: in the EU that is illegal. The site says under the quotes how they were collected.</p>
                 <div class="list-edit" id="q-list"></div>
                 <div class="actions" style="justify-content:flex-start"><button class="btn btn-ghost btn-sm" type="button" id="q-add">Add a quote</button><button class="btn" type="button" id="q-save">Save quotes</button></div>
             </div>
@@ -1192,6 +1203,7 @@ Open My account and press Link Discord: {link}</textarea><div class="hint">{link
         <div class="panel">
             <div class="panel-head"><h2>Images</h2><button class="btn btn-sm" type="button" onclick="$('media-file').click()">Upload images</button></div>
             <div class="panel-body">
+                <p class="notice" style="margin-top:0">Only upload pictures you made yourself or have a licence for (a stock photo needs a paid or free licence that allows use on a website). Keep a note of where each one came from. Screenshots of the simulator are fine for showing the product.</p>
                 <div class="dropzone" id="dropzone">Drop images here, or use Upload images. Large pictures are resized to 2400 px wide before uploading.</div>
                 <input type="file" id="media-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
                 <div class="img-grid" id="media-grid" style="margin-top:18px"></div>
@@ -4048,7 +4060,13 @@ function renderConfig() {
     $("maint-state").innerHTML = m.enabled ? '<span class="badge in_development">On: visitors see the back-soon page</span>' : "Off";
     $("cf-email").value = c.contact_email || ""; $("cf-footer").value = c.footer_text || "";
     SOCIALS.forEach(k => $("cf-" + k).value = (c.socials || {})[k] || "");
+    const bz = c.business || {};
+    $("bz-name").value = bz.name || ""; $("bz-org").value = bz.org_number || ""; $("bz-vat").value = bz.vat_number || ""; $("bz-country").value = bz.country || ""; $("bz-addr").value = bz.address || "";
 }
+$("biz-form").onsubmit = e => {
+    e.preventDefault();
+    saveConfig({ business: { name: val("bz-name"), org_number: val("bz-org"), vat_number: val("bz-vat"), country: val("bz-country"), address: val("bz-addr") } }, "Business details saved");
+};
 async function saveConfig(changes, done) {
     try {
         const c = state.site.config || {};

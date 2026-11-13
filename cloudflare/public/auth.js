@@ -11,20 +11,75 @@ const MENU = [
 // Path prefix when the site is served from a sub-folder (GitHub Pages preview sets <meta name="site-base">).
 const BASE = ((document.querySelector('meta[name="site-base"]') || {}).content || "").replace(/\/$/, "");
 function withBase(path) { return BASE && path.startsWith("/") && !path.startsWith(BASE + "/") ? BASE + path : path; }
-// Affiliate referral: an arriving ?ref=CODE is kept for 30 days and sent at checkout.
+// Cookie consent. Necessary storage (your login, this choice) is always used. Affiliate tracking (remembering
+// the partner link you came from for 30 days, and Endorsely, our affiliate partner) only after you accept.
+// No ads and no analytics are used. The choice is kept in this browser; "Cookie settings" in the footer changes it.
+const CONSENT_KEY = "rsg_consent", CONSENT_VERSION = 1;
+function rsgConsent() {
+    try { const c = JSON.parse(localStorage.getItem(CONSENT_KEY) || "null"); return c && c.v === CONSENT_VERSION ? c : null; } catch (err) { return null; }
+}
+function rsgSetConsent(marketing) {
+    try { localStorage.setItem(CONSENT_KEY, JSON.stringify({ v: CONSENT_VERSION, marketing: !!marketing, at: new Date().toISOString() })); } catch (err) {}
+    applyConsent();
+    const box = document.getElementById("consent");
+    if (box) box.remove();
+}
+function applyConsent() {
+    const c = rsgConsent();
+    if (c && c.marketing) {
+        if (PENDING_REF) { try { localStorage.setItem("rsg_ref", JSON.stringify({ code: PENDING_REF, at: Date.now() })); } catch (err) {} }
+        if (!document.querySelector("script[data-endorsely]")) {
+            const tag = document.createElement("script");
+            tag.async = true; tag.src = "https://assets.endorsely.com/endorsely.js"; tag.dataset.endorsely = "f740d528-c660-42bd-a0d7-523692a09f24";
+            document.head.appendChild(tag);
+        }
+    } else {
+        try { localStorage.removeItem("rsg_ref"); localStorage.removeItem("rsg_ref_hit"); } catch (err) {}
+    }
+}
+function consentBanner(settings) {
+    const old = document.getElementById("consent");
+    if (old) old.remove();
+    const c = rsgConsent();
+    const box = document.createElement("section");
+    box.id = "consent"; box.className = "consent"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "Cookie settings");
+    box.innerHTML = `<div class="wrap"><div><strong>Cookies and similar storage</strong>
+        <p>We always use what is needed to keep you logged in and remember this choice. If you accept, we also remember which partner link brought you here (for 30 days)
+        and load <strong>Endorsely</strong>, our affiliate partner, so the partner gets credit if you buy. No ads and no analytics. <a href="/cookies">Cookie policy</a></p>` +
+        (settings ? `<label class="consent-opt"><input type="checkbox" checked disabled> Necessary (always on)</label>
+        <label class="consent-opt"><input type="checkbox" id="consent-mk"${c && c.marketing ? " checked" : ""}> Affiliate tracking</label>` : "") +
+        `</div><div class="consent-btns">` + (settings ? `<button class="btn btn-sm" type="button" data-consent="save">Save choice</button>` :
+        `<button class="btn btn-sm" type="button" data-consent="yes">Accept</button><button class="btn btn-sm" type="button" data-consent="no">Only necessary</button>
+         <button class="btn btn-ghost btn-sm" type="button" data-consent="more">Choose</button>`) + `</div></div>`;
+    document.body.appendChild(box);
+    box.querySelector("button").focus({ preventScroll: true });
+}
+document.addEventListener("click", e => {
+    const b = e.target.closest("[data-consent]");
+    if (!b) return;
+    const what = b.dataset.consent;
+    if (what === "yes") rsgSetConsent(true);
+    else if (what === "no") rsgSetConsent(false);
+    else if (what === "more" || what === "open") consentBanner(true);
+    else if (what === "save") rsgSetConsent(document.getElementById("consent-mk").checked);
+});
+// Affiliate referral: an arriving ?ref=CODE is counted, and kept for 30 days for checkout once tracking is accepted.
+let PENDING_REF = "";
 (function () {
     try {
         const code = new URLSearchParams(location.search).get("ref");
         if (!code || !/^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(code)) return;
-        localStorage.setItem("rsg_ref", JSON.stringify({ code, at: Date.now() }));
-        // Count the visit once per code, so affiliates see how often their link is opened.
-        if (localStorage.getItem("rsg_ref_hit") !== code) {
-            localStorage.setItem("rsg_ref_hit", code);
+        PENDING_REF = code;
+        // Count the visit, so affiliates see how often their link is opened (nothing is stored for this).
+        if (!(rsgConsent() || {}).marketing || localStorage.getItem("rsg_ref_hit") !== code) {
+            if ((rsgConsent() || {}).marketing) localStorage.setItem("rsg_ref_hit", code);
             fetch(withBase("/api/affiliate/click"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).catch(() => {});
         }
     } catch (err) {}
 })();
+applyConsent();
 function affiliateRef() {
+    if (PENDING_REF && !(rsgConsent() || {}).marketing) return PENDING_REF;  // this visit only: nothing stored without consent
     try {
         const saved = JSON.parse(localStorage.getItem("rsg_ref") || "null");
         if (saved && Date.now() - saved.at < 30 * 864e5) return saved.code;
@@ -56,19 +111,36 @@ function renderLayout() {
     header.className = "header";
     header.innerHTML = `<div class="wrap"><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a>` +
         `<nav class="menu">${menu}</nav><div class="header-cta" id="auth-links"></div>` +
-        `<button class="nav-toggle" aria-label="Menu" onclick="this.closest('.header').classList.toggle('open')"><span></span><span></span><span></span></button></div>`;
+        `<button class="nav-toggle" type="button" aria-label="Menu" aria-expanded="false" onclick="this.setAttribute('aria-expanded', this.closest('.header').classList.toggle('open'))"><span></span><span></span><span></span></button></div>`;
     body.prepend(header);
+    // keyboard users can jump past the menu to the page itself
+    const main = document.querySelector("main") || header.nextElementSibling;
+    if (main) {
+        main.id = main.id || "main";
+        main.setAttribute("tabindex", "-1");
+        const skip = document.createElement("a");
+        skip.className = "skip-link"; skip.href = "#" + main.id; skip.textContent = "Skip to content";
+        body.prepend(skip);
+    }
+    document.addEventListener("keydown", e => {
+        if (e.key !== "Escape" || !header.classList.contains("open")) return;
+        header.classList.remove("open");
+        const t = header.querySelector(".nav-toggle");
+        t.setAttribute("aria-expanded", "false"); t.focus();
+    });
 
     if (body.dataset.footer !== "off") {
         const footer = document.createElement("footer");
         footer.className = "footer";
         footer.innerHTML = `<div class="wrap"><div class="footer-grid">
             <div><a class="brand" href="/"><img src="${withBase(LOGO)}" alt="">Rotaidem</a><p id="ft-text" style="margin:16px 0 18px;max-width:320px">An independent studio making software for Microsoft Flight Simulator 2024.</p>${trustpilotBadge()}
-                <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p></form></div>
+                <form class="subscribe" data-subscribe><input type="email" name="email" placeholder="Email for release news" required aria-label="Email address"><button class="btn btn-sm">Subscribe</button><p class="msg"></p><p class="form-note">One-click unsubscribe in every email. <a href="/privacy">Privacy</a></p></form></div>
             <div><h4>Products</h4><a href="/heavypro">HeavyPro</a><a href="/addons/">All products</a><a href="${TRUSTPILOT}" target="_blank" rel="noopener">Reviews</a><a href="/compatibility">Compatibility</a><a href="/roadmap">Roadmap</a></div>
             <div><h4>Support</h4><a href="/support">Help and FAQ</a><a href="/installation">Installation guide</a><a href="/downloads">Downloads</a><a href="/account">My account</a><a href="/status">Status</a></div>
             <div><h4>Company</h4><a href="/about">About</a><a href="/newsletter">News</a><a href="/work-at-rsg">Careers</a><a href="/contact">Contact</a><a id="ft-mail" href="mailto:Eliaz@rotaidem.com">Eliaz@rotaidem.com</a></div>
-        </div><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span><span><a href="/terms">Terms of service</a><a href="/privacy">Privacy policy</a></span></div></div>`;
+        </div><p class="footer-business" id="ft-business" hidden></p><div class="footer-bottom"><span>© ${new Date().getFullYear()} Rotaidem<span id="ft-socials" class="footer-socials"></span></span>` +
+            `<span class="footer-legal"><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a><a href="/cookies">Cookies</a>` +
+            `<button type="button" class="linklike" data-consent="open">Cookie settings</button></span></div></div>`;
         body.append(footer);
     }
 }
@@ -115,14 +187,35 @@ document.addEventListener("click", e => {
 });
 
 // Buy with Stripe Checkout (products with a price at checkout): logged in -> Stripe's payment page.
+// Before paying: the total, and the waiver EU law asks for when digital content is delivered at once (not pre-ticked).
+function rsgCheckoutConsent(total) {
+    return new Promise(resolve => {
+        const box = document.createElement("div");
+        box.className = "buy-confirm"; box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true"); box.setAttribute("aria-labelledby", "buy-title");
+        box.innerHTML = `<div class="buy-card"><h2 id="buy-title">Before you pay</h2>` +
+            (total ? `<p class="buy-total">Total: <strong>${esc(total)}</strong><br><span>This is the full price. No extra fees at checkout.</span></p>` : "") +
+            `<label class="buy-check"><input type="checkbox" id="buy-ok"> <span>I want my licence key right away. I understand that my 14-day right of withdrawal ends once I activate it (until then I can cancel for a full refund).</span></label>` +
+            `<p class="form-note">See the <a href="/refunds" target="_blank">refund policy</a> and <a href="/terms" target="_blank">terms</a>. Payment is on Stripe's secure page.</p>` +
+            `<div class="buy-btns"><button class="btn" type="button" data-buy="go" disabled>Continue to payment</button><button class="btn btn-ghost" type="button" data-buy="no">Cancel</button></div></div>`;
+        document.body.appendChild(box);
+        const ok = box.querySelector("#buy-ok"), go = box.querySelector('[data-buy="go"]');
+        ok.onchange = () => { go.disabled = !ok.checked; };
+        const done = v => { box.remove(); document.removeEventListener("keydown", esc_); resolve(v); };
+        const esc_ = e => { if (e.key === "Escape") done(false); };
+        document.addEventListener("keydown", esc_);
+        box.onclick = e => { if (e.target === box) done(false); const b = e.target.closest("[data-buy]"); if (b) done(b.dataset.buy === "go" && ok.checked); };
+        ok.focus();
+    });
+}
 async function rsgBuy(productId, button) {
     const token = localStorage.getItem("rsg_token");
     if (!token) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
+    if (!(await rsgCheckoutConsent(button && button.dataset.total))) return;
     if (button) { button.dataset.label = button.dataset.label || button.textContent; button.textContent = "Opening checkout…"; button.style.pointerEvents = "none"; }
     try {
         // Endorsely (affiliates): the referral this visitor came with goes to Stripe, so the sale is credited
         const res = await fetch(withBase("/api/checkout/" + encodeURIComponent(productId)), { method: "POST", headers: { "X-Rotaidem-Token": token, "Content-Type": "application/json" },
-            body: JSON.stringify({ referral: window.endorsely_referral || "", ref: affiliateRef() }) });
+            body: JSON.stringify({ referral: window.endorsely_referral || "", ref: affiliateRef(), withdrawal_consent: true }) });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.url) { location.href = data.url; return; }
         if (data.login) { location.href = withBase("/login?next=" + encodeURIComponent(location.pathname + location.search)); return; }
@@ -152,9 +245,15 @@ let FALLBACK_IMAGE = "/img/approach.jpg";
 function safeImage(url) { return /^(https:\/\/.+\..+|\/media\/\d+\.(jpg|png|webp|gif)|\/img\/[\w.-]+)$/.test(url || "") ? withBase(url) : withBase(FALLBACK_IMAGE); }
 const STATUS_LABEL = { published: "Available", coming_soon: "Coming soon", in_development: "In development" };
 
+// The price a buyer pays: the amount charged at checkout when the product is sold here, else the admin's price text.
+function productPrice(p) {
+    if (!p.can_buy || !(p.price_now || p.pay_amount)) return p.price || "";
+    const cents = p.price_now || p.pay_amount, cur = String(p.pay_currency || "").toUpperCase();
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur }).format(cents / 100); } catch (err) { return (cents / 100).toFixed(2) + " " + cur; }
+}
 function productCard(p) {
     return `<a class="product" href="/addons/view?id=${encodeURIComponent(p.id)}"><div class="img"><img src="${esc(safeImage(p.image_url))}" alt="" loading="lazy"></div>` +
-        `<div class="meta"><h3>${esc(p.name)}</h3><span class="price">${esc(p.price || "")}</span></div>` +
+        `<div class="meta"><h3>${esc(p.name)}</h3><span class="price">${esc(productPrice(p))}</span></div>` +
         `<div class="sub">${esc(p.tagline || p.simulator || "")}</div><span class="badge status ${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status || "")}</span></a>`;
 }
 
@@ -200,9 +299,20 @@ function applyConfig(config) {
     const text = document.getElementById("ft-text"), mail = document.getElementById("ft-mail"), socials = document.getElementById("ft-socials");
     if (text && config.footer_text) text.textContent = config.footer_text;
     if (mail && config.contact_email) { mail.textContent = config.contact_email; mail.href = "mailto:" + config.contact_email; }
+    applyBusiness(config.business || {}, config.contact_email);
     if (socials) socials.innerHTML = Object.entries(config.socials || {}).filter(([k, url]) => SOCIAL_NAMES[k] && /^https:\/\//.test(url))
         .map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${SOCIAL_NAMES[k]}</a>`).join("");
     applyMaintenance(config.maintenance || {});
+}
+// Admin -> Site -> Business details: who sells, in the footer and wherever a page has data-business
+function applyBusiness(b, email) {
+    const parts = [b.name, b.org_number && "Org. no. " + b.org_number, b.vat_number && "VAT " + b.vat_number, b.address, b.country].filter(Boolean);
+    const ft = document.getElementById("ft-business");
+    if (ft) { ft.textContent = parts.join(" · "); ft.hidden = !parts.length; }
+    document.querySelectorAll("[data-business]").forEach(el => {
+        el.innerHTML = parts.length ? parts.map(esc).join("<br>") + (email ? `<br><a href="mailto:${esc(email)}">${esc(email)}</a>` : "")
+            : `Rotaidem${email ? `<br><a href="mailto:${esc(email)}">${esc(email)}</a>` : ""}`;
+    });
 }
 // Maintenance mode: visitors see a back-soon page; logged-in staff and the log in pages are left alone.
 function applyMaintenance(m) {
@@ -227,7 +337,7 @@ function applyExtras(x) {
     const media = document.querySelector("[data-media]");
     if (media) {
         const shots = x.gallery || [];
-        media.querySelector("[data-gallery]").innerHTML = shots.map(u => `<button type="button" class="shot" data-full="${esc(safeImage(u))}" aria-label="Show larger"><img src="${esc(safeImage(u))}" alt="" loading="lazy"></button>`).join("");
+        media.querySelector("[data-gallery]").innerHTML = shots.map((u, i) => `<button type="button" class="shot" data-full="${esc(safeImage(u))}" data-alt="Screenshot ${i + 1} of ${shots.length}" aria-label="Show screenshot ${i + 1} larger"><img src="${esc(safeImage(u))}" alt="Screenshot ${i + 1} of ${shots.length}" loading="lazy"></button>`).join("");
         media.querySelector("[data-video]").innerHTML = x.video ? `<button type="button" class="video-play" data-yt="${esc(x.video)}"><span class="play" aria-hidden="true"></span>Play video<small>Plays from YouTube</small></button>` : "";
         media.hidden = !shots.length && !x.video;
     }
@@ -253,8 +363,10 @@ document.addEventListener("click", e => {
     const shot = e.target.closest(".shot"), play = e.target.closest(".video-play"), box = e.target.closest(".lightbox");
     if (shot) {
         const lb = document.createElement("div");
-        lb.className = "lightbox"; lb.innerHTML = `<img src="${esc(shot.dataset.full)}" alt="">`;
-        document.body.append(lb);
+        lb.className = "lightbox"; lb.setAttribute("role", "dialog"); lb.setAttribute("aria-label", "Screenshot, larger. Press Escape or click to close.");
+        lb.tabIndex = -1; lb.innerHTML = `<img src="${esc(shot.dataset.full)}" alt="${esc(shot.dataset.alt || "Screenshot")}">`;
+        document.body.append(lb); lb.focus();
+        lb.addEventListener("keydown", ev => { if (ev.key === "Escape") { lb.remove(); shot.focus(); } });
     } else if (box) box.remove();
     else if (play) play.outerHTML = `<div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(play.dataset.yt)}?autoplay=1&rel=0" title="Video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>`;
 });
@@ -280,6 +392,8 @@ function applyLists(site) {
         section.querySelector("[data-testimonials-list]").innerHTML = quotes.map(q => `<figure class="quote"><blockquote>${esc(q.text)}</blockquote><figcaption>` +
             (q.image ? `<img class="avatar" src="${esc(safeImage(q.image))}" alt="" loading="lazy">` : `<span class="avatar" aria-hidden="true">${esc(initials(q.name))}</span>`) +
             `<span><strong>${esc(q.name)}</strong>${q.about ? `<small>${esc(q.about)}</small>` : ""}</span></figcaption></figure>`).join("");
+        if (!section.querySelector(".quotes-note")) section.querySelector("[data-testimonials-list]").insertAdjacentHTML("afterend",
+            '<p class="quotes-note" data-text="reviews.note">Quotes from people who use our software, shared with their permission. We do not pay for reviews or write them ourselves. All public reviews are on Trustpilot.</p>');
         section.hidden = false;
     });
     const faq = document.querySelector("[data-faq]");
@@ -321,6 +435,7 @@ function applyBanner(site) {
 document.addEventListener("DOMContentLoaded", () => {
     if (document.body.dataset.layout !== "off") renderLayout();
     paintAuth();
+    if (!rsgConsent() && document.body.dataset.layout !== "off") consentBanner(false);  // asked once; the footer link changes it
     // The footer only exists from here on, so its settings go in now.
     if (window.RSG_SITE) {
         if (window.RSG_SITE.config) applyConfig(window.RSG_SITE.config);

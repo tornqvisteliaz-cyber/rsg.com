@@ -7,7 +7,6 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <script src="/site-settings.js"></script>
-    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
 </head>
 <body>
 <main class="section">
@@ -77,6 +76,21 @@
                 <button class="btn">Save changes</button>
                 <p class="msg" id="s-msg"></p>
             </form>
+            <div class="box" id="my-data" style="margin-top:24px">
+                <h3>Your data</h3>
+                <p class="muted" style="font-size:15px">Download everything we keep about you, or delete your account. See the <a href="/privacy">privacy policy</a>.</p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px"><button class="btn btn-ghost" type="button" id="data-export">Download my data</button></div>
+                <details>
+                    <summary style="cursor:pointer;font-weight:600">Delete my account</summary>
+                    <div style="margin-top:12px">
+                        <p class="muted" style="font-size:15px">This removes your name, email, password, logged-in devices, messages and newsletter subscription, and unlinks Discord.
+                        Your licence keys keep working in the app if you have them saved, but you will no longer see them here. Order records stay for 7 years without your name or email, as bookkeeping law requires. <strong>This cannot be undone.</strong></p>
+                        <div class="field"><label for="del-pw">Your password</label><input id="del-pw" type="password" autocomplete="current-password"></div>
+                        <button class="btn btn-danger" type="button" id="data-delete">Delete my account</button>
+                        <p class="msg" id="del-msg"></p>
+                    </div>
+                </details>
+            </div>
             </div>
         </div>
     </div>
@@ -86,6 +100,23 @@
 const token = localStorage.getItem("rsg_token");
 if (!token) location.href = "/login";
 const headers = { "content-type": "application/json", "X-Rotaidem-Token": token };
+
+document.getElementById("data-export").onclick = async () => {
+    const res = await fetch("/api/account/export", { headers }).catch(() => null);
+    if (!res || !res.ok) { alert("The download is not available right now. Please try again."); return; }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(await res.json(), null, 2)], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = "rotaidem-my-data.json"; a.click(); URL.revokeObjectURL(url);
+};
+document.getElementById("data-delete").onclick = async () => {
+    const msg = document.getElementById("del-msg"), pw = document.getElementById("del-pw").value;
+    if (!pw) { msg.className = "msg error"; msg.textContent = "Type your password to confirm."; return; }
+    if (!confirm("Delete your Rotaidem account for good?")) return;
+    const res = await fetch("/api/account/delete", { method: "POST", headers, body: JSON.stringify({ password: pw }) }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) { msg.className = "msg error"; msg.textContent = data.error || "That did not work. Please try again."; return; }
+    localStorage.removeItem("rsg_token"); localStorage.removeItem("rsg_name"); localStorage.removeItem("rsg_admin");
+    document.querySelector("main").innerHTML = '<section class="section"><div class="wrap"><h1>Your account is deleted</h1><p class="lead">Thank you for flying with us. You can make a new account any time.</p><p><a class="btn" href="/">Back to the home page</a></p></div></section>';
+};
 
 async function init() {
     const res = await fetch("/api/me", { headers });

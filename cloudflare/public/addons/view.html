@@ -8,7 +8,6 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/site.css">
     <script src="/site-settings.js"></script>
-    <script async src="https://assets.endorsely.com/endorsely.js" data-endorsely="f740d528-c660-42bd-a0d7-523692a09f24"></script>
 </head>
 <body>
 <section class="page-head" id="hero" style="background-image:url('/img/approach.jpg')"><div class="wrap" style="padding-top:110px;padding-bottom:70px">
@@ -52,7 +51,9 @@ function show(p) {
         const money = cents => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: String(p.pay_currency).toUpperCase() }).format(cents / 100); }
                                  catch (err) { return (cents / 100).toFixed(2) + " " + String(p.pay_currency || "").toUpperCase(); } };
         const now = p.price_now || p.pay_amount;
-        buy.href = "#"; buy.textContent = "Buy now · " + money(now);
+        buy.href = "#"; buy.textContent = "Buy now · " + money(now); buy.dataset.total = money(now);
+        document.getElementById("price").textContent = money(now);  // the amount charged, not a free-text price
+        buy.insertAdjacentHTML("afterend", '<p class="form-note" style="margin:10px 0 0">Total price. No extra fees at checkout.</p>');
         if (p.sale_active) { // Admin -> Products -> Sale price
             const until = p.sale_until ? new Date(p.sale_until + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "long" }) : "";
             buy.insertAdjacentHTML("beforebegin", `<p class="sale"><s>${esc(money(p.pay_amount))}</s> <strong>${esc(money(now))}</strong>${until ? ` <span>Sale price until ${esc(until)}</span>` : " <span>Sale price</span>"}</p>`);
@@ -68,7 +69,7 @@ function show(p) {
     document.getElementById("specs").innerHTML = [["Simulator", p.simulator], ["Version", p.version]].filter(r => r[1]).map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
     document.getElementById("features").innerHTML = (p.features || []).map(f => `<li>${esc(f)}</li>`).join("");
     const imgs = [hero].concat((p.images || []).map(safeImage)).filter((u, i, l) => l.indexOf(u) === i);
-    document.getElementById("gallery").innerHTML = imgs.map(u => `<a class="tile" href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt=""></a>`).join("");
+    document.getElementById("gallery").innerHTML = imgs.map((u, i) => `<a class="tile" href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="${esc(p.name)}: picture ${i + 1} of ${imgs.length} (opens larger)"></a>`).join("");
 }
 fetch("/api/products").then(r => r.json()).then(d => {
     const p = (d.products || []).find(x => x.id === id);
